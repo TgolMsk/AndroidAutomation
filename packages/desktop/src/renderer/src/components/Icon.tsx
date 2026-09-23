@@ -1,6 +1,6 @@
 import type { SVGProps } from 'react';
 
-/** Simple 24×24 stroke icons (hand-drawn geometric paths, currentColor). */
+/** Shared 24×24 stroke icon vocabulary. Keep product and game modules on the same grid. */
 const PATHS = {
   plus: 'M12 5v14M5 12h14',
   play: 'M7 4.5v15l12-7.5z',
@@ -37,6 +37,8 @@ const PATHS = {
   memory: 'M3 8h18v8H3zM7 16v3M11 16v3M15 16v3M7 11h2v2H7zM11 11h2v2h-2zM15 11h2v2h-2z',
   gauge: 'M4 16a8 8 0 1 1 16 0M12 16l4-5',
   layers: 'M12 4l9 5-9 5-9-5zM3 14l9 5 9-5',
+  devices: 'M5 4h11a2 2 0 0 1 2 2v2M8 8h11a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2zM11 18h4',
+  workflow: 'M4 4h6v6H4zM14 14h6v6h-6zM10 7h4a3 3 0 0 1 3 3v4M7 10v4a3 3 0 0 0 3 3h4',
   android:
     'M7 10h10v7a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1zM7 9a5 5 0 0 1 10 0zM8.5 4.5l1.3 2M15.5 4.5l-1.3 2M10 7.5h.01M14 7.5h.01M5 11v5M19 11v5M10 18v2.5M14 18v2.5',
   external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',

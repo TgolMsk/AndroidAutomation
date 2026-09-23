@@ -8,10 +8,10 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "pnpm -r --filter ./packages/core --filter ./packages/cli run build && pnpm --filter ./packages/desktop run build",
+    "build": "pnpm -r --filter ./packages/core --filter ./packages/automation --filter ./packages/cli run build && pnpm --filter ./packages/desktop run build",
     "dist:mac": "pnpm build && pnpm --filter @avdm/desktop exec electron-builder --mac dmg --arm64 --publish never",
-    "typecheck": "pnpm --filter ./packages/core run build && pnpm -r run typecheck",
-    "test": "pnpm --filter ./packages/core run test",
+    "typecheck": "pnpm --filter ./packages/core run build && pnpm --filter ./packages/automation run build && pnpm -r run typecheck",
+    "test": "pnpm --filter ./packages/core run test && pnpm --filter ./packages/automation run test && pnpm --filter ./packages/desktop run test",
     "e2e:cli": "pnpm -r --filter ./packages/core --filter ./packages/cli run build && node scripts/e2e-cli.mjs",
     "e2e:desktop": "pnpm build && node scripts/e2e-desktop.mjs",
     "screenshots": "node scripts/desktop-screenshots.mjs",

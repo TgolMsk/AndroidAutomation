@@ -18,8 +18,7 @@ function copyProtoPlugin(): Plugin {
       const outDir = options.dir ?? (options.file ? dirname(options.file) : undefined);
       if (!outDir) return;
       if (!existsSync(protoSource)) {
-        this.warn(`未找到 ${protoSource}，gRPC 功能将不可用`);
-        return;
+        this.error(`未找到 ${protoSource}，无法构建可用的 gRPC 客户端`);
       }
       mkdirSync(outDir, { recursive: true });
       copyFileSync(protoSource, join(outDir, PROTO_FILE));
@@ -45,10 +44,17 @@ export default defineConfig({
   main: {
     plugins: [copyProtoPlugin()],
     build: {
-      // Bundle @avdm/core into main; keep the other dependencies (grpc) external.
-      externalizeDeps: { exclude: ['@avdm/core'] },
+      // Bundle local workspaces into both main entries; native dependencies remain external.
+      externalizeDeps: { exclude: ['@avdm/core', '@avdm/automation'] },
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src/main/index.ts') },
+        // Sharp resolves its platform native addon relative to its own package.
+        // Bundling its JS into probe-worker.js breaks that lookup.
+        external: ['sharp', '@techstark/opencv-js'],
+        input: {
+          index: resolve(__dirname, 'src/main/index.ts'),
+          'probe-worker': resolve(__dirname, 'src/main/automation/probe-worker.ts'),
+          'gather-worker': resolve(__dirname, 'src/main/automation/gather-worker.ts'),
+        },
       },
     },
   },

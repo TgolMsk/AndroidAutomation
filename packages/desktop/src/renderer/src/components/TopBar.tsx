@@ -22,6 +22,7 @@ export function TopBar({
   maxRunning,
   memoryReserveMb,
   onCreate,
+  onOpenAutomation,
   onScripts,
   onSettings,
   createDisabled,
@@ -30,6 +31,7 @@ export function TopBar({
   maxRunning?: number;
   memoryReserveMb?: number;
   onCreate: () => void;
+  onOpenAutomation?: () => void;
   onScripts: () => void;
   onSettings: () => void;
   createDisabled?: boolean;
@@ -50,11 +52,15 @@ export function TopBar({
     <header className="topbar">
       <div className="brand">
         <span className="brand-mark">
-          <Icon name="layers" size={16} />
+          <Icon name="devices" size={20} />
         </span>
-        <span className="brand-name">AVD 多开管理器</span>
+        <span className="brand-copy">
+          <span className="brand-name">AVD</span>
+          <span className="brand-subtitle">多开管理器</span>
+        </span>
       </div>
       <div className="stats">
+        <Stat icon="power" label="运行中" value={running !== undefined ? String(running) : '—'} sub={maxRunning !== undefined ? `/ ${maxRunning}` : undefined} tone={runTone} />
         <Stat
           icon="memory"
           label="可用内存"
@@ -76,16 +82,22 @@ export function TopBar({
           tone={loadTone}
           title={stats ? `1/5/15 分钟平均负载：${stats.loadAvg.map((l) => l.toFixed(2)).join(' / ')}\n${stats.cpuModel}` : undefined}
         />
-        <Stat icon="power" label="运行中" value={running !== undefined ? String(running) : '—'} sub={maxRunning !== undefined ? `/ ${maxRunning}` : undefined} tone={runTone} />
       </div>
       <div className="topbar-actions">
+        {onOpenAutomation && (
+          <button className="btn ghost topbar-link" onClick={onOpenAutomation}>
+            <Icon name="workflow" />
+            自动化
+          </button>
+        )}
+        <button className="btn ghost topbar-link" onClick={onScripts}>
+          <Icon name="script" />
+          脚本
+        </button>
+        <span className="topbar-action-sep" aria-hidden="true" />
         <button className="btn primary" onClick={onCreate} disabled={createDisabled} title="新建实例（⌘N）">
           <Icon name="plus" />
           新建实例
-        </button>
-        <button className="btn" onClick={onScripts}>
-          <Icon name="script" />
-          脚本
         </button>
         <button className="icon-btn lg" onClick={onSettings} title="设置" aria-label="设置">
           <Icon name="settings" size={18} />

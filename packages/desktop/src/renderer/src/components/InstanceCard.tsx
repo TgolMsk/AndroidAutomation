@@ -153,12 +153,12 @@ export const InstanceCard = memo(function InstanceCard({
           <img src={thumbUrl} alt="" draggable={false} className={aspect < 1 ? 'portrait' : undefined} />
         ) : (
           <div className="thumb-placeholder">
-            {transitional ? <Spinner size={22} /> : <Icon name={ds === 'error' ? 'alert' : 'android'} size={34} />}
+            <span className="thumb-glyph">{transitional ? <Spinner size={20} /> : <Icon name={ds === 'error' ? 'alert' : 'devices'} size={27} />}</span>
             <span>{placeholderText(ds)}</span>
           </div>
         )}
         <label className="card-check" onClick={stop} title="选择">
-          <input type="checkbox" checked={selected} onChange={() => actions.toggleSelect(i)} />
+          <input type="checkbox" checked={selected} aria-label={`选择 ${record.name} #${i}`} onChange={() => actions.toggleSelect(i)} />
         </label>
         <StatusBadge status={ds} className="card-status" />
         {screen && (

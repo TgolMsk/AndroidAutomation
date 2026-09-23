@@ -1,8 +1,23 @@
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Adb, escapeInputText, parseAdbDevices, parseForegroundPackage, parsePackageList } from '../src/adb.js';
+import { Adb, escapeInputText, parseAdbDevices, parseForegroundPackage, parsePackageList, parseRawScreencap } from '../src/adb.js';
 import { createFakeSdk, startFakeEmulator, waitForExit, type FakeSdk, type RunningFakeEmulator } from './helpers/fakeSdk.js';
+
+function rawScreencap(width: number, height: number, headerLength: 12 | 16, stride = width, format = 1): Buffer {
+  const frame = Buffer.alloc(headerLength + stride * height * 4, 0xee);
+  frame.writeUInt32LE(width, 0);
+  frame.writeUInt32LE(height, 4);
+  frame.writeUInt32LE(format, 8);
+  if (headerLength === 16) frame.writeUInt32LE(0, 12);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const offset = headerLength + (y * stride + x) * 4;
+      frame.set([10 + y * width + x, 20, 30, 255], offset);
+    }
+  }
+  return frame;
+}
 
 describe('adb parsers', () => {
   it('parses `devices -l` (tab and space separated, odd states)', () => {
@@ -55,6 +70,57 @@ describe('adb parsers', () => {
       'b.b',
       'c.c',
     ]);
+  });
+});
+
+describe('raw adb screencap parser', () => {
+  it('reads both Android header lengths and respects a Uint8Array byte offset', () => {
+    for (const headerLength of [12, 16] as const) {
+      const frame = rawScreencap(2, 2, headerLength);
+      const wrapped = Buffer.concat([Buffer.from([99, 98, 97]), frame, Buffer.from([96])]);
+      const start = Date.now();
+      const result = parseRawScreencap(wrapped.subarray(3, 3 + frame.length));
+      expect(result).toMatchObject({ width: 2, height: 2, format: 1 });
+      expect(result.data.byteLength).toBe(16);
+      expect(Array.from(result.data)).toEqual([
+        10, 20, 30, 255, 11, 20, 30, 255,
+        12, 20, 30, 255, 13, 20, 30, 255,
+      ]);
+      expect(result.capturedAt).toBeGreaterThanOrEqual(start);
+      expect(result.capturedAt).toBeLessThanOrEqual(Date.now());
+    }
+  });
+
+  it('removes row padding without mixing it into pixels', () => {
+    for (const headerLength of [12, 16] as const) {
+      const result = parseRawScreencap(rawScreencap(2, 2, headerLength, 4));
+      expect(Array.from(result.data)).toEqual([
+        10, 20, 30, 255, 11, 20, 30, 255,
+        12, 20, 30, 255, 13, 20, 30, 255,
+      ]);
+    }
+  });
+
+  it('rejects malformed, truncated, and unsupported frames', () => {
+    const valid = rawScreencap(2, 2, 16);
+    const invalid = [
+      Buffer.alloc(0),
+      valid.subarray(0, 11),
+      valid.subarray(0, -1),
+      valid.subarray(0, -4), // would otherwise look like a 12-byte header
+      Buffer.concat([valid, Buffer.from([1, 2, 3, 4])]),
+      rawScreencap(0, 2, 16),
+      rawScreencap(2, 0, 16),
+      rawScreencap(2, 2, 16, 2, 2),
+    ];
+    for (const frame of invalid) {
+      expect(() => parseRawScreencap(frame)).toThrowError(expect.objectContaining({ code: 'COMMAND_FAILED' }));
+    }
+    const huge = Buffer.alloc(16);
+    huge.writeUInt32LE(20_001, 0);
+    huge.writeUInt32LE(1, 4);
+    huge.writeUInt32LE(1, 8);
+    expect(() => parseRawScreencap(huge)).toThrowError(expect.objectContaining({ code: 'COMMAND_FAILED' }));
   });
 });
 
@@ -128,6 +194,20 @@ describe('Adb against the fake adb', () => {
     expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
     expect(png.readUInt32BE(16)).toBe(4); // IHDR width
     expect(png.readUInt32BE(20)).toBe(2); // IHDR height
+  });
+
+  it('screencapRaw requests raw output without PNG encoding', async () => {
+    const adbBin = path.join(fake.base, 'raw-adb');
+    const frame = rawScreencap(2, 2, 16);
+    const expectedArgs = ['-s', emu.serial, 'exec-out', 'screencap'];
+    await fsp.writeFile(
+      adbBin,
+      `#!/usr/bin/env node\nif (JSON.stringify(process.argv.slice(2)) !== ${JSON.stringify(JSON.stringify(expectedArgs))}) process.exit(2);\nprocess.stdout.write(Buffer.from('${frame.toString('hex')}', 'hex'));\n`,
+      { mode: 0o755 },
+    );
+    const result = await new Adb(adbBin).device(emu.serial).screencapRaw();
+    expect(result).toMatchObject({ width: 2, height: 2, format: 1 });
+    expect(result.data.byteLength).toBe(16);
   });
 
   it('install / install-multiple / uninstall', async () => {

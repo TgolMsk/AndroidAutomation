@@ -6,3 +6,11 @@ release/
 .DS_Store
 coverage/
 .vitest/
+# Local automation templates, device data, and credentials must stay off the public repository.
+.avdm/
+.wl-data/
+.env
+.env.*
+*.pem
+*.p12
+*.keystore

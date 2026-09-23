@@ -9,7 +9,7 @@ arm64 系统镜像通过 Hypervisor.framework（HVF）虚拟化运行，图形�
 提供两种用法，底层共用同一个内核 `@avdm/core`：
 
 - **命令行 `avdm`**：适合脚本化和批量操作
-- **Electron 桌面客户端**：实例墙、缩略图、实时画面、批量操作，布局参考雷电多开器
+- **Electron 桌面客户端**：实例墙、缩略图、实时画面、批量操作和游戏自动化工作台
 
 不依赖 Java：SDK 组件下载、许可确认、AVD 创建与克隆都由本项目直接完成，不调用 `sdkmanager` / `avdmanager`。
 
@@ -49,6 +49,7 @@ arm64 系统镜像通过 Hypervisor.framework（HVF）虚拟化运行，图形�
   - 鼠标操作映射为触控，键盘输入转发到设备；Android 旋转后画面自动转正，触控坐标随之换算。
   - 工具条有返回、主页、多任务、截图、置顶。
 - **脚本插件**：任意语言写的脚本，每个实例各跑一个进程，并通过环境变量拿到 `ANDROID_SERIAL`、adb 路径、gRPC 端口等。
+- **游戏自动化工作台（预览）**：按游戏和实例保存私有模板目录与配置；从原始 ADB 截图在独立工作线程运行 OpenCV 模板探针，显示前台包名、尺寸和逐项匹配分数。万龙觉醒支持手动采集一轮与按 ETA 自动续跑；每轮先核验前台包名和唯一高分场景锚点，操作按实例串行，运行记录与下一次唤醒时间保存在本机。默认关闭采集，需明确启用并确认探针。
 - **安全默认**：gRPC 始终加 `-grpc-use-token`，只监听 127.0.0.1 并要求令牌；`--json` 输出里不会出现令牌。
 
 Android ID 在 Android 8 及以上按应用签名、用户和设备区分，模板中的 `androidId` 是系统工具可见值，同时触发应用级种子轮换，**不代表所有应用都会读到相同值**。当前官方模拟器没有可配置的 IMEI，本项目尚未实现它。Android 10 及以上对普通应用读取序列号和 MAC 有权限限制，Wi-Fi 也可能按网络随机化 MAC。构建属性不会改变内核、图形驱动、硬件证明或模拟器标记，不能保证被识别为真机。
@@ -80,7 +81,7 @@ Android ID 在 Android 8 及以上按应用签名、用户和设备区分，模�
 
 ```bash
 pnpm install
-pnpm build                      # 构建 core → cli → desktop
+pnpm build                      # 构建 core → automation → cli → desktop
 
 # 可选：起个别名
 alias avdm="node $PWD/packages/cli/dist/index.js"
@@ -115,6 +116,12 @@ pnpm dev:desktop                # 开发模式（electron-vite，渲染进程热
 - **关闭窗口**：模拟器在后台继续运行；按 ⌘Q 退出应用时也不会关掉模拟器。
 - **与 CLI 共用数据**：两者共用 `~/.avdm`，CLI 所做的改动会自动同步到界面：新建、删除、启动、停止和设置修改约 1 秒内（文件监视）；开机完成等状态变化约 5 秒内（健康检查间隔）。
 - **打包**：`pnpm dist:mac` 在 `release/` 生成 Apple Silicon DMG。推送 `v*` 标签后，GitHub Actions 构建并上传预览版 Release。
+
+### 游戏自动化工作台
+
+在主界面点击“自动化”，选择运行中的实例和游戏包。万龙觉醒模板集需由使用者在本机选择一个含 `manifest.json` 与 PNG 文件的目录；模板图片、账号信息和运行记录均不进入公开仓库或安装包。旧 `wanlong-panel` 的模板集目录可直接读取，不需要转换。选择后点击“执行只读探测”，检查前台包名和每个锚点的分数。启用采集配置并确认探针后，可执行单轮或开启自动续跑。自动续跑只恢复明确启用的实例；连续 8 次失败会暂停，修改模板或配置会停止续跑并要求重新探测。真实 #1 已通过无派兵的 G0 导航和单轮流程；真实派兵尚未完成验收，请先在测试实例使用。
+
+新增游戏的设备适配、视觉模块、配置与任务契约见 [自动化架构](docs/AUTOMATION.md)。
 
 ## 命令行参考
 
@@ -166,7 +173,7 @@ pnpm dev:desktop                # 开发模式（electron-vite，渲染进程热
 管理器目录为 `~/.avdm`，可用环境变量 `AVDM_HOME` 改到别处：
 
 ```
-~/.avdm/
+ ~/.avdm/
   settings.json          设置
   instances.json         实例注册表（加文件锁，原子写）
   avd/                   作为 ANDROID_AVD_HOME：avdm_<i>.ini + avdm_<i>.avd/
@@ -174,6 +181,11 @@ pnpm dev:desktop                # 开发模式（electron-vite，渲染进程热
   logs/instance-<i>.log  模拟器输出
   logs/scripts/<runId>.log
   scripts/<id>/script.json
+  automation/<gameId>/<i>.json  每个游戏、实例的私有配置
+  automation/<gameId>/state/<i>.json  游戏任务状态
+  automation/scheduler/<gameId>/<i>.json  自动续跑计划
+  automation/runs.json       最近 100 条自动化运行记录
+  automation/templates/        可选的本地模板集位置（需自行导入）
   cache/downloads/       SDK 下载缓存（安装成功后删除）
 ```
 
@@ -257,6 +269,7 @@ avdm script run hello-adb all
 - 桌面端主进程独占一个 `AvdManager`，渲染进程只能通过类型化的 IPC 访问。窗口启用了 `contextIsolation` 和 `sandbox`，并设置了严格的 CSP。
 
 设计细节与模块契约见 [docs/DESIGN.md](docs/DESIGN.md)。
+游戏自动化的扩展边界与验证顺序见 [docs/AUTOMATION.md](docs/AUTOMATION.md)。
 
 ## 开发与测试
 

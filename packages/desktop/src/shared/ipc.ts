@@ -82,6 +82,67 @@ export interface LogEntry {
   at: string;
 }
 
+/** Public metadata only; a game package's templates and credentials remain on the user's Mac. */
+export interface AutomationGameSummary {
+  id: string;
+  name: string;
+  version: string;
+  packageName: string;
+  tasks: { id: string; name: string; description: string }[];
+}
+
+export interface AutomationSettings {
+  templateDir: string;
+  /** Game-owned configuration, normalized before a task is started. */
+  config: Record<string, unknown>;
+}
+
+export interface AutomationProbeMatch {
+  templateId: string;
+  found: boolean;
+  score: number;
+  threshold: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  reason?: string;
+}
+
+export interface AutomationProbeReport {
+  gameId: string;
+  packageName: string;
+  foregroundPackage: string | null;
+  deviceWidth: number;
+  deviceHeight: number;
+  capturedAt: number;
+  matches: AutomationProbeMatch[];
+  /** The same scene gate used by the write worker, for an honest UI preflight. */
+  launchReady: boolean;
+  launchReason: string;
+  timingsMs: Record<string, number>;
+}
+
+export interface AutomationSchedule {
+  gameId: string;
+  index: number;
+  enabled: boolean;
+  nextWakeAt: number | null;
+  failureCount: number;
+}
+
+export interface AutomationRun {
+  runId: string;
+  gameId: string;
+  taskId: string;
+  index: number;
+  status: 'running' | 'stopping' | 'succeeded' | 'failed' | 'cancelled';
+  startedAt: number;
+  endedAt: number | null;
+  message: string;
+  nextWakeAt?: number | null;
+}
+
 /** Event channel → payload. */
 export interface AvdmEvents {
   'instance-state': InstanceState;
@@ -96,6 +157,8 @@ export interface AvdmEvents {
   'sdk-progress': InstallProgress;
   'script-run': ScriptRunInfo;
   'script-output': { runId: string; line: string };
+  'automation-run': AutomationRun;
+  'automation-schedule': AutomationSchedule;
   'log': LogEntry;
   /** The app bundle on disk was rebuilt after this process started: the running client is outdated. */
   'app-outdated': { builtAt: number };
@@ -179,6 +242,18 @@ export interface AvdmApi {
   createExampleScript(): Promise<ScriptManifest>;
   openScriptsDir(): Promise<void>;
 
+  // ── game automation ──
+  automationGames(): Promise<AutomationGameSummary[]>;
+  pickAutomationTemplateSet(): Promise<string | null>;
+  getAutomationSettings(gameId: string, index: number): Promise<AutomationSettings>;
+  saveAutomationSettings(gameId: string, index: number, patch: Partial<AutomationSettings>): Promise<AutomationSettings>;
+  probeAutomation(gameId: string, index: number): Promise<AutomationProbeReport>;
+  runAutomation(gameId: string, taskId: string, index: number): Promise<AutomationRun>;
+  stopAutomation(runId: string): Promise<void>;
+  automationRuns(): Promise<AutomationRun[]>;
+  automationSchedules(): Promise<AutomationSchedule[]>;
+  setAutomationSchedule(gameId: string, index: number, enabled: boolean): Promise<AutomationSchedule>;
+
   // ── events ──
   on<C extends AvdmEventChannel>(channel: C, listener: (payload: AvdmEvents[C]) => void): () => void;
 }
@@ -206,6 +281,9 @@ export const INVOKE_METHODS: AvdmInvokeMethod[] = [
   'setThumbnailSubscription',
   'liveStart', 'liveStop', 'liveTouch', 'liveKey', 'alwaysOnTop',
   'listScripts', 'runScript', 'stopScript', 'listScriptRuns', 'createExampleScript', 'openScriptsDir',
+  'automationGames', 'pickAutomationTemplateSet', 'getAutomationSettings', 'saveAutomationSettings',
+  'probeAutomation', 'runAutomation', 'stopAutomation', 'automationRuns',
+  'automationSchedules', 'setAutomationSchedule',
 ];
 
 export const EVENT_CHANNEL = 'avdm:event';

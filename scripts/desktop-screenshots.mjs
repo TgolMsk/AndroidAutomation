@@ -4,6 +4,7 @@
  *   main.png    main window: instance wall with running / booting / stopped cards
  *   wizard.png  SDK wizard (second run with an empty SDK; catalogue served from a file:// mirror of the fixtures)
  *   live.png    live view window of instance #0
+ *   automation.png  game automation page with a running instance
  *
  *   pnpm build && node scripts/desktop-screenshots.mjs [--out docs/screenshots] [--keep]
  *
@@ -124,6 +125,7 @@ async function main() {
     await cli(['start', '2', '--force'], { ...env, FAKE_BOOT_MS: '600000' });
 
     await capture('main.png', { ...env, AVDM_SCREENSHOT_DELAY_MS: '4500' }, path.join(work, 'electron-main'));
+    await capture('automation.png', { ...env, AVDM_SCREENSHOT_ROUTE: 'automation', AVDM_SCREENSHOT_DELAY_MS: '2500' }, path.join(work, 'electron-automation'));
     await capture('live.png', { ...env, AVDM_OPEN_LIVE: '0', AVDM_SCREENSHOT_DELAY_MS: '2500' }, path.join(work, 'electron-live'));
 
     // SDK wizard: empty SDK dir, catalogue from the offline mirror.

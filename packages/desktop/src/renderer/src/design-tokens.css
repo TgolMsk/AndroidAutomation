@@ -1,0 +1,38 @@
+/* Shell tokens shared by instance management, live view, setup and game modules. */
+:root {
+  --bg: #0d121a;
+  --bg-2: #111924;
+  --panel: #17212d;
+  --panel-2: #1c2937;
+  --panel-3: #273747;
+  --border: #2d3b4b;
+  --border-2: #465970;
+  --text: #f0f4fa;
+  --text-2: #ccd7e5;
+  --text-dim: #aebdd0;
+  --text-faint: #94a6bb;
+  --accent: #83b2ff;
+  --accent-2: #a2c6ff;
+  --accent-ink: #0b1c35;
+  --accent-bg: rgba(108, 163, 255, 0.13);
+  --green: #62d49c;
+  --green-bg: rgba(98, 212, 156, 0.13);
+  --amber: #f3bf6c;
+  --amber-bg: rgba(243, 191, 108, 0.13);
+  --red: #ff8984;
+  --red-bg: rgba(255, 137, 132, 0.13);
+  --grey: #90a1b5;
+  --radius: 9px;
+  --radius-lg: 14px;
+  --font: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', system-ui, sans-serif;
+  --mono: 'SF Mono', ui-monospace, Menlo, Monaco, Consolas, monospace;
+  --topbar-h: 66px;
+  --motion-fast: 160ms;
+  --motion-standard: 220ms;
+  --ease-out: cubic-bezier(0.25, 1, 0.5, 1);
+  --z-dropdown: 40;
+  --z-backdrop: 50;
+  --z-modal: 51;
+  --z-toast: 100;
+  color-scheme: dark;
+}

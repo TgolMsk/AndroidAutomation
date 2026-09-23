@@ -1,6 +1,16 @@
 packages:
   - packages/*
 
+# CI builds an arm64 installer even when its macOS host is x64. Install both
+# native Sharp variants so electron-builder can package the target binaries.
+supportedArchitectures:
+  os:
+    - darwin
+    - current
+  cpu:
+    - arm64
+    - current
+
 allowBuilds:
   electron: true
   electron-winstaller: false

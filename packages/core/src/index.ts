@@ -5,7 +5,7 @@ export * from './paths.js';
 export * from './settings.js';
 export { Registry } from './registry.js';
 export { AvdManager, statusLabel, isPortBusy, expectedResidentMb, RESIDENT_FRACTION, type SdkInstallPlan } from './manager.js';
-export { Adb, AdbDevice, type AdbDeviceEntry } from './adb.js';
+export { Adb, AdbDevice, parseRawScreencap, type AdbDeviceEntry, type RawScreencapFrame } from './adb.js';
 export {
   EmulatorGrpc,
   setEmulatorProtoPath,
@@ -23,3 +23,4 @@ export { listRunningEmulators } from './emulator/discovery.js';
 export { portsFor } from './emulator/launcher.js';
 export { parseSelector } from './util/selector.js';
 export { compareVersions } from './util/proc.js';
+export { atomicWriteJson, readJsonIfExists, withFileLock } from './util/fs.js';

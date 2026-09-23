@@ -21,6 +21,7 @@ import {
   type AvdmInvokeMethod,
   type BatchResult,
 } from '../shared/ipc';
+import type { AutomationHost } from './automation/host';
 import type { LiveService } from './live';
 import type { ManagerHost } from './manager-host';
 import { refreshAlwaysOnTopMenu } from './menu';
@@ -35,6 +36,7 @@ export interface MainServices {
   thumbs: ThumbnailService;
   windows: WindowManager;
   sdkInstall: SdkInstallTask;
+  automation?: AutomationHost;
 }
 
 interface HandlerContext extends MainServices {
@@ -47,6 +49,11 @@ type Handler<K extends AvdmInvokeMethod> = (
   ...args: Parameters<AvdmApi[K]>
 ) => Promise<Awaited<ReturnType<AvdmApi[K]>>>;
 type HandlerMap = { [K in AvdmInvokeMethod]: Handler<K> };
+
+function automationOrThrow(service: AutomationHost | undefined): AutomationHost {
+  if (!service) throw new Error('自动化服务尚未就绪');
+  return service;
+}
 
 /** Result envelope returned by every handler; the preload unwraps it and rethrows Error(message). */
 export type IpcEnvelope = { ok: true; value: unknown } | { ok: false; error: { message: string; code?: string } };
@@ -343,6 +350,46 @@ const handlers: HandlerMap = {
     await mkdir(dir, { recursive: true });
     const err = await shell.openPath(dir);
     if (err) throw new Error(`无法打开脚本目录：${err}`);
+  },
+
+  // ── game automation ──
+  async automationGames({ automation }) {
+    return automationOrThrow(automation).games();
+  },
+  async pickAutomationTemplateSet({ sender }) {
+    const options: OpenDialogOptions = {
+      title: '选择游戏模板集目录',
+      buttonLabel: '选择模板集',
+      properties: ['openDirectory'],
+    };
+    const win = BrowserWindow.fromWebContents(sender);
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  },
+  async getAutomationSettings({ automation }, gameId, index) {
+    return automationOrThrow(automation).settings(String(gameId), asIndex(index));
+  },
+  async saveAutomationSettings({ automation }, gameId, index, patch) {
+    return automationOrThrow(automation).saveSettings(String(gameId), asIndex(index), patch);
+  },
+  async probeAutomation({ automation }, gameId, index) {
+    return automationOrThrow(automation).probe(String(gameId), asIndex(index));
+  },
+  async runAutomation({ automation }, gameId, taskId, index) {
+    return automationOrThrow(automation).run(String(gameId), String(taskId), asIndex(index));
+  },
+  async stopAutomation({ automation }, runId) {
+    await automationOrThrow(automation).stop(String(runId));
+  },
+  async automationRuns({ automation }) {
+    return automationOrThrow(automation).runs();
+  },
+  async automationSchedules({ automation }) {
+    return automationOrThrow(automation).schedules();
+  },
+  async setAutomationSchedule({ automation }, gameId, index, enabled) {
+    if (typeof enabled !== 'boolean') throw new Error('自动续跑开关无效');
+    return automationOrThrow(automation).setSchedule(String(gameId), asIndex(index), enabled);
   },
 };
 

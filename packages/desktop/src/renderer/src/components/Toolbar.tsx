@@ -49,76 +49,83 @@ export function Toolbar(p: ToolbarProps) {
 
   return (
     <div className="toolbar">
-      <div className="toolbar-group">
-        <label className="check select-all" title="全选（⌘A）">
-          <input
-            ref={checkRef}
-            type="checkbox"
-            checked={allChecked}
-            disabled={p.visible.length === 0}
-            onChange={() => (allChecked ? p.onClearSelection() : p.onSelectAll())}
-          />
-          全选
-        </label>
-        <button className="btn ghost sm" onClick={p.onInvert} disabled={p.visible.length === 0}>
-          反选
-        </button>
-        <span className="sel-count">
-          已选 <b>{n}</b> / {p.totalCount}
-        </span>
+      <div className="toolbar-main">
+        <div className="toolbar-heading">
+          <h1>实例</h1>
+          <span className="toolbar-total">{p.totalCount} 台设备</span>
+        </div>
+        <div className="toolbar-selection">
+          <label className="check select-all" title="全选当前结果（⌘A）">
+            <input
+              ref={checkRef}
+              type="checkbox"
+              checked={allChecked}
+              disabled={p.visible.length === 0}
+              onChange={() => (allChecked ? p.onClearSelection() : p.onSelectAll())}
+            />
+            全选
+          </label>
+          <button className="btn ghost sm" onClick={p.onInvert} disabled={p.visible.length === 0}>
+            反选
+          </button>
+        </div>
+        <div className="toolbar-spacer" />
+        <div className="search">
+          <Icon name="search" size={15} />
+          <input type="search" aria-label="搜索实例" placeholder="搜索名称、编号或备注" value={p.filter} onChange={(e) => p.onFilter(e.target.value)} />
+        </div>
+        <div className="segmented" role="group" aria-label="视图">
+          <button className={p.view === 'grid' ? 'active' : ''} onClick={() => p.onView('grid')} title="卡片视图" aria-label="卡片视图" aria-pressed={p.view === 'grid'}>
+            <Icon name="grid" size={15} />
+          </button>
+          <button className={p.view === 'list' ? 'active' : ''} onClick={() => p.onView('list')} title="列表视图" aria-label="列表视图" aria-pressed={p.view === 'list'}>
+            <Icon name="list" size={15} />
+          </button>
+        </div>
       </div>
-      <div className="toolbar-sep" />
-      <div className="toolbar-group">
-        <button className="btn sm success" disabled={!startable.length} title={why(startable.length, '所选实例都已在运行')} onClick={() => p.onStart(startable)}>
-          <Icon name="play" size={13} />
-          启动{suffix(startable.length)}
-        </button>
-        <button className="btn sm" disabled={!stoppable.length} title={why(stoppable.length, '所选实例都未运行')} onClick={() => p.onStop(stoppable)}>
-          <Icon name="stop" size={13} />
-          停止{suffix(stoppable.length)}
-        </button>
-        <button className="btn sm" disabled={!restartable.length} title={why(restartable.length, '所选实例都未运行')} onClick={() => p.onRestart(restartable)}>
-          <Icon name="restart" size={14} />
-          重启
-        </button>
-      </div>
-      <div className="toolbar-sep" />
-      <div className="toolbar-group">
-        <button className="btn sm" disabled={!running.length} title={why(running.length, '需要运行中的实例')} onClick={() => p.onInstallApk(running)}>
-          <Icon name="package" size={14} />
-          安装 APK
-        </button>
-        <button className="btn sm" disabled={!running.length} title={why(running.length, '需要运行中的实例')} onClick={() => p.onAppLaunch(running)}>
-          <Icon name="rocket" size={14} />
-          启动应用
-        </button>
-        <button className="btn sm" disabled={!running.length} title={why(running.length, '需要运行中的实例')} onClick={() => p.onShell(running)}>
-          <Icon name="terminal" size={14} />
-          Shell
-        </button>
-        <button className="btn sm" onClick={p.onScripts}>
-          <Icon name="script" size={14} />
-          运行脚本
-        </button>
-      </div>
-      <div className="toolbar-sep" />
-      <button className="btn sm danger-ghost" disabled={!all.length} title={n === 0 ? NEED_SELECTION : undefined} onClick={() => p.onDelete(all)}>
-        <Icon name="trash" size={14} />
-        删除
-      </button>
-      <div className="toolbar-spacer" />
-      <div className="search">
-        <Icon name="search" size={14} />
-        <input type="search" placeholder="搜索名称 / 编号 / 备注" value={p.filter} onChange={(e) => p.onFilter(e.target.value)} />
-      </div>
-      <div className="segmented" role="radiogroup" aria-label="视图">
-        <button className={p.view === 'grid' ? 'active' : ''} onClick={() => p.onView('grid')} title="卡片视图" aria-label="卡片视图">
-          <Icon name="grid" size={15} />
-        </button>
-        <button className={p.view === 'list' ? 'active' : ''} onClick={() => p.onView('list')} title="列表视图" aria-label="列表视图">
-          <Icon name="list" size={15} />
-        </button>
-      </div>
+      {n > 0 && (
+        <div className="selection-bar" role="toolbar" aria-label="所选实例操作">
+          <span className="selection-context">已选择 <strong>{n}</strong> 台</span>
+          <div className="toolbar-group">
+            <button className="btn sm success" disabled={!startable.length} title={why(startable.length, '所选实例都已在运行')} onClick={() => p.onStart(startable)}>
+              <Icon name="play" size={13} />
+              启动{suffix(startable.length)}
+            </button>
+            <button className="btn sm" disabled={!stoppable.length} title={why(stoppable.length, '所选实例都未运行')} onClick={() => p.onStop(stoppable)}>
+              <Icon name="stop" size={13} />
+              停止{suffix(stoppable.length)}
+            </button>
+            <button className="btn sm" disabled={!restartable.length} title={why(restartable.length, '所选实例都未运行')} onClick={() => p.onRestart(restartable)}>
+              <Icon name="restart" size={14} />
+              重启
+            </button>
+          </div>
+          <div className="toolbar-sep" />
+          <div className="toolbar-group">
+            <button className="btn sm" disabled={!running.length} title={why(running.length, '需要运行中的实例')} onClick={() => p.onInstallApk(running)}>
+              <Icon name="package" size={14} />
+              安装 APK
+            </button>
+            <button className="btn sm" disabled={!running.length} title={why(running.length, '需要运行中的实例')} onClick={() => p.onAppLaunch(running)}>
+              <Icon name="rocket" size={14} />
+              启动应用
+            </button>
+            <button className="btn sm" disabled={!running.length} title={why(running.length, '需要运行中的实例')} onClick={() => p.onShell(running)}>
+              <Icon name="terminal" size={14} />
+              Shell
+            </button>
+            <button className="btn sm" onClick={p.onScripts}>
+              <Icon name="script" size={14} />
+              运行脚本
+            </button>
+          </div>
+          <div className="toolbar-spacer" />
+          <button className="btn sm danger-ghost" title={n === 0 ? NEED_SELECTION : undefined} onClick={() => p.onDelete(all)}>
+            <Icon name="trash" size={14} />
+            删除
+          </button>
+        </div>
+      )}
     </div>
   );
 }

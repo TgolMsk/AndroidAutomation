@@ -1,0 +1,15 @@
+Generated with the built-in image_gen tool on 2026-09-23.
+The selected output was downsampled to build/icon.png at 1024x1024.
+
+Exact prompt:
+
+Use case: logo-brand
+Asset type: final macOS application icon, 1024 × 1024 square.
+Primary request: Create a premium, minimal icon for a desktop manager of multiple Android virtual devices. The central symbol is a compact 2 × 2 grid of four distinct rounded device-screen panes, with one pane gently illuminated to signal the active instance and the others subdued. Make the device-grid silhouette unmistakable at 16–32 px.
+Style/medium: precise, vector-friendly product icon with restrained dimensional depth, crisp edges, no photographic texture, no playful cartoon styling.
+Composition/framing: centered geometric symbol with generous breathing room inside a single rounded-square macOS icon tile; strong hierarchy, balanced symmetry, no extra objects.
+Lighting/mood: calm, focused, professional dark-mode software tool.
+Color palette: deep obsidian navy (#0d121a, #17212d), cool periwinkle blue (#83b2ff), tiny mint accent (#62d49c); restrained soft glow only on the active pane.
+Materials/textures: subtle satin glass and anodized metal edge treatment, polished but not glossy.
+Constraints: transparent pixels outside the rounded-square tile; clean 1024 px square source; visually compelling at full size and recognizable when reduced.
+Avoid: all text, letters, numerals, watermark, mascots, game IP, Android robot or trademark, generic smartphone photo, busy circuitry, gradients that overwhelm the geometry.

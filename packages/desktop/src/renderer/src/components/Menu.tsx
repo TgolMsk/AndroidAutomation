@@ -58,7 +58,7 @@ export function DropdownMenu({
 
   return (
     <div className="dropdown" ref={root} onClick={(e) => e.stopPropagation()}>
-      <button className={`${className}${open ? ' active' : ''}`} title={title} aria-haspopup="menu" aria-expanded={open} onClick={toggle}>
+      <button type="button" className={`${className}${open ? ' active' : ''}`} title={title} aria-label={title} aria-haspopup="menu" aria-expanded={open} onClick={toggle}>
         {trigger}
       </button>
       {open && (

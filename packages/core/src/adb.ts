@@ -15,6 +15,91 @@ export interface AdbDeviceEntry {
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const RAW_RGBA_8888 = 1;
+const RAW_HEADER_LENGTHS = [16, 12] as const;
+const MAX_RAW_DIMENSION = 20_000;
+// execFileBuffer also caps binary stdout at 128 MiB. Reject impossible headers before copying pixels.
+const MAX_RAW_BYTES = 128 * 1024 * 1024;
+
+/** `adb exec-out screencap` frame with tightly packed RGBA_8888 pixels. */
+export interface RawScreencapFrame {
+  width: number;
+  height: number;
+  format: number;
+  data: Uint8Array;
+  capturedAt: number;
+}
+
+/** Parse the 12- or 16-byte Android raw screencap header and remove any row padding. */
+export function parseRawScreencap(buf: Uint8Array): RawScreencapFrame {
+  const length = buf.byteLength;
+  if (length < 12 || length > MAX_RAW_BYTES) {
+    throw new AvdmError('COMMAND_FAILED', `原始截图长度异常: ${length} 字节`);
+  }
+
+  const view = new DataView(buf.buffer, buf.byteOffset, length);
+  const width = view.getUint32(0, true);
+  const height = view.getUint32(4, true);
+  const format = view.getUint32(8, true);
+  const packedBytes = width * height * 4;
+  if (
+    width === 0 || height === 0 || width > MAX_RAW_DIMENSION || height > MAX_RAW_DIMENSION ||
+    packedBytes > MAX_RAW_BYTES - 12
+  ) {
+    throw new AvdmError('COMMAND_FAILED', `原始截图尺寸异常: ${width}×${height}`);
+  }
+  if (format !== RAW_RGBA_8888) {
+    throw new AvdmError('COMMAND_FAILED', `不支持的原始截图像素格式: ${format}（需要 RGBA_8888）`);
+  }
+
+  // Prefer a frame with no padding. ADB's 16-byte variant includes a color-space word;
+  // older versions use 12 bytes. The total length is the only reliable stride source.
+  let headerLength = 0;
+  let stride = 0;
+  for (const candidate of RAW_HEADER_LENGTHS) {
+    if (length - candidate === packedBytes) {
+      headerLength = candidate;
+      stride = width;
+      break;
+    }
+  }
+  if (headerLength === 0) {
+    for (const candidate of RAW_HEADER_LENGTHS) {
+      const bodyLength = length - candidate;
+      const rowUnit = height * 4;
+      if (bodyLength <= packedBytes || bodyLength % rowUnit !== 0) continue;
+      const candidateStride = bodyLength / rowUnit;
+      if (candidateStride >= width) {
+        headerLength = candidate;
+        stride = candidateStride;
+        break;
+      }
+    }
+  }
+  if (headerLength === 0) {
+    throw new AvdmError('COMMAND_FAILED', `原始截图长度与尺寸不匹配: ${length} 字节，${width}×${height}`);
+  }
+
+  // A 16-byte header truncated by four bytes can masquerade as a 12-byte frame.
+  // Zero is the usual color-space word; reject the ambiguous case instead of returning shifted pixels.
+  if (headerLength === 12 && length >= 16 && view.getUint32(12, true) === 0) {
+    throw new AvdmError('COMMAND_FAILED', '原始截图头部不明确，可能已截断');
+  }
+
+  const rowBytes = width * 4;
+  let data: Uint8Array;
+  if (stride === width) {
+    data = buf.subarray(headerLength, headerLength + packedBytes);
+  } else {
+    data = new Uint8Array(packedBytes);
+    const strideBytes = stride * 4;
+    for (let y = 0; y < height; y++) {
+      const from = headerLength + y * strideBytes;
+      data.set(buf.subarray(from, from + rowBytes), y * rowBytes);
+    }
+  }
+  return { width, height, format, data, capturedAt: Date.now() };
+}
 
 /** Parse `adb devices [-l]` output. */
 export function parseAdbDevices(text: string): AdbDeviceEntry[] {
@@ -243,6 +328,15 @@ export class AdbDevice {
       throw new AvdmError('COMMAND_FAILED', `截图失败: 设备 ${this.serial} 返回的数据不是 PNG`);
     }
     return buf;
+  }
+
+  /** `exec-out screencap` → tightly packed RGBA_8888 pixels. */
+  async screencapRaw(): Promise<RawScreencapFrame> {
+    const buf = await execFileBuffer(this.adb.bin, ['-s', this.serial, 'exec-out', 'screencap'], {
+      timeoutMs: 20_000,
+      maxBuffer: MAX_RAW_BYTES,
+    });
+    return parseRawScreencap(buf);
   }
 
   async tap(x: number, y: number): Promise<void> {

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>AVD multi-instance app icon</title>
+  <rect x="28" y="28" width="968" height="968" rx="224" fill="#0d1725"/>
+  <rect x="39" y="39" width="946" height="946" rx="213" fill="none" stroke="#33465f" stroke-width="22"/>
+  <rect x="188" y="166" width="482" height="598" rx="85" fill="#264368"/>
+  <rect x="252" y="230" width="482" height="598" rx="85" fill="#3979dc"/>
+  <rect x="316" y="294" width="482" height="598" rx="85" fill="#b7d4ff"/>
+  <rect x="366" y="344" width="382" height="498" rx="43" fill="#14283f"/>
+  <rect x="416" y="394" width="160" height="24" rx="12" fill="#7cafff"/>
+  <rect x="416" y="446" width="238" height="24" rx="12" fill="#3c7bdb"/>
+  <circle cx="557" cy="752" r="27" fill="#62d49c"/>
+</svg>

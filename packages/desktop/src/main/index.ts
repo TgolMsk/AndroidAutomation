@@ -1,7 +1,9 @@
 import { watchBuild } from './build-watch';
+import { defaultHome } from '@avdm/core';
 import { writeFile } from 'node:fs/promises';
 import { app, dialog, session, type BrowserWindow, type MessageBoxOptions } from 'electron';
 import { registerIpcHandlers } from './ipc-handlers';
+import { AutomationHost } from './automation/host';
 import { LiveService } from './live';
 import { ManagerHost } from './manager-host';
 import { installAppMenu } from './menu';
@@ -33,7 +35,8 @@ function bootstrap(): void {
   const thumbs = new ThumbnailService(host);
   const windows = new WindowManager(host, live);
   const sdkInstall = new SdkInstallTask();
-  registerIpcHandlers({ host, live, thumbs, windows, sdkInstall });
+  const automation = new AutomationHost(host, defaultHome());
+  registerIpcHandlers({ host, live, thumbs, windows, sdkInstall, automation });
 
   app.on('second-instance', () => {
     if (app.isReady()) windows.showMain();
@@ -46,6 +49,8 @@ function bootstrap(): void {
     installAppMenu(host);
     const win = windows.showMain();
     scheduleVerificationScreenshot(win, windows);
+    void automation.restoreSchedules().catch((error: unknown) =>
+      console.error('[avdm] 自动化调度恢复失败:', error));
     // Open the manager eagerly so the health monitor runs even before the UI asks for data.
     host.get().catch((err: unknown) => console.error('[avdm]', err));
     watchBuild();
@@ -65,6 +70,9 @@ function bootstrap(): void {
     // A running SDK install is aborted and awaited: curl/unzip get killed (they would otherwise outlive the
     // app and keep writing the .part file) and the installer finishes or rolls back its directory moves.
     await withTimeout(sdkInstall.abortAndWait(), SDK_ABORT_WAIT_MS, undefined);
+    // Cancellation gives the worker up to 5 s to finish, then waits for any
+    // ADB command already in flight before releasing the instance lease.
+    await withTimeout(automation.dispose(), 15_000, undefined);
     thumbs.dispose();
     live.dispose();
     await withTimeout(host.dispose(), 5000, undefined);
@@ -120,17 +128,22 @@ async function confirmQuitDuringInstall(parent: BrowserWindow | undefined): Prom
  * Verification hook for the integration step / docs screenshots. With AVDM_SCREENSHOT_PATH set, capture a
  * window after it finished loading (AVDM_SCREENSHOT_DELAY_MS, default 3000), write a PNG there and quit.
  * With AVDM_OPEN_LIVE=<index> as well, the live window of that instance is opened and captured instead.
+ * AVDM_SCREENSHOT_ROUTE=automation captures the automation page in the main window.
  */
 function scheduleVerificationScreenshot(win: BrowserWindow, windows: WindowManager): void {
   const target = process.env['AVDM_SCREENSHOT_PATH'];
   if (!target) return;
   const delayMs = Math.max(0, Number(process.env['AVDM_SCREENSHOT_DELAY_MS']) || 3000);
   const liveRaw = process.env['AVDM_OPEN_LIVE'];
+  const route = process.env['AVDM_SCREENSHOT_ROUTE'];
   const liveIndex = liveRaw !== undefined && /^\d+$/.test(liveRaw.trim()) ? Number(liveRaw) : undefined;
   win.webContents.once('did-finish-load', () => {
     void (async () => {
       try {
         let subject: BrowserWindow | undefined = win;
+        if (route === 'automation') {
+          await win.webContents.executeJavaScript("window.location.hash = '#/automation'", true);
+        }
         if (liveIndex !== undefined) {
           await windows.openLive(liveIndex);
           subject = windows.liveWindow(liveIndex);
