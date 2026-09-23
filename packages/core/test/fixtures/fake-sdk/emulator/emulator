@@ -1,0 +1,707 @@
+#!/usr/bin/env node
+// Fake Android Emulator used by @avdm/core tests (NOT the real emulator).
+//
+// Behaviour:
+//   -help / -help-<topic> / -version / -list-avds / -accel-check   informational, exit 0
+//   otherwise: needs -avd <name> with $ANDROID_AVD_HOME/<name>.ini, then
+//     * console (telnet-like) server on 127.0.0.1:<-port>         ("avd name", "kill", "ping", "help" …)
+//     * gRPC EmulatorController on 127.0.0.1:<-grpc>              (needs FAKE_PROTO_PATH)
+//     * discovery file $AVDM_DISCOVERY_DIR/pid_<pid>.ini
+//   and exits 0 on SIGTERM/SIGINT/console kill (removing the discovery file).
+//
+// Environment knobs:
+//   AVDM_DISCOVERY_DIR     (required) where pid_<pid>.ini is written
+//   FAKE_PROTO_PATH        emulator_controller.proto; @grpc/* are resolved from the package owning it
+//   FAKE_REQUIRE_FROM      optional file/dir to resolve @grpc/* from instead
+//   FAKE_BOOT_MS           ms until getStatus().booted / sys.boot_completed (default 300)
+//   FAKE_GRPC_TOKEN        require "authorization: Bearer <token>" and publish grpc.token
+//   FAKE_CONSOLE_TOKEN_FILE  require console `auth <token>` (token read from this file)
+//   FAKE_INPUT_LOG         append JSON lines for gRPC sendTouch/sendKey/sendMouse/setVmState
+//   FAKE_KILL_DELAY_MS     delay between console `kill` and exit (simulates snapshot save)
+//   FAKE_CRASH_AFTER_MS    exit(3) after N ms WITHOUT cleanup (stale discovery file, like a crash)
+//   FAKE_FAIL_START        print a fatal error and exit(1) right away
+//   FAKE_MAX_LIFETIME_MS   safety net: exit after N ms
+//   FAKE_SCREEN_FPS        streamScreenshot keeps sending frames at this rate (default: 3 frames, then idle)
+//
+// Screenshots are a synthetic "home screen" (per-instance colours, big #<index>, clock, a dot at the last
+// touch) rendered at the requested size, so UIs built on top show something recognisable.
+import fs from 'node:fs';
+import net from 'node:net';
+import path from 'node:path';
+import zlib from 'node:zlib';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+
+const VERSION = '37.1.11.0';
+const env = process.env;
+const argv = process.argv.slice(2);
+const SCRIPT = fileURLToPath(import.meta.url);
+const SDK_ROOT = path.resolve(path.dirname(SCRIPT), '..');
+const HELP_FLAGS = [
+  ['-sysdir <dir>', 'search for system disk images in <dir>'],
+  ['-avd <name>', 'use a specific android virtual device'],
+  ['-list-avds', 'list available AVDs'],
+  ['-port <port>', 'TCP port that will be used for the console'],
+  ['-grpc <port>', 'TCP ports used for the gRPC bridge.'],
+  ['-grpc-use-token', 'Use the emulator console token for gRPC authentication.'],
+  ['-no-window', 'disable graphical window display'],
+  ['-no-snapshot', 'perform a full boot and do not auto-save, but qemu vmload and vmsave operate on snapstorage'],
+  ['-no-snapshot-load', 'do not auto-start from snapshot: perform a full boot'],
+  ['-no-boot-anim', 'disable animation for faster boot'],
+  ['-no-audio', 'disable audio support'],
+  ['-gpu <mode>', 'set hardware OpenGLES emulation mode'],
+  ['-feature <name|-name>', 'Force-enable or disable (-name) the features'],
+  ['-read-only', 'allow running multiple instances of emulators on the same AVD, but cannot save snapshot.'],
+  ['-http-proxy <proxy>', 'make TCP connections through a HTTP/HTTPS proxy'],
+  ['-no-metrics', 'disable metrics collection'],
+  ['-android-serialno <serial>', 'override Android guest serial number'],
+  ['-accel-check', 'check whether acceleration can be used, then exit'],
+  ['-version', 'display emulator version number'],
+  ['-help', 'print this help'],
+];
+const VALUE_FLAGS = new Set([
+  '-avd', '-port', '-grpc', '-gpu', '-http-proxy', '-sysdir', '-datadir', '-memory', '-cores', '-skin',
+  '-camera-back', '-camera-front', '-partition-size', '-feature', '-logcat', '-dns-server', '-timezone', '-android-serialno',
+]);
+
+function log(level, msg) {
+  process.stdout.write(`${level.padEnd(7)}| ${msg}\n`);
+}
+
+function fail(msg, code = 1) {
+  process.stderr.write(`${msg}\n`);
+  process.exit(code);
+}
+
+function parseArgs(list) {
+  const opts = {};
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    if (a === '-qemu') break;
+    if (a.startsWith('@')) opts['-avd'] = a.slice(1);
+    else if (VALUE_FLAGS.has(a)) opts[a] = list[++i];
+    else if (a.startsWith('-')) opts[a] = true;
+  }
+  return opts;
+}
+
+function parseIni(text) {
+  const out = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith(';')) continue;
+    const eq = line.indexOf('=');
+    if (eq > 0) out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+function readIni(file) {
+  try {
+    return parseIni(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
+const opts = parseArgs(argv);
+
+// ── informational modes ──
+if (opts['-help'] || opts['-h']) {
+  const lines = ['Android Emulator usage: emulator [options] [-qemu args]', '  options:'];
+  for (const [flag, desc] of HELP_FLAGS) lines.push(`    ${flag.padEnd(62)}${desc}`);
+  lines.push('', '     @<name>                                                      same as \'-avd <name>\'', '');
+  process.stdout.write(lines.join('\n') + '\n');
+  process.exit(0);
+}
+const helpTopic = argv.find((a) => a.startsWith('-help-'));
+if (helpTopic) {
+  process.stdout.write(`  (fake emulator) help for ${helpTopic.slice(6)}\n`);
+  process.exit(0);
+}
+if (opts['-accel-check']) {
+  process.stdout.write('0\nHVF (version 12.x) is installed and usable.\naccel\n');
+  process.exit(0);
+}
+if (opts['-version']) {
+  process.stdout.write(`Android emulator version ${VERSION} (build_id fake) (CL:N/A)\n`);
+  process.exit(0);
+}
+if (opts['-list-avds']) {
+  const home = env.ANDROID_AVD_HOME;
+  const names = home && fs.existsSync(home) ? fs.readdirSync(home).filter((f) => f.endsWith('.ini')).map((f) => f.slice(0, -4)) : [];
+  process.stdout.write(names.sort().map((n) => `${n}\n`).join(''));
+  process.exit(0);
+}
+
+// ── launch mode ──
+if (env.FAKE_FAIL_START) fail('FATAL  | (fake) simulated start failure');
+const discoveryDir = env.AVDM_DISCOVERY_DIR;
+if (!discoveryDir) fail('FATAL  | (fake) AVDM_DISCOVERY_DIR must be set for the fake emulator');
+const avdName = opts['-avd'];
+if (!avdName || avdName === true) fail("ERROR  | No AVD specified. Use '@foo' or '-avd foo' to launch a virtual device named 'foo'");
+const avdHome = env.ANDROID_AVD_HOME;
+const avdIniFile = avdHome ? path.join(avdHome, `${avdName}.ini`) : undefined;
+const avdIni = avdIniFile ? readIni(avdIniFile) : undefined;
+if (!avdIni) fail(`PANIC: Unknown AVD name [${avdName}], use -list-avds to see valid list.\nHINT: ANDROID_AVD_HOME=${avdHome ?? ''}`);
+const avdDir = avdIni.path || path.join(avdHome, `${avdName}.avd`);
+if (!fs.existsSync(avdDir)) fail(`PANIC: Broken AVD system path. Check your ANDROID_SDK_ROOT value [${avdDir}]!`);
+const config = readIni(path.join(avdDir, 'config.ini')) ?? {};
+const sdkRoot = env.ANDROID_SDK_ROOT || env.ANDROID_HOME;
+const sysdir = config['image.sysdir.1'];
+if (sysdir && sdkRoot && !fs.existsSync(path.join(sdkRoot, sysdir, 'system.img'))) {
+  fail(`PANIC: Cannot find AVD system path. Please define ANDROID_SDK_ROOT (sysdir ${path.join(sdkRoot, sysdir)})`);
+}
+const displayWidth = Number(config['hw.lcd.width']) || 1280;
+const displayHeight = Number(config['hw.lcd.height']) || 720;
+const consolePort = Number(opts['-port'] ?? 5554);
+const adbPort = consolePort + 1;
+const grpcPort = Number(opts['-grpc'] ?? 8554 + (consolePort - 5554) / 2);
+const bootMs = Number(env.FAKE_BOOT_MS ?? 300);
+// Like the real emulator: -grpc-use-token makes gRPC require a bearer token published as grpc.token.
+const grpcToken = env.FAKE_GRPC_TOKEN || (opts['-grpc-use-token'] ? `faketoken${process.pid}${startedAtSeed()}` : '');
+function startedAtSeed() {
+  return Math.floor(Math.random() * 1e9).toString(36);
+}
+const startedAt = Date.now();
+const bootAt = startedAt + bootMs;
+const quickBoot = !opts['-no-snapshot'] && !opts['-read-only'];
+const discoveryFile = path.join(discoveryDir, `pid_${process.pid}.ini`);
+const vm = { state: 'RUNNING' };
+
+log('INFO', `(fake) Android emulator version ${VERSION}`);
+log('INFO', `argv: ${argv.join(' ')}`);
+log('INFO', `avd ${avdName} dir ${avdDir}, display ${displayWidth}x${displayHeight}, gpu ${opts['-gpu'] ?? 'auto'}`);
+{
+  const hasSnapshot = fs.existsSync(path.join(avdDir, 'snapshots', 'default_boot', 'snapshot.pb'));
+  if (quickBoot && hasSnapshot && !opts['-no-snapshot-load']) log('INFO', '(fake) loading quick boot snapshot default_boot');
+  else log('INFO', '(fake) cold boot');
+}
+if (opts['-http-proxy']) log('INFO', `http proxy: ${String(opts['-http-proxy']).replace(/\/\/[^@/]*@/, '//***@')}`);
+
+let shuttingDown = false;
+const sockets = new Set();
+let consoleServer;
+let grpcServer;
+
+function shutdown(code, reason) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log('INFO', `shutting down: ${reason}`);
+  try {
+    fs.rmSync(discoveryFile, { force: true });
+  } catch {}
+  try {
+    fs.rmSync(path.join(avdDir, 'multiinstance.lock'), { force: true });
+  } catch {}
+  for (const s of sockets) s.destroy();
+  try {
+    consoleServer?.close();
+  } catch {}
+  try {
+    grpcServer?.forceShutdown();
+  } catch {}
+  process.exit(code);
+}
+
+function saveSnapshot() {
+  if (!quickBoot) return;
+  try {
+    const dir = path.join(avdDir, 'snapshots', 'default_boot');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'snapshot.pb'), `fake snapshot saved at ${new Date().toISOString()}\n`);
+    fs.writeFileSync(path.join(dir, 'ram.bin'), Buffer.alloc(1024));
+    log('INFO', 'saved quick boot snapshot default_boot');
+  } catch (err) {
+    log('WARNING', `snapshot save failed: ${err.message}`);
+  }
+}
+
+function gracefulKill(reason) {
+  const delay = Number(env.FAKE_KILL_DELAY_MS ?? 0);
+  setTimeout(() => {
+    saveSnapshot();
+    shutdown(0, reason);
+  }, delay);
+}
+
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => shutdown(0, sig));
+
+// ── AVD runtime files (like the real emulator creates on first boot) ──
+function prepareAvdRuntimeFiles() {
+  const write = (name, content, onlyIfMissing = false) => {
+    const file = path.join(avdDir, name);
+    if (onlyIfMissing && fs.existsSync(file)) return;
+    fs.writeFileSync(file, content);
+  };
+  write('multiinstance.lock', `${process.pid}\n`);
+  write('hardware-qemu.ini', `avd.name = ${avdName}\nhw.lcd.width = ${displayWidth}\nhw.lcd.height = ${displayHeight}\n`);
+  write('emulator-user.ini', 'window.x = 0\nwindow.y = 0\n', true);
+  write('userdata-qemu.img', 'fake userdata\n', true);
+  if (sysdir && sdkRoot) {
+    for (const img of ['system.img', 'vendor.img']) {
+      write(`${img}.qcow2`, `fake-qcow2 backing=${path.join(sdkRoot, sysdir, img)}\n`, true);
+    }
+  }
+}
+
+// ── console ──
+const CONSOLE_BANNER = "Android Console: type 'help' for a list of commands\r\nOK\r\n";
+
+function consoleToken() {
+  const file = env.FAKE_CONSOLE_TOKEN_FILE;
+  if (!file) return undefined;
+  try {
+    return fs.readFileSync(file, 'utf8').trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function handleConsole(socket) {
+  sockets.add(socket);
+  socket.on('close', () => sockets.delete(socket));
+  socket.on('error', () => {});
+  socket.setEncoding('utf8');
+  const token = consoleToken();
+  let authed = !token;
+  if (authed) socket.write(CONSOLE_BANNER);
+  else {
+    socket.write(
+      'Android Console: Authentication required\r\n' +
+        "Android Console: type 'auth <auth_token>' to authenticate\r\n" +
+        'Android Console: you can find your <auth_token> in \r\n' +
+        `'${env.FAKE_CONSOLE_TOKEN_FILE}'\r\nOK\r\n`,
+    );
+  }
+  let pending = '';
+  socket.on('data', (chunk) => {
+    pending += chunk;
+    let nl;
+    while ((nl = pending.indexOf('\n')) >= 0) {
+      const line = pending.slice(0, nl).replace(/\r$/, '').trim();
+      pending = pending.slice(nl + 1);
+      if (!line) continue;
+      const [cmd, ...rest] = line.split(/\s+/);
+      const arg = rest.join(' ');
+      if (cmd === 'quit' || cmd === 'exit') {
+        socket.end();
+        return;
+      }
+      if (cmd === 'auth') {
+        if (!token || arg === token) {
+          authed = true;
+          socket.write(CONSOLE_BANNER);
+        } else {
+          socket.write('KO: authentication token does not match ~/.emulator_console_auth_token\r\n');
+        }
+        continue;
+      }
+      if (!authed && cmd !== 'help') {
+        socket.write("KO: unknown command, try 'help'\r\n");
+        continue;
+      }
+      switch (line) {
+        case 'help':
+          socket.write('Android console commands:\r\n\r\n    help|h|?         print a list of commands\r\n    avd              control virtual device execution\r\n    kill             kill the emulator instance\r\n    ping             check if the emulator is alive\r\nOK\r\n');
+          break;
+        case 'ping':
+          socket.write('I am alive!\r\nOK\r\n');
+          break;
+        case 'avd name':
+          socket.write(`${avdName}\r\nOK\r\n`);
+          break;
+        case 'avd path':
+          socket.write(`${avdDir}\r\nOK\r\n`);
+          break;
+        case 'avd discoverypath':
+          socket.write(`${discoveryFile}\r\nOK\r\n`);
+          break;
+        case 'avd status':
+          socket.write(`virtual device is ${vm.state === 'PAUSED' ? 'stopped' : 'running'}\r\nOK\r\n`);
+          break;
+        case 'avd stop':
+          vm.state = 'PAUSED';
+          socket.write('OK\r\n');
+          break;
+        case 'avd start':
+          vm.state = 'RUNNING';
+          socket.write('OK\r\n');
+          break;
+        case 'kill':
+          log('INFO', 'console: kill');
+          socket.end('OK: killing emulator, bye bye\r\n');
+          gracefulKill('console kill');
+          return;
+        default:
+          socket.write("KO: unknown command, try 'help'\r\n");
+      }
+    }
+  });
+}
+
+function listen(server, port) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+}
+
+// ── gRPC ──
+function loadGrpc() {
+  const protoPath = env.FAKE_PROTO_PATH;
+  if (!protoPath || !fs.existsSync(protoPath)) {
+    log('WARNING', 'FAKE_PROTO_PATH not set or missing: gRPC server disabled');
+    return undefined;
+  }
+  let from = env.FAKE_REQUIRE_FROM || path.join(path.dirname(protoPath), '..', 'package.json');
+  if (fs.existsSync(from) && fs.statSync(from).isDirectory()) from = path.join(from, 'package.json');
+  const require = createRequire(from);
+  const grpc = require('@grpc/grpc-js');
+  const loader = require('@grpc/proto-loader');
+  const def = loader.loadSync(protoPath, { keepCase: true, longs: Number, enums: String, defaults: true, oneofs: true });
+  const service = grpc.loadPackageDefinition(def).android.emulation.control.EmulatorController.service;
+  return { grpc, service };
+}
+
+function recordInput(type, request) {
+  if (!env.FAKE_INPUT_LOG) return;
+  fs.appendFileSync(env.FAKE_INPUT_LOG, JSON.stringify({ type, port: consolePort, at: Date.now(), request }) + '\n');
+}
+
+function scaledSize(reqWidth, reqHeight) {
+  let w = Number(reqWidth) || 0;
+  let h = Number(reqHeight) || 0;
+  if (!w && !h) return [displayWidth, displayHeight];
+  if (w && !h) return [w, Math.max(1, Math.round((w * displayHeight) / displayWidth))];
+  if (h && !w) return [Math.max(1, Math.round((h * displayWidth) / displayHeight)), h];
+  const scale = Math.min(w / displayWidth, h / displayHeight);
+  return [Math.max(1, Math.round(displayWidth * scale)), Math.max(1, Math.round(displayHeight * scale))];
+}
+
+// ── synthetic screen ──
+const instanceIndex = Math.max(0, Math.round((consolePort - 5554) / 2));
+const lastTouch = { x: 0, y: 0, at: 0 };
+const GLYPHS = {
+  0: ['111', '101', '101', '101', '111'],
+  1: ['010', '110', '010', '010', '111'],
+  2: ['111', '001', '111', '100', '111'],
+  3: ['111', '001', '111', '001', '111'],
+  4: ['101', '101', '111', '001', '001'],
+  5: ['111', '100', '111', '001', '111'],
+  6: ['111', '100', '111', '101', '111'],
+  7: ['111', '001', '010', '010', '010'],
+  8: ['111', '101', '111', '101', '111'],
+  9: ['111', '101', '111', '001', '111'],
+  ':': ['0', '1', '0', '1', '0'],
+  '#': ['01010', '11111', '01010', '11111', '01010'],
+};
+
+function hsl(h, s, l) {
+  const k = (n) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
+}
+
+/** Render the fake screen as packed RGB/RGBA rows of width x height. */
+function renderScreen(width, height, bpp, seq) {
+  const buf = Buffer.alloc(width * height * bpp, 0xff);
+  const put = (x0, y0, x1, y1, [r, g, b], alpha = 1) => {
+    const xa = Math.max(0, Math.floor(x0));
+    const ya = Math.max(0, Math.floor(y0));
+    const xb = Math.min(width, Math.ceil(x1));
+    const yb = Math.min(height, Math.ceil(y1));
+    for (let y = ya; y < yb; y++) {
+      let o = (y * width + xa) * bpp;
+      for (let x = xa; x < xb; x++, o += bpp) {
+        buf[o] = buf[o] + (r - buf[o]) * alpha;
+        buf[o + 1] = buf[o + 1] + (g - buf[o + 1]) * alpha;
+        buf[o + 2] = buf[o + 2] + (b - buf[o + 2]) * alpha;
+      }
+    }
+  };
+  const disc = (cx, cy, rad, color, alpha) => {
+    for (let dy = -rad; dy <= rad; dy++) {
+      const half = Math.sqrt(Math.max(0, rad * rad - dy * dy));
+      put(cx - half, cy + dy, cx + half, cy + dy + 1, color, alpha);
+    }
+  };
+  const text = (str, x, y, cell, color, alpha = 1) => {
+    for (const ch of str) {
+      const glyph = GLYPHS[ch];
+      if (!glyph) {
+        x += cell * 2;
+        continue;
+      }
+      glyph.forEach((row, gy) =>
+        [...row].forEach((bit, gx) => {
+          if (bit === '1') put(x + gx * cell, y + gy * cell, x + (gx + 1) * cell, y + (gy + 1) * cell, color, alpha);
+        }),
+      );
+      x += (glyph[0].length + 1) * cell;
+    }
+  };
+  const textWidth = (str, cell) => [...str].reduce((w, ch) => w + ((GLYPHS[ch]?.[0].length ?? 1) + 1) * cell, -cell);
+  const unit = Math.min(width, height) / 100;
+  const now = Date.now();
+
+  if (now < bootAt) {
+    // Boot animation: black screen with a sweeping bar.
+    put(0, 0, width, height, [0, 0, 0]);
+    const p = ((now - startedAt) / 900) % 1;
+    put(width * 0.35, height * 0.5 - unit, width * 0.65, height * 0.5 + unit, [60, 60, 60]);
+    put(width * (0.35 + 0.25 * p), height * 0.5 - unit, width * (0.4 + 0.25 * p), height * 0.5 + unit, [210, 210, 210]);
+    return buf;
+  }
+
+  // Wallpaper: diagonal gradient in the instance's hue.
+  const hue = (instanceIndex * 47 + 200) % 360;
+  const [r1, g1, b1] = hsl(hue, 0.55, 0.32);
+  const [r2, g2, b2] = hsl((hue + 40) % 360, 0.6, 0.55);
+  for (let y = 0; y < height; y++) {
+    let o = y * width * bpp;
+    for (let x = 0; x < width; x++, o += bpp) {
+      const t = (x / width) * 0.55 + (y / height) * 0.45;
+      buf[o] = r1 + (r2 - r1) * t;
+      buf[o + 1] = g1 + (g2 - g1) * t;
+      buf[o + 2] = b1 + (b2 - b1) * t;
+    }
+  }
+  const white = [255, 255, 255];
+  // Status bar with clock and indicators.
+  const bar = unit * 6;
+  put(0, 0, width, bar, [0, 0, 0], 0.25);
+  const d = new Date(now);
+  const clock = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  text(clock, unit * 3, bar * 0.2, bar * 0.12, white);
+  for (let i = 0; i < 3; i++) put(width - unit * (4 + i * 4), bar * 0.3, width - unit * (2 + i * 4), bar * 0.7, white, 0.9);
+  // Big "#<index>" label.
+  const label = `#${instanceIndex}`;
+  const cell = unit * 4;
+  const lx = (width - textWidth(label, cell)) / 2;
+  const ly = height * 0.36 - cell * 2.5;
+  text(label, lx + cell * 0.4, ly + cell * 0.4, cell, [0, 0, 0], 0.25);
+  text(label, lx, ly, cell, white);
+  // Dock with app icons.
+  const icon = unit * 11;
+  const gap = unit * 5;
+  const n = 5;
+  const dockW = n * icon + (n - 1) * gap;
+  const dockY = height - unit * 30;
+  put((width - dockW) / 2 - gap, dockY - gap, (width + dockW) / 2 + gap, dockY + icon + gap, white, 0.18);
+  for (let i = 0; i < n; i++) {
+    const x = (width - dockW) / 2 + i * (icon + gap);
+    put(x, dockY, x + icon, dockY + icon, hsl((hue + 90 + i * 55) % 360, 0.7, 0.58));
+  }
+  // Activity indicator: moves with each streamed frame.
+  const px = ((seq * 7 + now / 40) % 100) / 100;
+  put(width * 0.3, dockY + icon + gap * 1.8, width * 0.7, dockY + icon + gap * 1.8 + unit, white, 0.2);
+  put(width * (0.3 + 0.36 * px), dockY + icon + gap * 1.8, width * (0.34 + 0.36 * px), dockY + icon + gap * 1.8 + unit, white, 0.8);
+  // Gesture pill.
+  put(width / 2 - unit * 12, height - unit * 4, width / 2 + unit * 12, height - unit * 3, white, 0.85);
+  // Touch feedback.
+  if (now - lastTouch.at < 1200) {
+    const tx = (lastTouch.x / displayWidth) * width;
+    const ty = (lastTouch.y / displayHeight) * height;
+    disc(tx, ty, Math.max(2, Math.round(unit * 4)), white, 0.55);
+  }
+  return buf;
+}
+
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+function crc32(data) {
+  let c = 0xffffffff;
+  for (const byte of data) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function encodePng(rgb, width, height) {
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type RGB
+  const stride = width * 3;
+  const raw = Buffer.alloc((stride + 1) * height);
+  for (let y = 0; y < height; y++) rgb.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw, { level: 1 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function makeImage(req, seq) {
+  const format = req.format || 'PNG';
+  const [width, height] = scaledSize(req.width, req.height);
+  let image;
+  if (format === 'RGBA8888') {
+    image = renderScreen(width, height, 4, seq);
+  } else if (format === 'RGB888') {
+    image = renderScreen(width, height, 3, seq);
+  } else {
+    image = encodePng(renderScreen(width, height, 3, seq), width, height);
+  }
+  return {
+    format: { format, width, height, display: req.display || 0 },
+    width,
+    height,
+    image,
+    seq,
+    timestampUs: Date.now() * 1000,
+  };
+}
+
+async function startGrpc() {
+  const loaded = loadGrpc();
+  if (!loaded) return undefined;
+  const { grpc, service } = loaded;
+  const authError = (call) => {
+    if (!grpcToken) return null;
+    const got = call.metadata.get('authorization')[0];
+    if (got === `Bearer ${grpcToken}`) return null;
+    return { code: grpc.status.UNAUTHENTICATED, details: 'Missing or invalid authorization token (fake)' };
+  };
+  const unary = (fn) => (call, callback) => {
+    const err = authError(call);
+    if (err) return callback(err);
+    try {
+      callback(null, fn(call.request));
+    } catch (e) {
+      callback({ code: grpc.status.INTERNAL, details: String(e?.message ?? e) });
+    }
+  };
+  const server = new grpc.Server();
+  server.addService(service, {
+    getStatus: unary(() => ({
+      version: VERSION,
+      uptime: Date.now() - startedAt,
+      booted: Date.now() >= bootAt,
+      heartbeat: Math.floor((Date.now() - startedAt) / 1000),
+      guestConfig: {},
+      platformConfig: {},
+    })),
+    getScreenshot: unary((req) => makeImage(req, 0)),
+    streamScreenshot: (call) => {
+      const err = authError(call);
+      if (err) {
+        call.emit('error', err);
+        return;
+      }
+      let seq = 0;
+      const fps = Number(env.FAKE_SCREEN_FPS) || 0;
+      const timer = setInterval(
+        () => {
+          if (!fps && seq >= 3) {
+            clearInterval(timer); // keep the stream open, like an idle screen
+            return;
+          }
+          call.write(makeImage(call.request, seq++));
+        },
+        fps ? Math.max(10, Math.round(1000 / fps)) : 40,
+      );
+      call.on('cancelled', () => clearInterval(timer));
+      call.on('close', () => clearInterval(timer));
+    },
+    sendTouch: unary((req) => {
+      recordInput('touch', req);
+      const t = req.touches?.[0];
+      if (t) Object.assign(lastTouch, { x: Number(t.x) || 0, y: Number(t.y) || 0, at: Date.now() });
+      return {};
+    }),
+    sendKey: unary((req) => {
+      recordInput('key', req);
+      return {};
+    }),
+    sendMouse: unary((req) => {
+      recordInput('mouse', req);
+      return {};
+    }),
+    setVmState: unary((req) => {
+      recordInput('vmstate', req);
+      const s = req.state;
+      if (s === 'PAUSED' || s === 'STOP') vm.state = 'PAUSED';
+      else if (s === 'RUNNING' || s === 'START') vm.state = 'RUNNING';
+      else if (s === 'SHUTDOWN') setTimeout(() => shutdown(0, 'gRPC setVmState SHUTDOWN'), 30);
+      return {};
+    }),
+    getVmState: unary(() => ({ state: vm.state })),
+  });
+  await new Promise((resolve, reject) => {
+    server.bindAsync(`127.0.0.1:${grpcPort}`, grpc.ServerCredentials.createInsecure(), (err) => (err ? reject(err) : resolve()));
+  });
+  return server;
+}
+
+function writeDiscoveryFile() {
+  const lines = [
+    'emulator.build=fake',
+    `avd.id=${avdName}`,
+    `port.serial=${consolePort}`,
+    `port.adb=${adbPort}`,
+    // Real emulator: avd.name is the display name (avd.ini.displayname), avd.id is the AVD id.
+    `avd.name=${config['avd.ini.displayname'] || avdName}`,
+    `emulator.version=${VERSION}`,
+    `avd.dir=${avdDir}`,
+    `fake.android_serialno=${opts['-android-serialno'] || 'fake'}`,
+    `cmdline="${process.execPath}" "${SCRIPT}" ${argv.map((a) => `"${a}"`).join(' ')}`,
+    `grpc.port=${grpcPort}`,
+  ];
+  if (grpcToken) lines.push(`grpc.token=${grpcToken}`);
+  lines.push(`fake.sdk_root=${SDK_ROOT}`, `fake.started_at=${startedAt}`, `fake.boot_at=${bootAt}`);
+  fs.mkdirSync(discoveryDir, { recursive: true });
+  const tmp = path.join(discoveryDir, `.pid_${process.pid}.ini.tmp`);
+  fs.writeFileSync(tmp, lines.join('\n') + '\n');
+  fs.renameSync(tmp, discoveryFile);
+}
+
+try {
+  prepareAvdRuntimeFiles();
+  consoleServer = net.createServer(handleConsole);
+  await listen(consoleServer, consolePort);
+  log('INFO', `console listening on 127.0.0.1:${consolePort}`);
+  grpcServer = await startGrpc();
+  if (grpcServer) log('INFO', `gRPC listening on 127.0.0.1:${grpcPort}${grpcToken ? ' (token required)' : ''}`);
+  writeDiscoveryFile();
+} catch (err) {
+  process.stderr.write(`FATAL  | (fake) startup failed: ${err?.message ?? err}\n`);
+  shuttingDown = true;
+  try {
+    fs.rmSync(path.join(avdDir, 'multiinstance.lock'), { force: true });
+  } catch {}
+  process.exit(1);
+}
+
+setTimeout(() => log('INFO', `Boot completed in ${Date.now() - startedAt} ms`), Math.max(0, bootAt - Date.now()));
+
+if (env.FAKE_CRASH_AFTER_MS) {
+  setTimeout(() => {
+    process.stderr.write('FATAL  | (fake) simulated crash\n');
+    process.exit(3);
+  }, Number(env.FAKE_CRASH_AFTER_MS));
+}
+
+// Safety nets so a test run that dies never leaves fakes behind.
+const maxLifetime = Number(env.FAKE_MAX_LIFETIME_MS ?? 0);
+setInterval(() => {
+  if (!fs.existsSync(discoveryDir)) shutdown(0, 'discovery dir removed');
+  else if (!fs.existsSync(SCRIPT)) shutdown(0, 'fake SDK removed');
+  else if (maxLifetime > 0 && Date.now() - startedAt > maxLifetime) shutdown(0, 'max lifetime reached');
+}, 500).unref();

@@ -1,0 +1,34 @@
+{
+  "name": "@avdm/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AVD 多开管理器桌面客户端（Electron）",
+  "author": "TgolMsk",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "test": "../core/node_modules/.bin/vitest run"
+  },
+  "dependencies": {
+    "@avdm/core": "workspace:*",
+    "@grpc/grpc-js": "^1.14.5",
+    "@grpc/proto-loader": "^0.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "5.1.4",
+    "electron": "^44.4.5",
+    "electron-builder": "26.15.3",
+    "electron-vite": "^5.0.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "5.9.3",
+    "vite": "^7.3.6"
+  }
+}

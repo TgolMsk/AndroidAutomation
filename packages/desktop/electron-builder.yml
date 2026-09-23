@@ -1,0 +1,20 @@
+appId: com.tgolmsk.avdm
+productName: AVD 多开管理器
+asar: true
+directories:
+  output: ../../release
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+mac:
+  category: public.app-category.developer-tools
+  identity: '-'
+  hardenedRuntime: false
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  artifactName: AVDM-${version}-mac-arm64.${ext}
+dmg:
+  title: AVD 多开管理器 ${version}

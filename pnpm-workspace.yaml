@@ -1,0 +1,11 @@
+packages:
+  - packages/*
+
+allowBuilds:
+  electron: true
+  electron-winstaller: false
+  esbuild: true
+  protobufjs: false
+
+minimumReleaseAgeExclude:
+  - electron@44.4.5

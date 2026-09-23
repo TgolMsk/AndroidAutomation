@@ -1,0 +1,55 @@
+name: macOS installer
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.20.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm dist:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Verify installer
+        run: |
+          dmg=(release/*.dmg)
+          test "${#dmg[@]}" -eq 1
+          codesign --verify --deep --strict 'release/mac-arm64/AVD 多开管理器.app'
+          hdiutil verify "${dmg[0]}"
+          (cd release && shasum -a 256 *.dmg > SHA256SUMS && shasum -a 256 -c SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avdm-macos-arm64
+          path: |
+            release/*.dmg
+            release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+      - name: Publish tagged preview
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/*.dmg release/SHA256SUMS --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release/*.dmg release/SHA256SUMS --notes-file docs/RELEASE.md --prerelease
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}

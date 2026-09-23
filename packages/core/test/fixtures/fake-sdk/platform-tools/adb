@@ -1,0 +1,363 @@
+#!/usr/bin/env node
+// Fake adb used by @avdm/core tests (NOT the real adb). Devices are the fake emulators that have a live
+// discovery file in $AVDM_DISCOVERY_DIR ("emulator-<port.serial>").
+//
+// Environment knobs:
+//   AVDM_DISCOVERY_DIR   where fake emulators publish pid_<pid>.ini
+//   FAKE_ADB_LOG         append one JSON line per invocation ({ serial, args })
+// Discovery-file keys read per device: fake.boot_at (ms epoch when sys.boot_completed becomes 1),
+// fake.adb_offline=1 (every device command fails with "adb: device offline").
+import fs from 'node:fs';
+import net from 'node:net';
+import path from 'node:path';
+
+const env = process.env;
+const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAH0lEQVR4nAXBAQEAAAiDMIIZjGAPQSw3oCNpBHamzR53ogrxUG5RsgAAAABJRU5ErkJggg==',
+  'base64',
+);
+
+function out(text) {
+  process.stdout.write(text);
+}
+function die(msg, code = 1) {
+  process.stderr.write(`${msg}\n`);
+  process.exit(code);
+}
+
+function parseIni(text) {
+  const rec = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const eq = raw.indexOf('=');
+    if (eq > 0) rec[raw.slice(0, eq).trim()] = raw.slice(eq + 1).trim();
+  }
+  return rec;
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+function liveEmulators() {
+  const dir = env.AVDM_DISCOVERY_DIR;
+  if (!dir) return [];
+  let names = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const list = [];
+  for (const name of names) {
+    const m = /^pid_(\d+)\.ini$/.exec(name);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    if (!alive(pid)) continue;
+    let raw;
+    try {
+      raw = parseIni(fs.readFileSync(path.join(dir, name), 'utf8'));
+    } catch {
+      continue;
+    }
+    const port = Number(raw['port.serial']);
+    if (!port) continue;
+    list.push({ serial: `emulator-${port}`, port, pid, raw });
+  }
+  return list.sort((a, b) => a.port - b.port);
+}
+
+// ── global options ──
+const args = process.argv.slice(2);
+let serial = env.ANDROID_SERIAL || undefined;
+let pickEmulator = false;
+while (args.length) {
+  const a = args[0];
+  if (a === '-s') {
+    serial = args[1];
+    args.splice(0, 2);
+  } else if (a === '-e') {
+    pickEmulator = true;
+    args.shift();
+  } else if (a === '-d') {
+    die('adb: no devices/emulators found');
+  } else if (a === '-P' || a === '-H' || a === '-t') {
+    args.splice(0, 2);
+  } else break;
+}
+const [cmd, ...rest] = args;
+
+if (env.FAKE_ADB_LOG) {
+  fs.appendFileSync(env.FAKE_ADB_LOG, JSON.stringify({ serial: serial ?? null, args, at: Date.now() }) + '\n');
+}
+
+function target() {
+  const devs = liveEmulators();
+  let dev;
+  if (serial) {
+    dev = devs.find((x) => x.serial === serial);
+    if (!dev) die(`adb: device '${serial}' not found`);
+  } else {
+    if (devs.length === 0) die('adb: no devices/emulators found');
+    if (devs.length > 1 && !pickEmulator) die('adb: more than one device/emulator');
+    dev = devs[0];
+  }
+  // Discovery key `fake.adb_offline=1`: the transport is registered but offline (e.g. right after a snapshot load).
+  if (dev.raw['fake.adb_offline'] === '1') die('adb: device offline');
+  return dev;
+}
+
+function booted(dev) {
+  return Date.now() >= Number(dev.raw['fake.boot_at'] ?? 0);
+}
+
+function displaySize(dev) {
+  try {
+    const cfg = parseIni(fs.readFileSync(path.join(dev.raw['avd.dir'], 'config.ini'), 'utf8'));
+    const w = Number(cfg['hw.lcd.width']);
+    const h = Number(cfg['hw.lcd.height']);
+    if (w && h) return `${w}x${h}`;
+  } catch {}
+  return '1280x720';
+}
+
+function shell(dev, line) {
+  const words = line.trim().split(/\s+/);
+  const [c0, c1] = words;
+  if (line.trim() === '') die('adb: interactive shell is not supported by the fake adb');
+  if (c0 === 'getprop') {
+    if (!c1) {
+      out(`[sys.boot_completed]: [${booted(dev) ? '1' : ''}]\n[ro.product.model]: [fake]\n`);
+      return;
+    }
+    if (c1 === 'sys.boot_completed' || c1 === 'dev.bootcomplete') out(`${booted(dev) ? '1' : ''}\n`);
+    else if (c1 === 'init.svc.bootanim') out(`${booted(dev) ? 'stopped' : 'running'}\n`);
+    else if (c1 === 'ro.serialno') out(`${dev.raw['fake.android_serialno'] || 'fake'}\n`);
+    else out('fake\n');
+    return;
+  }
+  if (c0 === 'wm' && c1 === 'size') {
+    out(`Physical size: ${displaySize(dev)}\n`);
+    return;
+  }
+  const macFile = path.join(dev.raw['avd.dir'], '.fake_wifi_mac');
+  if (line === 'cat /sys/class/net/wlan0/address') {
+    out(`${fs.existsSync(macFile) ? fs.readFileSync(macFile, 'utf8').trim() : '02:15:d2:00:00:00'}\n`);
+    return;
+  }
+  if (words.slice(0, 6).join(' ') === 'ip link set dev wlan0 address') {
+    fs.writeFileSync(macFile, words[6]);
+    return;
+  }
+  if (c0 === 'pm' && c1 === 'list' && words[2] === 'packages') {
+    const pkgs = words.includes('-3')
+      ? ['com.example.game']
+      : ['com.android.settings', 'com.android.systemui', 'com.example.game'];
+    out(pkgs.map((p) => `package:${p}\n`).join(''));
+    return;
+  }
+  if (c0 === 'dumpsys' && c1 === 'window') {
+    out(
+      'WINDOW MANAGER WINDOWS (dumpsys window windows)\n' +
+        '  Window #0 Window{1a2b3c u0 com.example.game/com.example.game.Main}:\n' +
+        '  mCurrentFocus=Window{1a2b3c u0 com.example.game/com.example.game.Main}\n' +
+        '  mFocusedApp=ActivityRecord{4d5e6f u0 com.example.game/.Main t12}\n',
+    );
+    return;
+  }
+  if (c0 === 'screencap') {
+    process.stdout.write(TINY_PNG);
+    return;
+  }
+  if (c0 === 'monkey') {
+    out('  bash arg: -p\nEvents injected: 1\n## Network stats: elapsed time=10ms\n');
+    return;
+  }
+  if (c0 === 'am') {
+    if (c1 === 'start') out(`Starting: Intent { cmp=${words[words.length - 1].replace(/'/g, '')} }\n`);
+    return;
+  }
+  if (c0 === 'input') return;
+  if (c0 === 'echo') {
+    out(`${words.slice(1).join(' ')}\n`);
+    return;
+  }
+  if (c0 === 'false') process.exit(1);
+  if (c0 === 'exit') process.exit(Number(c1) || 0);
+  // anything else: succeed silently
+}
+
+function consoleCommand(port, command) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ port, host: '127.0.0.1' });
+    sock.setEncoding('utf8');
+    let buf = '';
+    let phase = 'banner';
+    let banner = '';
+    const lines = [];
+    const done = (code) => {
+      sock.destroy();
+      resolve(code);
+    };
+    sock.on('data', (chunk) => {
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).replace(/\r$/, '');
+        buf = buf.slice(nl + 1);
+        if (phase === 'banner') {
+          if (!line.startsWith('OK')) {
+            banner += `${line}\n`;
+            continue;
+          }
+          if (banner.includes('auth_token')) {
+            const file = /'(\/[^']+)'/.exec(banner)?.[1];
+            let token = '';
+            try {
+              token = fs.readFileSync(file, 'utf8').trim();
+            } catch {}
+            phase = 'auth';
+            sock.write(`auth ${token}\n`);
+          } else {
+            phase = 'cmd';
+            sock.write(`${command}\n`);
+          }
+        } else if (phase === 'auth') {
+          if (line.startsWith('KO')) {
+            process.stderr.write(`${line}\n`);
+            return done(1);
+          }
+          if (line.startsWith('OK')) {
+            phase = 'cmd';
+            sock.write(`${command}\n`);
+          }
+        } else {
+          if (line.startsWith('KO')) {
+            process.stderr.write(`${line}\n`);
+            return done(1);
+          }
+          if (line.startsWith('OK')) {
+            if (line.length > 2) lines.push(line);
+            out(lines.map((l) => `${l}\n`).join(''));
+            return done(0);
+          }
+          lines.push(line);
+        }
+      }
+    });
+    sock.on('error', (err) => {
+      process.stderr.write(`error: could not connect to TCP port ${port}: ${err.message}\n`);
+      done(1);
+    });
+    sock.on('close', () => {
+      out(lines.map((l) => `${l}\n`).join(''));
+      done(phase === 'cmd' ? 0 : 1);
+    });
+  });
+}
+
+switch (cmd) {
+  case undefined:
+  case 'help':
+    out('Android Debug Bridge version 1.0.41 (fake)\n');
+    break;
+  case 'version':
+    out('Android Debug Bridge version 1.0.41\nVersion 37.0.1-fake\nInstalled as ' + process.argv[1] + '\nRunning on fake\n');
+    break;
+  case 'start-server':
+  case 'kill-server':
+  case 'reconnect':
+    break;
+  case 'devices': {
+    const long = rest.includes('-l');
+    const lines = liveEmulators().map((d, i) =>
+      long
+        ? `${d.serial}\tdevice product:sdk_gphone64_arm64 model:sdk_gphone64_arm64 device:emu64a transport_id:${i + 1}`
+        : `${d.serial}\tdevice`,
+    );
+    out(`List of devices attached\n${lines.map((l) => `${l}\n`).join('')}\n`);
+    break;
+  }
+  case 'get-state':
+    target();
+    out('device\n');
+    break;
+  case 'get-serialno':
+    out(`${target().serial}\n`);
+    break;
+  case 'wait-for-device': {
+    const deadline = Date.now() + 30_000;
+    const tick = () => {
+      const devs = liveEmulators();
+      if (serial ? devs.some((d) => d.serial === serial) : devs.length > 0) process.exit(0);
+      if (Date.now() > deadline) die('adb: timeout waiting for device');
+      setTimeout(tick, 100);
+    };
+    tick();
+    break;
+  }
+  case 'shell':
+    shell(target(), rest.filter((a) => a !== '-n' && a !== '-T' && a !== '-x').join(' '));
+    break;
+  case 'exec-out': {
+    const dev = target();
+    const line = rest.join(' ');
+    if (/^screencap(\s+-p)?\s*$/.test(line)) process.stdout.write(TINY_PNG);
+    else shell(dev, line);
+    break;
+  }
+  case 'install':
+  case 'install-multiple': {
+    target();
+    const files = rest.filter((a) => !a.startsWith('-'));
+    if (files.length === 0) die('adb: install requires an apk argument');
+    for (const f of files) {
+      if (!fs.existsSync(f)) die(`adb: failed to stat ${f}: No such file or directory`);
+    }
+    out('Performing Streamed Install\nSuccess\n');
+    break;
+  }
+  case 'uninstall':
+    target();
+    out('Success\n');
+    break;
+  case 'push': {
+    target();
+    const locals = rest.filter((a) => !a.startsWith('-')).slice(0, -1);
+    for (const f of locals) {
+      if (!fs.existsSync(f)) die(`adb: error: cannot stat '${f}': No such file or directory`);
+    }
+    out(`${locals.join(' ')}: ${locals.length} file pushed, 0 skipped.\n`);
+    break;
+  }
+  case 'pull': {
+    target();
+    const [remote, local = '.'] = rest.filter((a) => !a.startsWith('-'));
+    let dest = local;
+    if (fs.existsSync(dest) && fs.statSync(dest).isDirectory()) dest = path.join(dest, path.posix.basename(remote));
+    fs.writeFileSync(dest, `fake content of ${remote}\n`);
+    out(`${remote}: 1 file pulled, 0 skipped.\n`);
+    break;
+  }
+  case 'emu': {
+    const dev = target();
+    process.exitCode = await consoleCommand(dev.port, rest.join(' '));
+    break;
+  }
+  case 'forward':
+  case 'reverse':
+  case 'root':
+  case 'unroot':
+    target();
+    break;
+  case 'logcat':
+    target();
+    out('--------- beginning of main\n09-23 00:00:00.000  1234  1234 I fake    : hello from fake logcat\n');
+    break;
+  default:
+    die(`adb: unknown command ${cmd}`);
+}

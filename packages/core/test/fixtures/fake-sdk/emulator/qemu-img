@@ -1,0 +1,77 @@
+#!/usr/bin/env node
+// Fake qemu-img used by @avdm/core tests (NOT the real qemu-img).
+//   info [--output=json] [-U] <file>   → {"filename":…,"format":"qcow2",…}; files written by the fake emulator
+//                                        contain "fake-qcow2 backing=<path>", reported as backing-filename
+//   rebase [-u] [-b <backing>] [-F <fmt>] [-f <fmt>] <file>  → rewrites the fake backing marker if present, exit 0
+// Environment: FAKE_QEMU_IMG_LOG — append one JSON line per invocation.
+import fs from 'node:fs';
+
+const args = process.argv.slice(2);
+if (process.env.FAKE_QEMU_IMG_LOG) {
+  fs.appendFileSync(process.env.FAKE_QEMU_IMG_LOG, JSON.stringify({ args, at: Date.now() }) + '\n');
+}
+const [cmd, ...rest] = args;
+const VALUE_OPTS = new Set(['-b', '-F', '-f', '-o', '-O', '-t', '-T']);
+
+function positional(list) {
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    if (VALUE_OPTS.has(list[i])) i++;
+    else if (!list[i].startsWith('-')) out.push(list[i]);
+  }
+  return out;
+}
+function optValue(list, name) {
+  const i = list.indexOf(name);
+  return i >= 0 ? list[i + 1] : undefined;
+}
+function readHead(file) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(4096);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    return buf.subarray(0, n).toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+if (cmd === 'info') {
+  const file = positional(rest).pop();
+  if (!file || !fs.existsSync(file)) {
+    process.stderr.write(`qemu-img: Could not open '${file ?? ''}': No such file or directory\n`);
+    process.exit(1);
+  }
+  const size = fs.statSync(file).size;
+  const backing = /^fake-qcow2 backing=(.+)$/m.exec(readHead(file))?.[1];
+  const info = { 'virtual-size': size, filename: file, format: 'qcow2', 'actual-size': size, 'dirty-flag': false };
+  if (backing) {
+    info['backing-filename'] = backing;
+    info['full-backing-filename'] = backing;
+    info['backing-filename-format'] = 'raw';
+  }
+  if (rest.includes('--output=json') || optValue(rest, '--output') === 'json') {
+    process.stdout.write(JSON.stringify(info, null, 4) + '\n');
+  } else {
+    process.stdout.write(`image: ${file}\nfile format: qcow2\nvirtual size: ${size} B\n${backing ? `backing file: ${backing}\n` : ''}`);
+  }
+  process.exit(0);
+}
+
+if (cmd === 'rebase') {
+  const file = positional(rest).pop();
+  const backing = optValue(rest, '-b');
+  if (file && backing !== undefined && fs.existsSync(file) && /^fake-qcow2 backing=/m.test(readHead(file))) {
+    fs.writeFileSync(file, `fake-qcow2 backing=${backing}\n`);
+  }
+  process.exit(0);
+}
+
+if (cmd === '--version' || cmd === '-V') {
+  process.stdout.write('qemu-img version 8.2.0 (fake)\n');
+  process.exit(0);
+}
+
+process.stderr.write(`qemu-img: (fake) unsupported command '${cmd ?? ''}'\n`);
+process.exit(1);

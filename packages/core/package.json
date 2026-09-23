@@ -1,0 +1,32 @@
+{
+  "name": "@avdm/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AVD 多开管理器内核：SDK 安装、AVD 创建/克隆、实例生命周期、ADB/gRPC 控制、脚本插件",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./proto/emulator_controller.proto": "./proto/emulator_controller.proto",
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "proto"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.5",
+    "@grpc/proto-loader": "^0.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.11"
+  }
+}
