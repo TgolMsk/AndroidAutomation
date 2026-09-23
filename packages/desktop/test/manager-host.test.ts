@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-vi.mock('electron', () => import('./helpers/electron-mock'));
+vi.mock('electron', () => import('../../emulator-shell/test/helpers/electron-mock'));
 
 import { DEFAULT_SPEC, Registry, resolvePaths, saveSettings, type InstanceRecord } from '@avdm/core';
 import { ManagerHost } from '../src/main/manager-host';
-import { BrowserWindow } from './helpers/electron-mock';
+import { BrowserWindow } from '../../emulator-shell/test/helpers/electron-mock';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

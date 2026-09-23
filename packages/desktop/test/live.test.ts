@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('electron', () => import('./helpers/electron-mock'));
+vi.mock('electron', () => import('../../emulator-shell/test/helpers/electron-mock'));
 
 import type { ScreenFrame } from '@avdm/core';
 import type { LiveFrame } from '../src/shared/ipc';
 import { LiveService, STALL_AFTER_MS, STALL_CHECK_MS, type ViewWindow } from '../src/main/live';
 import type { ManagerHost } from '../src/main/manager-host';
-import { FakeWebContents } from './helpers/electron-mock';
+import { FakeWebContents } from '../../emulator-shell/test/helpers/electron-mock';
 
 interface Stream {
   opts: Record<string, unknown>;

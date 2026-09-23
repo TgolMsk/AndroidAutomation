@@ -9,15 +9,20 @@
   },
   "scripts": {
     "build": "pnpm -r --filter ./packages/core --filter ./packages/automation --filter ./packages/cli run build && pnpm --filter ./packages/desktop run build",
+    "build:wanlong": "pnpm -r --filter ./packages/core --filter ./packages/automation run build && pnpm --filter @avdm/wanlong-assistant run build",
     "dist:mac": "pnpm build && pnpm --filter @avdm/desktop exec electron-builder --mac dmg --arm64 --publish never",
+    "dist:mac:wanlong": "pnpm build:wanlong && pnpm --filter @avdm/wanlong-assistant exec electron-builder --mac dmg --arm64 --publish never",
+    "dist:mac:all": "pnpm dist:mac && pnpm dist:mac:wanlong",
     "typecheck": "pnpm --filter ./packages/core run build && pnpm --filter ./packages/automation run build && pnpm -r run typecheck",
-    "test": "pnpm --filter ./packages/core run test && pnpm --filter ./packages/automation run test && pnpm --filter ./packages/desktop run test",
+    "test": "pnpm --filter ./packages/core run test && pnpm --filter ./packages/automation run test && pnpm --filter ./packages/desktop run test && pnpm --filter @avdm/wanlong-assistant run test",
     "e2e:cli": "pnpm -r --filter ./packages/core --filter ./packages/cli run build && node scripts/e2e-cli.mjs",
     "e2e:desktop": "pnpm build && node scripts/e2e-desktop.mjs",
     "screenshots": "node scripts/desktop-screenshots.mjs",
     "avdm": "node packages/cli/dist/index.js",
     "dev:cli": "packages/cli/node_modules/.bin/tsx packages/cli/src/index.ts",
     "dev:desktop": "pnpm --filter ./packages/desktop run dev",
-    "start:desktop": "pnpm --filter ./packages/desktop exec electron ."
+    "start:desktop": "pnpm --filter ./packages/desktop exec electron .",
+    "dev:wanlong": "pnpm --filter @avdm/wanlong-assistant run dev",
+    "start:wanlong": "pnpm --filter @avdm/wanlong-assistant exec electron ."
   }
 }

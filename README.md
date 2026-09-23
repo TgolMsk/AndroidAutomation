@@ -1,15 +1,16 @@
 # AndroidAutomation · AVD 多开管理器
 
-**Android Emulator multi-instance manager for Apple Silicon macOS.** Create, clone, launch, and automate multiple Android Virtual Devices (AVDs) with an Electron desktop app and CLI. Includes live view, ADB actions, an SDK setup wizard, and per-instance device identity templates.
+**Android Emulator multi-instance manager and game assistant for Apple Silicon macOS.** Create, clone, and launch Android Virtual Devices (AVDs) with the manager app or CLI; run game workflows in a separately installed assistant app.
 
 [下载 macOS 安装包 / Download for macOS](https://github.com/TgolMsk/AndroidAutomation/releases) · [快速开始](#快速开始)
 
 在 Apple Silicon Mac 上批量创建、启动和控制 **Google 官方 Android Emulator** 实例的个人工具。
 arm64 系统镜像通过 Hypervisor.framework（HVF）虚拟化运行，图形走 gfxstream → Metal。
-提供两种用法，底层共用同一个内核 `@avdm/core`：
+提供三个独立入口，底层共用 `@avdm/core`：
 
 - **命令行 `avdm`**：适合脚本化和批量操作
-- **Electron 桌面客户端**：实例墙、缩略图、实时画面、批量操作和游戏自动化工作台
+- **AVD 多开管理器**：SDK、实例墙、缩略图、实时画面和批量操作
+- **万龙助手**：选择已创建的实例，管理万龙觉醒的自动化流程；单独安装和启动
 
 不依赖 Java：SDK 组件下载、许可确认、AVD 创建与克隆都由本项目直接完成，不调用 `sdkmanager` / `avdmanager`。
 
@@ -19,7 +20,11 @@ arm64 系统镜像通过 Hypervisor.framework（HVF）虚拟化运行，图形�
 | --- | --- |
 | ![实时画面](docs/screenshots/live.png) | ![SDK 向导](docs/screenshots/wizard.png) |
 
-> 以上截图由 `pnpm screenshots` 用测试用的假模拟器生成，画面是合成的“主屏幕”，不是真实的 Android 画面。
+上方是独立 **AVD 多开管理器** 的实例墙、实时画面和 SDK 向导。下方是另行安装的 **万龙助手** 自动化工作台：
+
+![万龙助手自动化工作台](docs/screenshots/automation.png)
+
+> 截图由 `pnpm screenshots` 在隔离临时目录中用假 SDK 生成：实时画面是合成的“主屏幕”，万龙助手没有连接真实游戏或账号。
 
 ## 功能
 
@@ -49,7 +54,7 @@ arm64 系统镜像通过 Hypervisor.framework（HVF）虚拟化运行，图形�
   - 鼠标操作映射为触控，键盘输入转发到设备；Android 旋转后画面自动转正，触控坐标随之换算。
   - 工具条有返回、主页、多任务、截图、置顶。
 - **脚本插件**：任意语言写的脚本，每个实例各跑一个进程，并通过环境变量拿到 `ANDROID_SERIAL`、adb 路径、gRPC 端口等。
-- **游戏自动化工作台（预览）**：按游戏和实例保存私有模板目录与配置；从原始 ADB 截图在独立工作线程运行 OpenCV 模板探针，显示前台包名、尺寸和逐项匹配分数。万龙觉醒支持手动采集一轮与按 ETA 自动续跑；每轮先核验前台包名和唯一高分场景锚点，操作按实例串行，运行记录与下一次唤醒时间保存在本机。默认关闭采集，需明确启用并确认探针。
+- **独立万龙助手（预览）**：按游戏和实例保存私有模板目录与配置；从原始 ADB 截图在独立工作线程运行 OpenCV 模板探针。万龙觉醒支持手动采集一轮与按 ETA 自动续跑；每轮核验前台包名和场景锚点，操作按实例串行。默认关闭采集，需明确启用并确认探针。
 - **安全默认**：gRPC 始终加 `-grpc-use-token`，只监听 127.0.0.1 并要求令牌；`--json` 输出里不会出现令牌。
 
 Android ID 在 Android 8 及以上按应用签名、用户和设备区分，模板中的 `androidId` 是系统工具可见值，同时触发应用级种子轮换，**不代表所有应用都会读到相同值**。当前官方模拟器没有可配置的 IMEI，本项目尚未实现它。Android 10 及以上对普通应用读取序列号和 MAC 有权限限制，Wi-Fi 也可能按网络随机化 MAC。构建属性不会改变内核、图形驱动、硬件证明或模拟器标记，不能保证被识别为真机。
@@ -73,7 +78,9 @@ Android ID 在 Android 8 及以上按应用签名、用户和设备区分，模�
 
 ### macOS 安装包
 
-从 [GitHub Releases](https://github.com/TgolMsk/AndroidAutomation/releases) 下载 `AVDM-*-mac-arm64.dmg`，打开后将应用拖入“应用程序”。安装版不需要 Node.js 或 pnpm。第一次在没有 Android SDK 的 Mac 上启动时，应用内会显示 SDK 向导；阅读并同意许可后，向导会下载约 1.1 GB 的模拟器、平台工具和 ARM64 系统镜像。完成后在主界面创建实例即可使用。已有兼容 SDK 时无需重复下载。
+从 [GitHub Releases](https://github.com/TgolMsk/AndroidAutomation/releases) 下载两个独立安装包：`AVDM-*-mac-arm64.dmg` 安装“AVD 多开管理器”；`Wanlong-Assistant-*-mac-arm64.dmg` 安装“万龙助手”。按需安装其中一款或两款。万龙助手需要本机已有兼容的 SDK 和实例；首次配置可用多开管理器或 CLI 完成。打开各自 DMG，将应用拖入“应用程序”。安装版不需要 Node.js 或 pnpm。第一次在没有 Android SDK 的 Mac 上启动多开管理器时，向导会提示阅读并同意许可，随后下载约 1.1 GB 的模拟器、平台工具和 ARM64 系统镜像。
+
+模拟器安装包同时提供命令行：`'/Applications/AVD 多开管理器.app/Contents/Resources/bin/avdm' list --json`。可选地将这个文件建立符号链接到自己的 `PATH`；完整用法见 [模拟器 API 与 CLI](docs/EMULATOR_API.md)。
 
 当前预览版使用临时签名，尚无 Developer ID 签名和公证；macOS 首次打开时可能需要在“系统设置 → 隐私与安全性”中允许。安装包不含 Google SDK、系统镜像或游戏 APK，因此首次完整使用需要联网和可用的下载源。只支持 Apple Silicon。
 
@@ -104,24 +111,27 @@ avdm stop all                   # 优雅关机并保存快照
 - 如果你已经读过并同意，可以加 `--accept-licenses` 跳过询问。
 - 用管道输入 `yes | avdm sdk install` **不会**被当作同意。
 
-### 桌面客户端
+### 从源码运行两个桌面应用
 
 ```bash
 pnpm build
-pnpm start:desktop              # 运行构建产物（packages/desktop/out）
-pnpm dev:desktop                # 开发模式（electron-vite，渲染进程热更新；需先构建过 core）
+pnpm start:desktop              # AVD 多开管理器（packages/desktop）
+pnpm dev:desktop                # 多开管理器开发模式
+pnpm build:wanlong              # 单独构建万龙助手
+pnpm start:wanlong              # 运行万龙助手构建产物
+pnpm dev:wanlong                # 万龙助手开发模式
 ```
 
 - **首次启动**：缺少组件时会自动打开 SDK 向导。向导列出将下载的组件和大小，并显示每个许可的全文；每个许可都有自己的“我已阅读并同意许可 <id>”勾选框，全部勾选后才能安装。退出应用会先询问是否取消正在进行的安装。
 - **关闭窗口**：模拟器在后台继续运行；按 ⌘Q 退出应用时也不会关掉模拟器。
-- **与 CLI 共用数据**：两者共用 `~/.avdm`，CLI 所做的改动会自动同步到界面：新建、删除、启动、停止和设置修改约 1 秒内（文件监视）；开机完成等状态变化约 5 秒内（健康检查间隔）。
-- **打包**：`pnpm dist:mac` 在 `release/` 生成 Apple Silicon DMG。推送 `v*` 标签后，GitHub Actions 构建并上传预览版 Release。
+- **共享数据**：CLI、多开管理器和万龙助手共用 `~/.avdm`；设置 `AVDM_HOME` 可把三个入口一起切换到另一个数据目录。CLI 的实例改动会同步到多开管理器界面。
+- **打包**：`pnpm dist:mac` 构建多开管理器；`pnpm dist:mac:wanlong` 构建万龙助手。推送 `v*` 标签后，GitHub Actions 构建并上传两个独立 DMG。
 
-### 游戏自动化工作台
+### 万龙助手
 
-在主界面点击“自动化”，选择运行中的实例和游戏包。万龙觉醒模板集需由使用者在本机选择一个含 `manifest.json` 与 PNG 文件的目录；模板图片、账号信息和运行记录均不进入公开仓库或安装包。旧 `wanlong-panel` 的模板集目录可直接读取，不需要转换。选择后点击“执行只读探测”，检查前台包名和每个锚点的分数。启用采集配置并确认探针后，可执行单轮或开启自动续跑。自动续跑只恢复明确启用的实例；连续 8 次失败会暂停，修改模板或配置会停止续跑并要求重新探测。真实 #1 已通过无派兵的 G0 导航和单轮流程；真实派兵尚未完成验收，请先在测试实例使用。
+启动“万龙助手”，选择运行中的实例和游戏。模板集位于本机私有目录，包含 `manifest.json` 与 PNG 文件；模板图片、账号信息和运行记录均不进入公开仓库或安装包。选择模板后先执行只读探测，检查前台包名和锚点匹配分数，再启用采集。自动续跑只恢复明确启用的实例；连续失败会暂停，修改模板或配置需要重新探测。真实 #1 已通过无派兵的 G0 导航和单轮流程；真实派兵尚未完成验收，请先在测试实例使用。
 
-新增游戏的设备适配、视觉模块、配置与任务契约见 [自动化架构](docs/AUTOMATION.md)。
+两个应用的边界与调用方式见 [双应用架构](docs/APPLICATIONS.md)；可复用的模拟器调用接口见 [模拟器核心 API 与 CLI](docs/EMULATOR_API.md)；新增游戏的设备适配、视觉模块、配置与任务契约见 [自动化架构](docs/AUTOMATION.md)。
 
 ## 命令行参考
 
@@ -278,7 +288,8 @@ pnpm typecheck                  # 全部包的 tsc --noEmit
 pnpm test                       # core 的 vitest 单元/集成测试（使用假 SDK，不启动真模拟器）
 pnpm e2e:cli                    # 构建后用假 SDK 端到端运行真实 avdm 命令
 pnpm e2e:desktop                # 构建后启动 Electron，经 CDP 驱动界面和 IPC 做冒烟测试
-pnpm screenshots                # 重新生成 docs/screenshots/*.png
+pnpm build && pnpm build:wanlong # 截图前构建两个独立桌面应用
+pnpm screenshots                # 用隔离假 SDK 重新生成 docs/screenshots/*.png
 ```
 
 测试都在临时目录中进行：`AVDM_HOME`、SDK 和 discovery 目录都是临时的，不会碰 `~/.avdm`、`~/Library/Android` 或 `~/.android`。

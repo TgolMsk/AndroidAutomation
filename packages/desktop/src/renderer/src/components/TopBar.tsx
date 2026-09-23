@@ -22,7 +22,6 @@ export function TopBar({
   maxRunning,
   memoryReserveMb,
   onCreate,
-  onOpenAutomation,
   onScripts,
   onSettings,
   createDisabled,
@@ -31,7 +30,6 @@ export function TopBar({
   maxRunning?: number;
   memoryReserveMb?: number;
   onCreate: () => void;
-  onOpenAutomation?: () => void;
   onScripts: () => void;
   onSettings: () => void;
   createDisabled?: boolean;
@@ -84,12 +82,6 @@ export function TopBar({
         />
       </div>
       <div className="topbar-actions">
-        {onOpenAutomation && (
-          <button className="btn ghost topbar-link" onClick={onOpenAutomation}>
-            <Icon name="workflow" />
-            自动化
-          </button>
-        )}
         <button className="btn ghost topbar-link" onClick={onScripts}>
           <Icon name="script" />
           脚本

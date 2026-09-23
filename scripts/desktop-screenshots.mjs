@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * Run the BUILT desktop app (packages/desktop/out) against the fake Android SDK and capture:
- *   main.png    main window: instance wall with running / booting / stopped cards
- *   wizard.png  SDK wizard (second run with an empty SDK; catalogue served from a file:// mirror of the fixtures)
- *   live.png    live view window of instance #0
- *   automation.png  game automation page with a running instance
+ * Run the BUILT independent apps against an isolated fake Android SDK and capture:
+ *   main.png        manager: instance wall with running / booting / stopped cards
+ *   wizard.png      manager: SDK wizard (empty SDK; offline fixture catalogue)
+ *   live.png        manager: live view window of fake instance #0
+ *   automation.png  Wanlong Assistant: automation workspace with a fake running instance
  *
- *   pnpm build && node scripts/desktop-screenshots.mjs [--out docs/screenshots] [--keep]
+ *   pnpm build && pnpm build:wanlong && node scripts/desktop-screenshots.mjs [--out docs/screenshots] [--keep]
  *
- * Uses the app's verification hook (AVDM_SCREENSHOT_PATH / AVDM_OPEN_LIVE, see packages/desktop/src/main/index.ts).
+ * Uses the shared shell's verification hook (AVDM_SCREENSHOT_PATH / AVDM_OPEN_LIVE).
  * Everything lives in temp dirs; the Electron user-data dir is a temp dir too. Windows appear briefly on screen.
  */
 import { spawn } from 'node:child_process';
@@ -22,6 +22,10 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'packages', 'cli', 'dist', 'index.js');
 const DESKTOP = path.join(ROOT, 'packages', 'desktop');
 const DESKTOP_MAIN = path.join(DESKTOP, 'out', 'main', 'index.js');
+const DESKTOP_PRELOAD = path.join(DESKTOP, 'out', 'preload', 'index.cjs');
+const ASSISTANT = path.join(ROOT, 'apps', 'wanlong-assistant');
+const ASSISTANT_MAIN = path.join(ASSISTANT, 'out', 'main', 'index.js');
+const ASSISTANT_PRELOAD = path.join(ASSISTANT, 'out', 'preload', 'index.cjs');
 const SDK_FIXTURES = path.join(ROOT, 'packages', 'core', 'test', 'fixtures', 'sdk');
 const FAKE_HELPER = path.join(ROOT, 'packages', 'core', 'test', 'helpers', 'fakeSdk.ts');
 
@@ -73,12 +77,12 @@ async function makeRepositoryMirror(dir) {
   return pathToFileURL(dir).href;
 }
 
-async function capture(name, env, userDataDir) {
-  const electron = createRequire(path.join(DESKTOP, 'package.json'))('electron');
+async function capture(appDir, name, env, userDataDir) {
+  const electron = createRequire(path.join(appDir, 'package.json'))('electron');
   const target = path.join(OUT, name);
   await fsp.rm(target, { force: true });
   const res = await run(electron, ['.', `--user-data-dir=${userDataDir}`], {
-    cwd: DESKTOP,
+    cwd: appDir,
     env: { ...env, AVDM_SCREENSHOT_PATH: target },
     timeoutMs: 60_000,
   });
@@ -90,12 +94,19 @@ async function capture(name, env, userDataDir) {
 }
 
 async function main() {
-  for (const f of [CLI, DESKTOP_MAIN]) {
+  for (const f of [CLI, DESKTOP_MAIN, DESKTOP_PRELOAD, ASSISTANT_MAIN, ASSISTANT_PRELOAD]) {
     try {
       await fsp.access(f);
     } catch {
-      console.error(`缺少构建产物 ${path.relative(ROOT, f)}，请先运行 pnpm build`);
+      console.error(`缺少构建产物 ${path.relative(ROOT, f)}，请先运行 pnpm build && pnpm build:wanlong`);
       process.exit(1);
+    }
+  }
+  // Sandboxed preloads cannot resolve workspace packages at runtime. Detect a broken bundle before replacing docs.
+  for (const preload of [DESKTOP_PRELOAD, ASSISTANT_PRELOAD]) {
+    const source = await fsp.readFile(preload, 'utf8');
+    if (/require\(["']@avdm\//.test(source)) {
+      throw new Error(`${path.relative(ROOT, preload)} 包含未打包的工作区模块；请修复 preload 构建并重建后再截图`);
     }
   }
   await fsp.mkdir(OUT, { recursive: true });
@@ -124,9 +135,9 @@ async function main() {
     await cli(['start', '0,1,4', '--wait', '--force'], env);
     await cli(['start', '2', '--force'], { ...env, FAKE_BOOT_MS: '600000' });
 
-    await capture('main.png', { ...env, AVDM_SCREENSHOT_DELAY_MS: '4500' }, path.join(work, 'electron-main'));
-    await capture('automation.png', { ...env, AVDM_SCREENSHOT_ROUTE: 'automation', AVDM_SCREENSHOT_DELAY_MS: '2500' }, path.join(work, 'electron-automation'));
-    await capture('live.png', { ...env, AVDM_OPEN_LIVE: '0', AVDM_SCREENSHOT_DELAY_MS: '2500' }, path.join(work, 'electron-live'));
+    await capture(DESKTOP, 'main.png', { ...env, AVDM_SCREENSHOT_DELAY_MS: '4500' }, path.join(work, 'electron-main'));
+    await capture(ASSISTANT, 'automation.png', { ...env, AVDM_SCREENSHOT_DELAY_MS: '4500' }, path.join(work, 'electron-automation'));
+    await capture(DESKTOP, 'live.png', { ...env, AVDM_OPEN_LIVE: '0', AVDM_SCREENSHOT_DELAY_MS: '2500' }, path.join(work, 'electron-live'));
 
     // SDK wizard: empty SDK dir, catalogue from the offline mirror.
     const home2 = path.join(work, 'home-empty');
@@ -136,7 +147,7 @@ async function main() {
     await fsp.writeFile(path.join(home2, 'settings.json'), JSON.stringify({ sdkRoot: emptySdk }, null, 2));
     const mirror = await makeRepositoryMirror(path.join(work, 'mirror'));
     const env2 = { ...base, AVDM_HOME: home2, AVDM_SDK_REPOSITORY: mirror, ANDROID_HOME: emptySdk, ANDROID_SDK_ROOT: emptySdk };
-    await capture('wizard.png', { ...env2, AVDM_SCREENSHOT_DELAY_MS: '3500' }, path.join(work, 'electron-wizard'));
+    await capture(DESKTOP, 'wizard.png', { ...env2, AVDM_SCREENSHOT_DELAY_MS: '3500' }, path.join(work, 'electron-wizard'));
   } finally {
     await run(process.execPath, [CLI, 'stop', 'all', '--force'], { env }).catch(() => undefined);
     await fake.cleanup();

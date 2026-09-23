@@ -134,6 +134,15 @@ interface CachedClient {
   client: EmulatorGrpc;
 }
 
+/** A monitor may observe every instance, but only the holder of this lease may auto-restart one. */
+interface AutoRestartLease {
+  generation: number;
+  acquired: Promise<boolean>;
+  task: Promise<void>;
+  release?: () => void;
+  owned: boolean;
+}
+
 type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
 /**
@@ -221,6 +230,8 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
   private monitorIntervalMs = 0;
   private monitorBusy = false;
   private lastMonitorError: string | undefined;
+  private monitorGeneration = 0;
+  private autoRestartLease: AutoRestartLease | undefined;
   private disposed = false;
 
   /** Open (creating dirs as needed) the manager at `home` (default ~/.avdm or $AVDM_HOME). */
@@ -726,6 +737,13 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
   }
 
   async restart(index: number, opts?: StartOptions): Promise<InstanceState> {
+    return withFileLock(this.restartLockPath(index), () => this.restartUnlocked(index, opts), {
+      timeoutMs: 120_000,
+      staleMs: 60_000,
+    });
+  }
+
+  private async restartUnlocked(index: number, opts?: StartOptions): Promise<InstanceState> {
     await this.stop(index);
     return this.start(index, opts);
   }
@@ -966,6 +984,7 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
   startMonitor(): void {
     if (this.disposed) throw new AvdmError('INVALID_ARGUMENT', '管理器已释放');
     if (this.monitorTimer) return;
+    this.monitorGeneration++;
     this.scheduleMonitor();
     setImmediate(() => void this.monitorTick());
   }
@@ -973,6 +992,16 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
   stopMonitor(): void {
     if (this.monitorTimer) clearInterval(this.monitorTimer);
     this.monitorTimer = undefined;
+    this.monitorGeneration++;
+    const lease = this.autoRestartLease;
+    if (lease) {
+      // Stop authorizing new work now, but retain ownership until an in-flight restart finishes.
+      lease.owned = false;
+      void lease.acquired.then(async () => {
+        await Promise.allSettled([...this.autoRestartTasks]);
+        lease.release?.();
+      });
+    }
   }
 
   /**
@@ -985,6 +1014,7 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
     this.stopMonitor();
     const pending: Promise<unknown>[] = [...this.autoRestartTasks];
     if (this.monitorRun) pending.push(this.monitorRun);
+    if (this.autoRestartLease) pending.push(this.autoRestartLease.task);
     if (pending.length) {
       let timer: NodeJS.Timeout | undefined;
       await Promise.race([
@@ -1790,6 +1820,7 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
       const states = await this.list();
       // Stopped/disposed while listing: never start new work (dispose() only waits for what already runs).
       if (this.disposed || !this.monitorTimer) return;
+      await this.ensureAutoRestartLeadership();
       for (const st of states) {
         const index = st.record.index;
         if (st.status === 'running' && st.record.identity) {
@@ -1814,40 +1845,95 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
 
   private maybeAutoRestart(st: InstanceState): void {
     const index = st.record.index;
-    if (this.disposed || !this.monitorTimer) return;
+    if (this.disposed || !this.monitorTimer || !this.hasAutoRestartLeadership()) return;
     if (this.autoRestarting.has(index) || this.launching.has(index) || this.stopping.has(index)) return;
-    const now = Date.now();
-    const history = (this.restartHistory.get(index) ?? []).filter((t) => now - t < AUTO_RESTART_WINDOW_MS);
-    if (history.length >= AUTO_RESTART_MAX) {
-      this.restartHistory.set(index, history);
-      if (!this.restartGaveUp.has(index)) {
-        this.restartGaveUp.add(index);
-        this.log(
-          'warn',
-          `实例 #${index}（${st.record.name}）在 10 分钟内已自动重启 ${AUTO_RESTART_MAX} 次，暂停自动重启，请检查日志`,
-          index,
-        );
-      }
-      return;
-    }
-    history.push(now);
-    this.restartHistory.set(index, history);
     this.autoRestarting.add(index);
-    this.log(
-      'warn',
-      `实例 #${index}（${st.record.name}）${firstLine(st.error ?? '状态异常')}，正在自动重启（10 分钟内第 ${history.length} 次）`,
-      index,
-    );
-    const task: Promise<void> = this.restart(index)
-      .then(
-        () => this.log('info', `实例 #${index} 已自动重启`, index),
-        (err: unknown) => this.log('error', `实例 #${index} 自动重启失败: ${errorMessage(err)}`, index),
-      )
+    const task: Promise<void> = withFileLock(this.restartLockPath(index), async () => {
+      // The user may have restarted this instance in another process since the monitor listed it.
+      const fresh = await this.getState(index);
+      if (this.disposed || !this.monitorTimer || !this.hasAutoRestartLeadership()) return;
+      if (fresh.status !== 'error' || !fresh.record.autoRestart || fresh.record.provisioning || this.staleStops.has(index)) return;
+      const now = Date.now();
+      const history = (this.restartHistory.get(index) ?? []).filter((t) => now - t < AUTO_RESTART_WINDOW_MS);
+      if (history.length >= AUTO_RESTART_MAX) {
+        this.restartHistory.set(index, history);
+        if (!this.restartGaveUp.has(index)) {
+          this.restartGaveUp.add(index);
+          this.log(
+            'warn',
+            `实例 #${index}（${fresh.record.name}）在 10 分钟内已自动重启 ${AUTO_RESTART_MAX} 次，暂停自动重启，请检查日志`,
+            index,
+          );
+        }
+        return;
+      }
+      history.push(now);
+      this.restartHistory.set(index, history);
+      this.log(
+        'warn',
+        `实例 #${index}（${fresh.record.name}）${firstLine(fresh.error ?? '状态异常')}，正在自动重启（10 分钟内第 ${history.length} 次）`,
+        index,
+      );
+      await this.restartUnlocked(index);
+      this.log('info', `实例 #${index} 已自动重启`, index);
+    }, { timeoutMs: 120_000, staleMs: 60_000 })
+      .catch((err: unknown) => this.log('error', `实例 #${index} 自动重启失败: ${errorMessage(err)}`, index))
       .finally(() => {
         this.autoRestarting.delete(index);
         this.autoRestartTasks.delete(task);
       });
     this.autoRestartTasks.add(task);
+  }
+
+  private restartLockPath(index: number): string {
+    return path.join(this.paths.runDir, `instance-${index}.restart.lock`);
+  }
+
+  /**
+   * Elect one auto-restart owner for this AVDM_HOME across the simulator, assistant and CLI. A follower still
+   * runs every health check and emits states; it merely skips automatic lifecycle actions. A zero-wait lock
+   * attempt keeps follower ticks responsive. The owner holds the lock until monitoring stops and its current
+   * auto-restarts finish, so ownership cannot change in the middle of stop/start.
+   */
+  private ensureAutoRestartLeadership(): Promise<boolean> {
+    if (this.disposed || !this.monitorTimer) return Promise.resolve(false);
+    const generation = this.monitorGeneration;
+    const existing = this.autoRestartLease;
+    if (existing) return existing.generation === generation ? existing.acquired : Promise.resolve(false);
+
+    let settleAcquired!: (owned: boolean) => void;
+    const acquired = new Promise<boolean>((resolve) => { settleAcquired = resolve; });
+    const lease: AutoRestartLease = { generation, acquired, task: Promise.resolve(), owned: false };
+    this.autoRestartLease = lease;
+    const lockPath = path.join(this.paths.runDir, 'auto-restart-owner.lock');
+    lease.task = withFileLock(lockPath, async () => {
+      if (this.disposed || !this.monitorTimer || generation !== this.monitorGeneration) {
+        settleAcquired(false);
+        return;
+      }
+      const released = new Promise<void>((resolve) => { lease.release = resolve; });
+      lease.owned = true;
+      settleAcquired(true);
+      await released;
+    }, { timeoutMs: 0, staleMs: 60_000 })
+      .catch((err: unknown) => {
+        settleAcquired(false);
+        if (!isAvdmError(err, 'LOCK_TIMEOUT')) this.log('warn', `自动重启所有权获取失败: ${errorMessage(err)}`);
+      })
+      .finally(() => {
+        lease.owned = false;
+        if (this.autoRestartLease === lease) this.autoRestartLease = undefined;
+        // A settings change may stop/start the monitor while its old lease is still releasing.
+        if (!this.disposed && this.monitorTimer && generation !== this.monitorGeneration) {
+          void this.ensureAutoRestartLeadership();
+        }
+      });
+    return acquired;
+  }
+
+  private hasAutoRestartLeadership(): boolean {
+    const lease = this.autoRestartLease;
+    return !!lease?.owned && lease.generation === this.monitorGeneration;
   }
 
   private uniqueIdentity(identity: InstanceRecord['identity'], seen: Set<string>): InstanceRecord['identity'] {

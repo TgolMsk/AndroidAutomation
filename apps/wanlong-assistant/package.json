@@ -1,0 +1,44 @@
+{
+  "name": "@avdm/wanlong-assistant",
+  "version": "0.3.0",
+  "private": true,
+  "description": "万龙助手（独立 Electron 应用）",
+  "author": "TgolMsk",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "dist:mac": "pnpm build && electron-builder --mac dmg --arm64 --publish never",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@avdm/automation": "workspace:*",
+    "@avdm/core": "workspace:*",
+    "@avdm/emulator-shell": "workspace:*",
+    "@grpc/grpc-js": "^1.14.5",
+    "@grpc/proto-loader": "^0.8.1",
+    "@techstark/opencv-js": "^5.0.0-release.1",
+    "sharp": "^0.35.4"
+  },
+  "optionalDependencies": {
+    "@img/sharp-darwin-arm64": "0.35.4",
+    "@img/sharp-libvips-darwin-arm64": "1.3.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "5.1.4",
+    "electron": "^44.4.5",
+    "electron-builder": "26.15.3",
+    "electron-vite": "^5.0.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11"
+  }
+}

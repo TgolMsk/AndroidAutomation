@@ -271,6 +271,21 @@ describe('Adb against the fake adb', () => {
     );
   });
 
+  it('checks the optional text guard before every adb subcommand', async () => {
+    const dev = adb.device(emu.serial);
+    const before = (await adbLogLines()).length;
+    let checks = 0;
+    await expect(dev.text('hello\tworld', async () => {
+      checks++;
+      if (checks === 2) throw new Error('foreground changed');
+    })).rejects.toThrow('foreground changed');
+    expect(checks).toBe(2);
+    const commands = (await adbLogLines()).slice(before)
+      .filter((entry) => entry.serial === emu.serial && entry.args[0] === 'shell')
+      .map((entry) => entry.args[1]);
+    expect(commands).toEqual(['input text hello']);
+  });
+
   it('emu kill (via the console) stops the fake emulator', async () => {
     const other = await startFakeEmulator(fake);
     try {

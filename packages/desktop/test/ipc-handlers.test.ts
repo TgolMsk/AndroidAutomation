@@ -5,17 +5,17 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-vi.mock('electron', () => import('./helpers/electron-mock'));
+vi.mock('electron', () => import('../../emulator-shell/test/helpers/electron-mock'));
 
 import { defaultSettings, resolvePaths } from '@avdm/core';
 import { assertScrcpyPath, authorizeInvoke, registerIpcHandlers, type IpcEnvelope } from '../src/main/ipc-handlers';
 import type { ManagerHost } from '../src/main/manager-host';
 import { SdkInstallTask } from '../src/main/sdk-install';
 import type { WindowKind } from '../src/main/windows';
-import { BrowserWindow, FakeWebContents, handlers } from './helpers/electron-mock';
+import { BrowserWindow, FakeWebContents, handlers } from '../../emulator-shell/test/helpers/electron-mock';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const APP_URL = `${pathToFileURL(join(here, '..', 'src', 'renderer', 'index.html')).href}#/`;
+const APP_URL = `${pathToFileURL(join(here, '..', '..', 'emulator-shell', 'src', 'renderer', 'index.html')).href}#/`;
 
 describe('authorizeInvoke', () => {
   it('lets the main window call everything', () => {

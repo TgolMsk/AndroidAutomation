@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { promises as fsp } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -119,6 +120,100 @@ describe('crash detection and auto-restart', () => {
     const statuses = ev.states.filter((s) => s.index === i).map((s) => s.status);
     expect(statuses).toContain('error');
     expect(statuses[statuses.length - 1]).toBe('running');
+  }, 60_000);
+
+  it('elects one auto-restart owner across managers, then hands over without blocking manual restart', async () => {
+    const i = ids[0]!;
+    await m.update(i, { autoRestart: true });
+    const first = await m.start(i, { wait: true, timeoutMs: 30_000 });
+    const secondManager = await h.open(); // a second app process using the same AVDM_HOME
+    const firstEvents = recordEvents(m);
+    const secondEvents = recordEvents(secondManager);
+    try {
+      m.startMonitor();
+      await waitUntil(
+        () => fsp.stat(path.join(m.paths.runDir, 'auto-restart-owner.lock')).then(() => true, () => false),
+        'first monitor owns the auto-restart lease',
+      );
+      secondManager.startMonitor();
+      process.kill(first.pid!, 'SIGKILL');
+      const recovered = await waitUntil(async () => {
+        const state = await m.getState(i);
+        return state.status === 'running' && state.pid !== first.pid ? state : undefined;
+      }, 'single auto-restart with both monitors active', 30_000, 100);
+      await waitUntil(() => firstEvents.logs.some((entry) => entry.message.includes('已自动重启')), 'owner restart finished');
+      await waitUntil(
+        () => secondEvents.states.some((state) => state.index === i && state.pid === recovered.pid),
+        'follower still reports instance state',
+      );
+      expect(firstEvents.logs.filter((entry) => entry.index === i && entry.message.includes('正在自动重启'))).toHaveLength(1);
+      expect(secondEvents.logs.filter((entry) => entry.index === i && entry.message.includes('正在自动重启'))).toHaveLength(0);
+
+      const manual = await secondManager.restart(i, { wait: true, timeoutMs: 30_000 });
+      expect(manual.status).toBe('running');
+      expect(manual.pid).not.toBe(recovered.pid);
+      expect(firstEvents.logs.filter((entry) => entry.index === i && entry.message.includes('正在自动重启'))).toHaveLength(1);
+
+      m.stopMonitor();
+      process.kill(manual.pid!, 'SIGKILL');
+      const handedOver = await waitUntil(async () => {
+        const state = await secondManager.getState(i);
+        return state.status === 'running' && state.pid !== manual.pid ? state : undefined;
+      }, 'follower takes over after owner monitor stops', 30_000, 100);
+      expect(isAlive(handedOver.pid)).toBe(true);
+      expect(secondEvents.logs.filter((entry) => entry.index === i && entry.message.includes('正在自动重启'))).toHaveLength(1);
+    } finally {
+      m.stopMonitor();
+      secondManager.stopMonitor();
+      firstEvents.stop();
+      secondEvents.stop();
+      await secondManager.dispose();
+    }
+  }, 60_000);
+
+  it('keeps observing a crash while another process holds the auto-restart lease', async () => {
+    const i = ids[1]!;
+    await m.update(i, { autoRestart: true });
+    const first = await m.start(i, { wait: true, timeoutMs: 30_000 });
+    const lock = path.join(m.paths.runDir, 'auto-restart-owner.lock');
+    await waitUntil(() => fsp.stat(lock).then(() => false, () => true), 'previous monitor lease released');
+    const holder = spawn(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      const lock = process.argv[1];
+      fs.mkdirSync(lock);
+      process.on('SIGTERM', () => { fs.rmSync(lock, { recursive: true, force: true }); process.exit(0); });
+      setInterval(() => { const now = new Date(); fs.utimesSync(lock, now, now); }, 1000);
+    `, lock], { stdio: 'ignore' });
+    const holderExited = new Promise<void>((resolve) => holder.once('exit', () => resolve()));
+    const events = recordEvents(m);
+    try {
+      await waitUntil(() => fsp.stat(lock).then(() => true, () => false), 'other process acquired restart lease');
+      m.startMonitor();
+      process.kill(first.pid!, 'SIGKILL');
+      await waitUntil(
+        () => events.states.some((state) => state.index === i && state.status === 'error'),
+        'follower observes crash',
+      );
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      expect(events.logs.filter((entry) => entry.index === i && entry.message.includes('正在自动重启'))).toHaveLength(0);
+      expect((await m.getState(i)).status).toBe('error');
+
+      holder.kill('SIGTERM');
+      await holderExited;
+      const restarted = await waitUntil(async () => {
+        const state = await m.getState(i);
+        return state.status === 'running' && state.pid !== first.pid ? state : undefined;
+      }, 'follower takes over after process exits', 30_000, 100);
+      expect(isAlive(restarted.pid)).toBe(true);
+      expect(events.logs.filter((entry) => entry.index === i && entry.message.includes('正在自动重启'))).toHaveLength(1);
+    } finally {
+      m.stopMonitor();
+      events.stop();
+      if (holder.exitCode === null && holder.signalCode === null) {
+        holder.kill('SIGTERM');
+        await holderExited;
+      }
+    }
   }, 60_000);
 
   it('the monitor gives up after 3 restarts in 10 minutes', async () => {

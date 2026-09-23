@@ -1,0 +1,35 @@
+{
+  "name": "@avdm/emulator-shell",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Reusable Electron shell and UI for AVD-based products",
+  "type": "module",
+  "exports": {
+    "./main/*": "./src/main/*.ts",
+    "./shared/ipc": "./src/shared/ipc.ts",
+    "./renderer/api": "./src/renderer/api.ts",
+    "./renderer/format": "./src/renderer/format.ts",
+    "./renderer/styles.css": "./src/renderer/styles.css",
+    "./renderer/views/*": "./src/renderer/views/*.tsx",
+    "./renderer/components/*": "./src/renderer/components/*.tsx",
+    "./renderer/hooks/*": "./src/renderer/hooks/*.ts",
+    "./renderer/live/*": "./src/renderer/live/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit"
+  },
+  "dependencies": {
+    "@avdm/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "electron": "^44.4.5",
+    "react": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "electron": "^44.4.5",
+    "react": "^19.3.0",
+    "typescript": "5.9.3"
+  }
+}

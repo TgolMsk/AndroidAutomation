@@ -1,0 +1,13 @@
+#!/bin/sh
+# Run the packaged CLI with the Electron app's embedded Node runtime.
+script=$0
+while [ -L "$script" ]; do
+  script_dir=$(CDPATH= cd -P -- "$(dirname -- "$script")" && pwd)
+  target=$(readlink "$script") || exit 1
+  case "$target" in
+    /*) script=$target ;;
+    *) script=$script_dir/$target ;;
+  esac
+done
+contents=$(CDPATH= cd -P -- "$(dirname -- "$script")/../.." && pwd) || exit 1
+exec env ELECTRON_RUN_AS_NODE=1 "$contents/MacOS/AVD 多开管理器" "$contents/Resources/app.asar/out/main/cli.js" "$@"

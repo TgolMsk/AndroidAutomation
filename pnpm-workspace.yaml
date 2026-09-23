@@ -1,5 +1,6 @@
 packages:
   - packages/*
+  - apps/*
 
 # CI builds an arm64 installer even when its macOS host is x64. Install both
 # native Sharp variants so electron-builder can package the target binaries.

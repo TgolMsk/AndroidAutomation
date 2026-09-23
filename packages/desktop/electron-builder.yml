@@ -1,16 +1,15 @@
 appId: com.tgolmsk.avdm
 productName: AVD 多开管理器
 asar: true
-# Sharp loads native .node binaries and libvips beside its package at runtime.
-asarUnpack:
-  - '**/node_modules/sharp/**/*'
-  - '**/node_modules/@img/**/*'
 directories:
   output: ../../release
 files:
   - out/**/*
   - package.json
   - '!**/*.map'
+extraFiles:
+  - from: build/avdm
+    to: Resources/bin/avdm
 mac:
   category: public.app-category.developer-tools
   icon: build/icon.icns

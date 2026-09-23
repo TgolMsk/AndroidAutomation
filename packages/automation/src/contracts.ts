@@ -111,6 +111,8 @@ export interface GamePlugin {
   id: string;
   name: string;
   packageName: string;
+  /** Reference canvas shared by templates and game coordinates. */
+  referenceSize?: { width: number; height: number };
   probeAnchors: readonly string[];
 }
 

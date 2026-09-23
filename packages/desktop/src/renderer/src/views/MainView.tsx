@@ -449,7 +449,6 @@ export function MainView() {
         memoryReserveMb={settings?.memoryReserveMb}
         onCreate={openCreate}
         onScripts={() => setDialog({ kind: 'scripts' })}
-        onOpenAutomation={() => { window.location.hash = '#/automation'; }}
         onSettings={() => setDialog({ kind: 'settings' })}
         createDisabled={!settings || !sdk}
       />

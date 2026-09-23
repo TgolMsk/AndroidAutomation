@@ -4,6 +4,7 @@ export const wanlongPlugin: GamePlugin = {
   id: 'wanlong',
   name: '万龙觉醒',
   packageName: 'com.lilithgames.samo.android.cn',
+  referenceSize: { width: 2560, height: 1440 },
   probeAnchors: [
     'tpl_world_search_icon',
     'tpl_nav_map_toggle',

@@ -22,12 +22,15 @@ import { flushAndExit, reportError } from './runtime.js';
  */
 
 function readVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
-    return pkg.version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
+  // Source/dist CLI: ../package.json. Bundled inside the desktop app:
+  // out/main/cli.js -> ../../package.json in app.asar.
+  for (const candidate of ['../package.json', '../../package.json']) {
+    try {
+      const pkg = JSON.parse(readFileSync(new URL(candidate, import.meta.url), 'utf8')) as { version?: string };
+      if (pkg.version) return pkg.version;
+    } catch { /* Try the next package layout. */ }
   }
+  return '0.0.0';
 }
 
 // ───────────────────────────── Help / error localisation ─────────────────────────────

@@ -44,22 +44,20 @@ export default defineConfig({
   main: {
     plugins: [copyProtoPlugin()],
     build: {
-      // Bundle local workspaces into both main entries; native dependencies remain external.
-      externalizeDeps: { exclude: ['@avdm/core', '@avdm/automation'] },
+      // Bundle the shared manager core; the emulator app contains no game automation.
+      externalizeDeps: { exclude: ['@avdm/core', '@avdm/emulator-shell', '@avdm/cli'] },
       rollupOptions: {
-        // Sharp resolves its platform native addon relative to its own package.
-        // Bundling its JS into probe-worker.js breaks that lookup.
-        external: ['sharp', '@techstark/opencv-js'],
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
-          'probe-worker': resolve(__dirname, 'src/main/automation/probe-worker.ts'),
-          'gather-worker': resolve(__dirname, 'src/main/automation/gather-worker.ts'),
+          cli: resolve(__dirname, 'src/main/cli.ts'),
         },
       },
     },
   },
   preload: {
     build: {
+      // Sandboxed preloads cannot resolve workspace packages at runtime.
+      externalizeDeps: { exclude: ['@avdm/emulator-shell'] },
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/preload/index.ts') },
         // Sandboxed preloads must be CommonJS.

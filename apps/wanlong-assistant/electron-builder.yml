@@ -1,0 +1,25 @@
+appId: com.tgolmsk.wanlongassistant
+productName: 万龙助手
+asar: true
+# Sharp needs its native addon and libvips next to its package at runtime.
+asarUnpack:
+  - '**/node_modules/sharp/**/*'
+  - '**/node_modules/@img/**/*'
+directories:
+  output: ../../release/wanlong-assistant
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+mac:
+  category: public.app-category.productivity
+  icon: build/panel-icon.icns
+  identity: '-'
+  hardenedRuntime: false
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  artifactName: Wanlong-Assistant-${version}-mac-arm64.${ext}
+dmg:
+  title: 万龙助手 ${version}

@@ -1,0 +1,850 @@
+.automation-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.automation-header {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  min-height: 78px;
+  padding: 13px 28px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+}
+
+.automation-back {
+  flex: 0 0 auto;
+}
+
+.automation-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.automation-heading-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.automation-heading h1 {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.2;
+  font-weight: 680;
+  letter-spacing: -0.02em;
+}
+
+.automation-heading p {
+  margin: 3px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.automation-header-count {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.automation-shell {
+  display: block;
+  min-height: 0;
+  flex: 1;
+}
+
+.automation-main {
+  min-width: 0;
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.automation-content {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 31px 42px 70px;
+}
+
+.automation-workspace-tabs {
+  display: flex;
+  gap: 3px;
+  overflow-x: auto;
+  margin: 12px 0 28px;
+  border-bottom: 1px solid var(--border);
+  scrollbar-width: thin;
+}
+
+.automation-workspace-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: 43px;
+  padding: 0 16px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 560;
+  cursor: pointer;
+}
+
+.automation-workspace-tab:hover { color: var(--text); background: var(--panel); }
+.automation-workspace-tab.is-active { color: var(--accent); border-bottom-color: var(--accent); }
+.automation-workspace-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+
+.automation-game-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 26px;
+}
+
+.automation-game-heading h2 {
+  margin: 0;
+  font-size: 25px;
+  line-height: 1.22;
+  font-weight: 660;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+.automation-game-heading p {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.automation-game-heading > span {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.automation-section {
+  padding: 24px 0 27px;
+  border-top: 1px solid var(--border);
+}
+
+.automation-section-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.automation-section-title h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.3;
+  text-wrap: balance;
+}
+
+.automation-section-title p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: right;
+}
+
+.automation-target-grid,
+.automation-run-controls {
+  display: flex;
+  align-items: end;
+  gap: 15px;
+}
+
+.automation-field {
+  display: grid;
+  gap: 7px;
+  min-width: 250px;
+  max-width: 380px;
+  flex: 1;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.automation-field select {
+  height: 36px;
+  color: var(--text);
+}
+
+.automation-instance-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.automation-template-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 64px;
+  margin-top: 20px;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.automation-template-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.automation-template-copy strong {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-template-row .btn {
+  flex: 0 0 auto;
+}
+
+.automation-guidance {
+  display: flex;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 11px 12px;
+  border-radius: var(--radius);
+  background: var(--accent-bg);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.automation-guidance svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.automation-guidance code {
+  font-family: var(--mono);
+  color: var(--accent-2);
+}
+
+.automation-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: 520px;
+  min-height: 50px;
+  cursor: pointer;
+}
+
+.automation-switch-row > span {
+  display: grid;
+  gap: 2px;
+}
+
+.automation-switch-row strong {
+  font-size: 13px;
+  font-weight: 580;
+}
+
+.automation-switch-row small {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.automation-switch-row input,
+.automation-resource input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.automation-resource-head {
+  margin: 19px 0 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.automation-resource-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.automation-resource {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 104px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.automation-resource:has(input:checked) {
+  border-color: var(--border-2);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.automation-resource input:disabled {
+  cursor: default;
+}
+
+.automation-config-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 520px;
+  margin-top: 16px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.automation-probe-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.automation-probe-report {
+  margin-top: 17px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.automation-probe-verdict {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 43px;
+  padding: 10px 14px;
+  background: var(--amber-bg);
+  color: var(--amber);
+}
+
+.automation-probe-verdict.is-detected {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.automation-probe-verdict strong {
+  font-size: 12px;
+}
+
+.automation-probe-verdict span {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.automation-probe-reason {
+  margin: 0;
+  padding: 10px 15px;
+  border-bottom: 1px solid var(--border);
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.automation-probe-reason.is-ready {
+  color: var(--text-2);
+}
+
+.automation-probe-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+  margin: 0;
+  padding: 15px 16px;
+}
+
+.automation-probe-facts div {
+  min-width: 0;
+}
+
+.automation-probe-facts dt {
+  margin-bottom: 5px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.automation-probe-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.automation-probe-facts dd.is-warning {
+  color: var(--amber);
+}
+
+.automation-probe-facts dd small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.automation-match-scroll {
+  width: 100%;
+  overflow: auto;
+}
+
+.automation-match-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 11px;
+}
+
+.automation-match-table th {
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-weight: 520;
+  white-space: nowrap;
+}
+
+.automation-match-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  vertical-align: top;
+}
+
+.automation-match-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.automation-match-table td:first-child {
+  max-width: 200px;
+  overflow-wrap: anywhere;
+}
+
+.automation-match-state {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.automation-match-state.is-found {
+  color: var(--green);
+}
+
+.automation-score {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 112px;
+  font-family: var(--mono);
+}
+
+.automation-score-track {
+  width: 120px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--panel-3);
+}
+
+.automation-score-track > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.automation-match-table td small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-dim);
+}
+
+.automation-probe-timing {
+  margin: 0;
+  padding: 9px 15px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.automation-run-controls .automation-field {
+  max-width: 360px;
+}
+
+.automation-pending {
+  display: flex;
+  align-items: start;
+  gap: 10px;
+  max-width: 660px;
+  padding: 14px 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text-2);
+}
+
+.automation-pending svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.automation-pending span {
+  display: grid;
+  gap: 5px;
+}
+
+.automation-pending strong {
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.automation-pending small {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.automation-run-hint {
+  margin: 12px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.automation-probe-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 15px;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.automation-probe-confirm input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.automation-probe-confirm:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.automation-schedule {
+  margin-top: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.automation-schedule.is-enabled {
+  border-color: var(--border-2);
+}
+
+.automation-schedule-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 17px 18px;
+}
+
+.automation-schedule-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 9px;
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.automation-schedule-heading > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.automation-schedule-heading strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 630;
+}
+
+.automation-schedule-heading p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.automation-schedule-switch {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 24px;
+  flex: 0 0 auto;
+  padding: 2px;
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  background: var(--panel-3);
+  color: var(--text);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out);
+}
+
+.automation-schedule-switch > span {
+  display: block;
+  width: 17px;
+  height: 17px;
+  justify-self: start;
+  border-radius: 50%;
+  background: var(--text-2);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+
+.automation-schedule-switch[aria-checked='true'] {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.automation-schedule-switch[aria-checked='true'] > span {
+  background: var(--accent-ink);
+  transform: translateX(18px);
+}
+
+.automation-schedule-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.automation-schedule-switch:disabled {
+  opacity: 0.52;
+  cursor: default;
+}
+
+.automation-schedule-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--border);
+}
+
+.automation-schedule-stats > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 18px 14px;
+}
+
+.automation-schedule-stats > div + div {
+  border-left: 1px solid var(--border);
+}
+
+.automation-schedule-stats span {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.automation-schedule-stats strong {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 570;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-schedule-stats strong.is-on {
+  color: var(--green);
+}
+
+.automation-schedule-note,
+.automation-schedule > .automation-inline-error {
+  margin: 0;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.automation-schedule > .automation-inline-error {
+  color: var(--red);
+}
+
+.automation-schedule > .automation-inline-error .btn {
+  margin-left: 10px;
+}
+
+.automation-run-history {
+  margin-top: 27px;
+}
+
+.automation-run-history h4 {
+  margin: 0 0 10px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 580;
+}
+
+.automation-run-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 57px;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+}
+
+.automation-run-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--grey);
+}
+
+.automation-run-dot.is-running { background: var(--green); }
+.automation-run-dot.is-stopping { background: var(--amber); }
+.automation-run-dot.is-failed { background: var(--red); }
+
+.automation-run-item > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  flex: 1;
+}
+
+.automation-run-item strong {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 580;
+}
+
+.automation-run-item small {
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-run-meta {
+  display: grid;
+  gap: 3px;
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.automation-inline-error {
+  margin: 10px 0;
+  color: var(--red);
+  font-size: 12px;
+}
+
+.automation-muted {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.automation-empty {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  min-height: 100%;
+  padding: 48px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.automation-empty svg {
+  color: var(--text-faint);
+}
+
+.automation-empty h2 {
+  margin: 15px 0 4px;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.automation-empty p {
+  max-width: 35ch;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+@media (max-width: 940px) {
+  .automation-content { padding: 26px 30px 60px; }
+}
+
+@media (max-width: 640px) {
+  .automation-header { gap: 12px; padding: 12px 16px; }
+  .automation-header-count, .automation-heading p { display: none; }
+  .automation-content { padding: 22px 18px 50px; }
+  .automation-section-title { display: block; }
+  .automation-section-title p { margin-top: 5px; text-align: left; }
+  .automation-target-grid, .automation-run-controls { align-items: stretch; flex-direction: column; }
+  .automation-field, .automation-run-controls .automation-field { width: 100%; max-width: none; min-width: 0; }
+  .automation-instance-state { min-height: 25px; }
+  .automation-template-row { align-items: stretch; flex-direction: column; }
+  .automation-template-row .btn { align-self: start; }
+  .automation-probe-facts { grid-template-columns: 1fr 1fr; }
+  .automation-probe-facts div:first-child { grid-column: 1 / -1; }
+  .automation-schedule-stats { grid-template-columns: 1fr; }
+  .automation-schedule-stats > div + div { border-left: 0; border-top: 1px solid var(--border); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .automation-schedule-switch, .automation-schedule-switch > span { transition: none; }
+}

@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('electron', () => import('./helpers/electron-mock'));
+vi.mock('electron', () => import('../../emulator-shell/test/helpers/electron-mock'));
 
 import type { LiveService } from '../src/main/live';
 import type { ManagerHost } from '../src/main/manager-host';
 import { LIVE_TOOLBAR_HEIGHT, WindowManager } from '../src/main/windows';
-import { BrowserWindow } from './helpers/electron-mock';
+import { BrowserWindow } from '../../emulator-shell/test/helpers/electron-mock';
 
 function setup(spec = { width: 1280, height: 720 }, gate?: Promise<void>) {
   const manager = {

@@ -3,12 +3,12 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const broadcast = vi.fn();
-vi.mock('../src/main/events', () => ({ broadcast: (...args: unknown[]) => broadcast(...args) }));
+vi.mock('../../emulator-shell/src/main/events', () => ({ broadcast: (...args: unknown[]) => broadcast(...args) }));
 
 import { watchBuild } from '../src/main/build-watch';
 
-// watchBuild() watches its own module file; in tests that is src/main/build-watch.ts.
-const moduleFile = fileURLToPath(new URL('../src/main/build-watch.ts', import.meta.url));
+// watchBuild() watches its own module file; the implementation is in the shared shell.
+const moduleFile = fileURLToPath(new URL('../../emulator-shell/src/main/build-watch.ts', import.meta.url));
 
 describe('watchBuild', () => {
   const original = statSync(moduleFile);

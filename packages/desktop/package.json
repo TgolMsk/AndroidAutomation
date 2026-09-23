@@ -1,6 +1,6 @@
 {
   "name": "@avdm/desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "AVD 多开管理器桌面客户端（Electron）",
   "author": "TgolMsk",
@@ -14,16 +14,11 @@
     "test": "../core/node_modules/.bin/vitest run"
   },
   "dependencies": {
-    "@avdm/automation": "workspace:*",
     "@avdm/core": "workspace:*",
+    "@avdm/emulator-shell": "workspace:*",
     "@grpc/grpc-js": "^1.14.5",
     "@grpc/proto-loader": "^0.8.1",
-    "@techstark/opencv-js": "^5.0.0-release.1",
-    "sharp": "^0.35.4"
-  },
-  "optionalDependencies": {
-    "@img/sharp-darwin-arm64": "0.35.4",
-    "@img/sharp-libvips-darwin-arm64": "1.3.3"
+    "commander": "^15.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

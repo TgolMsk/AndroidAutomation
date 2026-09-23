@@ -369,8 +369,9 @@ export class AdbDevice {
    * Type `value` with `input text` (spaces → %s, shell metacharacters escaped). Tab and newline are sent as
    * TAB / ENTER key events; see planInputText for what is rejected. Every character of `value` is typed.
    */
-  async text(value: string): Promise<void> {
+  async text(value: string, beforeEach?: () => Promise<void>): Promise<void> {
     for (const step of planInputText(value)) {
+      await beforeEach?.();
       if (step.kind === 'key') await this.shell(`input keyevent ${step.code}`, { timeoutMs: 10_000 });
       else await this.shell(`input text ${escapeInputText(step.text)}`, { timeoutMs: 30_000 });
     }
