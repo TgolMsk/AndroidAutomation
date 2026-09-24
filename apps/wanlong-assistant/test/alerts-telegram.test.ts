@@ -447,7 +447,12 @@ describe('NotifyHub gates and cooldown (original section 五)', () => {
   });
 
   it('validates saves in Chinese: bad patches, bad token shapes, switches without credentials', async () => {
-    const hub = makeHub();
+    const viewPushes: boolean[] = [];
+    const savedPushes: boolean[] = [];
+    const hub = makeHub({
+      onViewChanged: (changed) => viewPushes.push(changed.remoteControlAvailable === true),
+      onConfigChanged: (changed) => savedPushes.push(changed.remoteControlAvailable === true),
+    });
     await expect(hub.saveConfig({ detect: { cycleFailThreshold: 0 } })).rejects.toThrow('告警设置无效');
     await expect(hub.saveConfig({ telegram: { botToken: 'HTTP API: 123' } })).rejects.toThrow('格式不对');
     await expect(hub.saveConfig({ telegram: { enabled: true } })).rejects.toThrow('开启 Telegram 推送前请先补齐');
@@ -462,13 +467,18 @@ describe('NotifyHub gates and cooldown (original section 五)', () => {
     expect(await hub.remoteBotConfig()).toMatchObject({ enabled: false });
     // Buttons follow the handler the bot module registers; the view tells the settings card.
     expect(hub.getConfigView().remoteControlAvailable).toBe(false);
-    const pushedViews: boolean[] = [];
-    hub.onConfigChanged((changed) => pushedViews.push(changed.remoteControlAvailable === true));
+    const listened: boolean[] = [];
+    hub.onConfigChanged((changed) => listened.push(changed.remoteControlAvailable === true));
+    const savesSoFar = savedPushes.length;
     hub.setRemoteControlHandler(true);
     hub.setRemoteControlHandler(true);
-    expect(pushedViews).toEqual([true]);
+    // ★ A view push only: not a save, so neither the save listeners nor the save port hear it (the bot reloads there).
+    expect(viewPushes).toEqual([true]);
+    expect(listened).toEqual([]);
+    expect(savedPushes).toHaveLength(savesSoFar);
     expect(hub.getConfigView().remoteControlAvailable).toBe(true);
     hub.setRemoteControlHandler(false);
+    expect(viewPushes).toEqual([true, false]);
     // Clearing the token switches every Telegram function off.
     const cleared = await hub.saveConfig({ telegram: { botToken: '' } });
     expect(cleared.telegram).toMatchObject({ botTokenSet: false, enabled: false, remoteReadOnlyEnabled: false, remoteControlEnabled: false });

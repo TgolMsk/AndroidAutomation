@@ -15,6 +15,12 @@
  *     A required index that is missing first gets an instance picker (one instance → run directly).
  *   · Buttons are answered at once (Telegram wants an answer within 10 s); the slow work runs afterwards on one
  *     ordered queue, so polling and answering never wait for a relaunch.
+ *   · ★ Every queued request belongs to the run (generation) that received it. Stop / restart ends the run: requests
+ *     not started yet are dropped, and an action already running finishes (it holds the instance lock) but its reply
+ *     is not sent — as in the original, where stop() aborted the loop that ran actions inline. Right before an action
+ *     runs, the settings are read again: a switch turned off or a changed Chat ID / user since the poll stops it.
+ *   · Settings saves call `reload()`: it restarts only when the bot-relevant settings changed (switches, token, Chat ID,
+ *     authorized user), so an unrelated save never cuts a phone request off.
  *   · ★ The backlog is dropped when polling starts (offset -1): a stale /relaunch never replays after a restart.
  *   · Nothing escapes: the loop backs off (1 s doubling to 60 s; 409 = another process polls this token → 60 s), and a
  *     failed action answers 「操作失败：<reason>」.
@@ -99,8 +105,10 @@ const MAX_QUEUED = 20;
 const MAX_WARNED = 256;
 /** Texts parsed from a message (a command line is short). */
 const MAX_COMMAND_CHARS = 200;
-/** How long `stop()` waits for the action in progress to finish sending. */
+/** How long `stop()` waits for the action in progress to settle. */
 const STOP_DRAIN_MS = 3_000;
+/** Log text for a request that is dropped before it runs. */
+const DROPPED_REQUEST = '一条还没开始处理的手机请求已丢弃（不会再执行）。';
 
 const TOKEN_IN_URL = /bot\d{5,}:[A-Za-z0-9_-]{20,}/g;
 const TOKEN_LIKE = /\d{5,}:[A-Za-z0-9_-]{30,}/g;
@@ -129,6 +137,18 @@ function botWanted(cfg: TelegramConfig): boolean {
   return cfg.remoteReadOnlyEnabled || cfg.remoteControlEnabled;
 }
 
+/** The settings a running bot depends on (★ holds the token: in memory only, never logged). */
+function botFingerprint(cfg: TelegramConfig): string {
+  return JSON.stringify([cfg.botToken.trim(), cfg.chatId.trim(), cfg.authorizedUserId.trim(), cfg.remoteReadOnlyEnabled, cfg.remoteControlEnabled]);
+}
+
+/** Who asked, and in which run of the bot (see `generation`). */
+interface Requester {
+  chatId: string;
+  userId: string;
+  generation: number;
+}
+
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) { resolve(); return; }
@@ -149,8 +169,15 @@ export class TelegramBot {
   private prepared = false;
   private abort: AbortController | null = null;
   private loopPromise: Promise<void> | null = null;
-  /** Serializes start / stop / restart. */
+  /** Serializes start / stop / restart / reload. */
   private lifecycle: Promise<unknown> = Promise.resolve();
+  /**
+   * ★ Bumped by every stop (so by every restart): queued requests of an ended run never start and their replies are
+   * never sent.
+   */
+  private generation = 0;
+  /** `botFingerprint` of the settings the running bot started with ('' while stopped). */
+  private startedWith = '';
   /** The ordered queue of slow work (actions and their replies). */
   private work: Promise<void> = Promise.resolve();
   private queued = 0;
@@ -182,9 +209,25 @@ export class TelegramBot {
     return this.serialize(() => this.doStop());
   }
 
-  /** After every settings change: stop, then start by the new settings. */
+  /** Stop, then start by the current settings (unconditionally). */
   restart(): Promise<boolean> {
     return this.serialize(async () => { await this.doStop(); return this.doStart(); });
+  }
+
+  /**
+   * After a settings save: restart only when the settings the bot depends on changed (a running bot with the same
+   * switches, token, Chat ID and user keeps running untouched); a stopped bot tries to start. ★ Never call this from
+   * `onStatus` — use it for saves only.
+   */
+  reload(): Promise<boolean> {
+    return this.serialize(async () => {
+      if (this.active) {
+        const cfg = await this.deps.config();
+        if (botFingerprint(cfg) === this.startedWith) return true;
+        await this.doStop();
+      }
+      return this.doStart();
+    });
   }
 
   /** Wait for the queued actions and replies (tests, shutdown). */
@@ -251,6 +294,7 @@ export class TelegramBot {
     }
     this.active = true;
     this.prepared = false;
+    this.startedWith = botFingerprint(cfg);
     const controller = new AbortController();
     this.abort = controller;
     this.setStatus({ running: true, readEnabled: cfg.remoteReadOnlyEnabled, controlEnabled: cfg.remoteControlEnabled, problem: null });
@@ -264,9 +308,12 @@ export class TelegramBot {
     const loop = this.loopPromise;
     if (!this.active && !loop) return;
     this.active = false;
+    this.startedWith = '';
+    // ★ Ends this run: queued requests are dropped when their turn comes, the running one's reply is not sent.
+    this.generation += 1;
     this.abort?.abort(new Error('机器人已停止'));
     await loop?.catch(() => undefined);
-    // The action in progress keeps its lock and finishes on its own; only its reply may be cut off.
+    // The action in progress keeps its lock and finishes on its own (its reply is dropped); this only lets it settle.
     await Promise.race([this.work, new Promise<void>((resolve) => { const timer = setTimeout(resolve, STOP_DRAIN_MS); timer.unref?.(); })]);
     this.loopPromise = null;
     this.abort = null;
@@ -342,14 +389,17 @@ export class TelegramBot {
   }
 
   private async pollBatch(cfg: TelegramConfig, timeoutSec: number): Promise<number> {
+    // ★ The run this batch belongs to: a batch that arrives after stop / restart is not handled at all.
+    const generation = this.generation;
     const updates = await this.getUpdates(cfg, this.offset, timeoutSec, UPDATE_LIMIT);
     for (const update of updates) {
+      if (generation !== this.generation) break;
       const id = update.update_id;
       if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < this.offset) continue;
       // Advance first: an update that throws is skipped, never retried forever.
       this.offset = id + 1;
       try {
-        await this.handle(cfg, update);
+        await this.handle(cfg, update, generation);
       } catch (error) {
         this.log('warn', `处理一条 Telegram 更新时出错（已跳过）：${this.clean(messageOf(error))}`);
       }
@@ -364,9 +414,9 @@ export class TelegramBot {
     return Array.isArray(result) ? (result as TgUpdate[]).slice(0, UPDATE_LIMIT) : [];
   }
 
-  private async handle(cfg: TelegramConfig, update: TgUpdate): Promise<void> {
-    if (update.callback_query) return this.onCallback(cfg, update.callback_query);
-    if (update.message && typeof update.message.text === 'string') return this.onMessage(cfg, update.message);
+  private async handle(cfg: TelegramConfig, update: TgUpdate, generation: number): Promise<void> {
+    if (update.callback_query) return this.onCallback(cfg, update.callback_query, generation);
+    if (update.message && typeof update.message.text === 'string') return this.onMessage(cfg, update.message, generation);
   }
 
   // ── Authorization ─────────────────────────────────────────────────────────
@@ -386,7 +436,7 @@ export class TelegramBot {
 
   // ── Buttons ───────────────────────────────────────────────────────────────
 
-  private async onCallback(cfg: TelegramConfig, query: TgCallbackQuery): Promise<void> {
+  private async onCallback(cfg: TelegramConfig, query: TgCallbackQuery, generation: number): Promise<void> {
     const chatId = idOf(query.message?.chat?.id);
     const userId = idOf(query.from?.id);
     const queryId = typeof query.id === 'string' ? query.id.slice(0, 128) : '';
@@ -410,17 +460,19 @@ export class TelegramBot {
     }
     // Answer first (Telegram wants it within 10 s), then do the work and send the result as its own message.
     if (queryId) await this.answerCallback(cfg, queryId, BOT_ACTION_SPECS[parsed.action].touchesDevice ? '收到，正在操作模拟器，请稍等…' : '收到，正在处理…');
-    this.enqueue(() => this.dispatchCommand(cfg, chatId, parsed.action, parsed.instanceIndex));
+    const requester: Requester = { chatId, userId: userId ?? '', generation };
+    this.enqueue(requester, () => this.dispatchCommand(requester, parsed.action, parsed.instanceIndex));
   }
 
   // ── Commands and menu button texts ───────────────────────────────────────
 
-  private async onMessage(cfg: TelegramConfig, message: TgMessage): Promise<void> {
+  private async onMessage(cfg: TelegramConfig, message: TgMessage, generation: number): Promise<void> {
     const chatId = idOf(message.chat?.id);
     const userId = idOf(message.from?.id);
     if (!this.authorized(cfg, chatId, userId) || !chatId) return;
     const text = String(message.text ?? '').trim().slice(0, MAX_COMMAND_CHARS);
     if (text === '') return;
+    const requester: Requester = { chatId, userId: userId ?? '', generation };
 
     // ① A menu button: Telegram sends the button's literal text.
     let command: BotCommand | null = commandOfButtonText(text);
@@ -433,7 +485,10 @@ export class TelegramBot {
       index = /^\d{1,4}$/.test(arg ?? '') ? Number(arg) : null;
       command = name === 'help' || name === 'start' ? name : actionOfCommand(name);
       if (!command) {
-        this.enqueue(() => this.sendText(cfg, chatId, `不认识的命令「/${name}」。\n${BOT_HELP_TEXT}`, buildMenuKeyboard()));
+        this.enqueue(requester, async () => {
+          const current = await this.currentConfig(requester, DROPPED_REQUEST);
+          if (current) await this.sendText(current, chatId, `不认识的命令「/${name}」。\n${BOT_HELP_TEXT}`, buildMenuKeyboard());
+        });
         return;
       }
     }
@@ -442,14 +497,18 @@ export class TelegramBot {
       return;
     }
     const resolved = command;
-    this.enqueue(() => this.dispatchCommand(cfg, chatId, resolved, index));
+    this.enqueue(requester, () => this.dispatchCommand(requester, resolved, index));
   }
 
   /**
    * help / start → the help text with the menu keyboard. An action whose switch is off → the explanation. A required
    * index that is missing → the instance picker (one instance runs directly). Everything else runs.
+   * ★ Judged on the settings read now, not on the poll's: the queue may have waited behind a relaunch for minutes.
    */
-  private async dispatchCommand(cfg: TelegramConfig, chatId: string, command: BotCommand, index: number | null): Promise<void> {
+  private async dispatchCommand(requester: Requester, command: BotCommand, index: number | null): Promise<void> {
+    const cfg = await this.currentConfig(requester, DROPPED_REQUEST);
+    if (!cfg) return;
+    const { chatId } = requester;
     if (command === 'help' || command === 'start') return this.sendText(cfg, chatId, BOT_HELP_TEXT, buildMenuKeyboard());
     const action: BotAction = command;
     if (!botActionAllowed(action, cfg)) return this.sendText(cfg, chatId, botPermissionRefusal(action));
@@ -459,36 +518,89 @@ export class TelegramBot {
       try {
         list = await this.deps.actions.listInstances();
       } catch (error) {
-        return this.sendText(cfg, chatId, `取实例列表失败：${this.clean(messageOf(error))}`);
+        return this.reply(requester, (current) => this.sendText(current, chatId, `取实例列表失败：${this.clean(messageOf(error))}`));
       }
-      if (list.length === 1) return this.run(cfg, chatId, action, list[0]!.index);
-      if (list.length === 0) return this.sendText(cfg, chatId, '还没有任何可操作的实例。先到助手「设备与账号」页创建实例并绑定账号。');
-      return this.sendText(cfg, chatId, `请选择账号（${spec.description}）：`, buildInstancePicker(action, list));
+      if (list.length === 1) return this.run(requester, action, list[0]!.index);
+      if (list.length === 0) {
+        return this.reply(requester, (current) => this.sendText(current, chatId, '还没有任何可操作的实例。先到助手「设备与账号」页创建实例并绑定账号。'));
+      }
+      return this.reply(requester, (current) => this.sendText(current, chatId, `请选择账号（${spec.description}）：`, buildInstancePicker(action, list)));
     }
-    return this.run(cfg, chatId, action, index);
+    return this.run(requester, action, index);
   }
 
-  /** Run one action and send the result: photo first, then the text. A thrown reason goes back to the user. */
-  private async run(cfg: TelegramConfig, chatId: string, action: BotAction, index: number | null): Promise<void> {
+  /**
+   * Run one action and send the result: photo first, then the text. A thrown reason goes back to the user.
+   * ★ The settings are read again right before `perform`: a switch turned off since then refuses, a stopped bot or a
+   *   changed Chat ID / user drops the request without running it.
+   */
+  private async run(requester: Requester, action: BotAction, index: number | null): Promise<void> {
+    const cfg = await this.currentConfig(requester, DROPPED_REQUEST);
+    if (!cfg) return;
+    const { chatId } = requester;
+    if (!botActionAllowed(action, cfg)) return this.sendText(cfg, chatId, botPermissionRefusal(action));
     let result: BotActionResult;
     try {
       result = await this.deps.actions.perform(action, index);
     } catch (error) {
       // The action layer never sees the token; scrubbed anyway as the last safety net.
-      return this.sendText(cfg, chatId, `操作失败：${this.clean(messageOf(error))}`);
+      const why = this.clean(messageOf(error));
+      return this.reply(requester, (current) => this.sendText(current, chatId, `操作失败：${why}`), `操作失败：${why}`);
     }
-    if (result.photo) await this.sendPhoto(cfg, chatId, result.photo);
-    if (result.text.trim() !== '') {
-      await this.sendText(cfg, chatId, result.text, result.keyboard ?? (result.showMenu ? buildMenuKeyboard() : undefined));
-    } else if (result.showMenu) {
-      await this.sendText(cfg, chatId, '菜单已刷新。', buildMenuKeyboard());
-    }
+    return this.reply(requester, async (current) => {
+      if (result.photo) await this.sendPhoto(current, chatId, result.photo);
+      if (result.text.trim() !== '') {
+        await this.sendText(current, chatId, result.text, result.keyboard ?? (result.showMenu ? buildMenuKeyboard() : undefined));
+      } else if (result.showMenu) {
+        await this.sendText(current, chatId, '菜单已刷新。', buildMenuKeyboard());
+      }
+    }, result.text || result.photo?.caption || '');
   }
 
-  private enqueue(work: () => Promise<void>): void {
+  /**
+   * The settings to act / answer with, read now; null (logged with `dropped`) when this request must go no further:
+   * its run of the bot ended (stop / restart), both switches are off, or the Chat ID / authorized user changed.
+   */
+  private async currentConfig(requester: Requester, dropped: string): Promise<TelegramConfig | null> {
+    if (requester.generation !== this.generation) {
+      this.log('info', `机器人已停止或按新设置重启，${dropped}`);
+      return null;
+    }
+    let cfg: TelegramConfig;
+    try {
+      cfg = await this.deps.config();
+    } catch (error) {
+      this.log('warn', `读取机器人设置失败，${dropped}（${this.clean(messageOf(error))}）`);
+      return null;
+    }
+    this.lastToken = cfg.botToken;
+    if (requester.generation !== this.generation) {
+      this.log('info', `机器人已停止或按新设置重启，${dropped}`);
+      return null;
+    }
+    if (!botWanted(cfg) || cfg.chatId.trim() !== requester.chatId || cfg.authorizedUserId.trim() !== requester.userId) {
+      this.log('info', `机器人设置已变更（开关已关闭，或换了 Chat ID / 授权用户），${dropped}`);
+      return null;
+    }
+    return cfg;
+  }
+
+  /** Send a reply only while the request is still current (see `currentConfig`); otherwise log what was dropped. */
+  private async reply(requester: Requester, send: (cfg: TelegramConfig) => Promise<void>, summary = ''): Promise<void> {
+    const first = this.clean(summary).split('\n')[0]?.slice(0, 120) ?? '';
+    const cfg = await this.currentConfig(requester, `这次操作的结果没有发回手机${first ? `：${first}` : '。'}`);
+    if (cfg) await send(cfg);
+  }
+
+  /** ★ Queued work of an ended run (stop / restart) is dropped when its turn comes, never started. */
+  private enqueue(requester: Requester, work: () => Promise<void>): void {
     this.queued++;
     this.work = this.work
-      .then(work)
+      .then(() => {
+        if (requester.generation === this.generation) return work();
+        this.log('info', `机器人已停止或按新设置重启，${DROPPED_REQUEST}`);
+        return undefined;
+      })
       .catch((error: unknown) => this.log('warn', `机器人处理请求时出错：${this.clean(messageOf(error))}`))
       .then(() => { this.queued = Math.max(0, this.queued - 1); });
   }

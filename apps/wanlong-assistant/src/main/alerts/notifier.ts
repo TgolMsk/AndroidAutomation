@@ -47,6 +47,11 @@ export interface NotifyHubPorts {
   log?(level: AlertLogLevel, message: string): void;
   /** Masked view after every save (IPC push `alert-config-changed`). */
   onConfigChanged?(view: AlertsConfigView): void;
+  /**
+   * Masked view after a change that is not a save (`setRemoteControlHandler`: the bot started / stopped). ★ Only a UI
+   * push: the bot restarts on `onConfigChanged`, so wiring its status here must never feed back into a restart.
+   */
+  onViewChanged?(view: AlertsConfigView): void;
 }
 
 /** What `dispatch()` returns. */
@@ -163,15 +168,13 @@ export class NotifyHub {
    * The bot module says whether it answers the alert buttons' callbacks (`resume:` / `relaunch:` / `status:`, see
    * `parseAlertCallbackData`). ★ Until one does, 「允许手机远程操作」 attaches no buttons: a button nobody handles
    * spins forever on the phone. Publishes the view so the settings card can say so.
+   * ★ Not a config save: neither the `onConfigChanged` listeners nor the port hear it (the bot restarts on those, and
+   *   its own start / stop calls this — a restart here would loop forever). Only `onViewChanged` does.
    */
   setRemoteControlHandler(active: boolean): void {
     if (this.remoteControlHandled === active) return;
     this.remoteControlHandled = active;
-    const view = this.getConfigView();
-    for (const listener of [...this.listeners]) {
-      try { listener(view); } catch (error) { this.log('warn', `告警配置变更回调抛异常，已忽略：${this.safe(error)}`); }
-    }
-    try { this.ports.onConfigChanged?.(view); } catch { /* A UI push never breaks this. */ }
+    try { this.ports.onViewChanged?.(this.getConfigView()); } catch { /* A UI push never breaks this. */ }
   }
 
   /** Thresholds for the detectors; ★ never the Telegram half. */
@@ -189,6 +192,7 @@ export class NotifyHub {
     return this.telegram;
   }
 
+  /** Called after every successful save (not after `setRemoteControlHandler`). */
   onConfigChanged(listener: (view: AlertsConfigView) => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
@@ -373,8 +377,8 @@ export class NotifyHub {
   }
 
   async saveRemoteBotConfig(patch: RemoteBotConfigPatch, running = false): Promise<RemoteBotConfigView> {
-    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('只读机器人配置补丁无效');
-    if (patch.enabled !== undefined && typeof patch.enabled !== 'boolean') throw new Error('只读机器人开关无效');
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('机器人设置补丁无效');
+    if (patch.enabled !== undefined && typeof patch.enabled !== 'boolean') throw new Error('「允许手机查看状态与截图」开关无效');
     if (patch.authorizedUserId !== undefined && (typeof patch.authorizedUserId !== 'string' || patch.authorizedUserId.length > 32)) {
       throw new Error('授权用户 ID 无效');
     }
@@ -388,7 +392,8 @@ export class NotifyHub {
   }
 
   /**
-   * ★ Main process only: the read-only bot's runtime config (plaintext token). Only 「允许手机查看状态与截图」
+   * ★ Main process only: the 「查看」 switch with its credentials (plaintext token; kept for the settings tests — the
+   *   bot itself reads `currentTelegramConfig()` and both switches). Only 「允许手机查看状态与截图」
    *   (`remoteReadOnlyEnabled`) starts it: remote control is a separate switch and never turns on /status or /shot
    *   (DECISIONS A.3: each switch means only what it says).
    */
@@ -396,7 +401,7 @@ export class NotifyHub {
     await this.ready;
     const t = this.cfg.telegram;
     if (!t.remoteReadOnlyEnabled) return { enabled: false, botToken: '', chatId: t.chatId, userId: t.authorizedUserId };
-    if (validateRemoteBotConfig(t).length > 0) throw new Error('只读机器人配置不完整');
+    if (validateRemoteBotConfig(t).length > 0) throw new Error('机器人设置不完整（查看状态与截图）');
     return { enabled: true, botToken: t.botToken, chatId: t.chatId, userId: t.authorizedUserId };
   }
 

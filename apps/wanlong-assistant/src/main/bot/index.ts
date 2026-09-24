@@ -13,7 +13,7 @@ import type { ResourceSnapshot } from '@avdm/automation/wanlong/pure';
 import type { TelegramConfig } from '../../shared/alerts';
 import type { ShotPolicy } from '../../shared/app-settings';
 import { BOT_PHOTO_JPEG_QUALITY, BOT_PHOTO_MAX_WIDTH, type BotActionPort, type BotStatusView } from '../../shared/bot';
-import type { FetchLike } from '../alerts/telegram';
+import { describeThrown, type FetchLike } from '../alerts/telegram';
 import { LoginPreviewEncoder } from '../automation/accounts/login-preview';
 import {
   createBotActions, type BotAccountInfo, type BotActionDeps, type BotInstanceInfo, type BotLogLevel, type BotPauseInfo,
@@ -132,6 +132,8 @@ export class BotService {
   start(): Promise<boolean> { return this.channel.start(); }
   stop(): Promise<void> { return this.channel.stop(); }
   restart(): Promise<boolean> { return this.channel.restart(); }
+  /** After a settings save: restart only when the bot's own settings changed (never from `onStatus`). */
+  reload(): Promise<boolean> { return this.channel.reload(); }
   status(): BotStatusView { return this.channel.status(); }
   isRunning(): boolean { return this.channel.isRunning(); }
   testConnection(): Promise<{ ok: boolean; message: string }> { return this.channel.testConnection(); }
@@ -141,6 +143,32 @@ export class BotService {
     await this.channel.stop();
     await this.encoder?.dispose();
   }
+}
+
+/**
+ * How `main/index.ts` ties the alerts hub and the bot together — one place, pinned by `test/bot-alerts-wiring.test.ts`.
+ *   · a settings save (NotifyHub `onConfigChanged`) reloads the bot: it restarts only when its own settings changed;
+ *   · the bot's start / stop (BotService `onStatus`) only tells the hub whether alert buttons are answered.
+ * ★ The second one is a view push (`onViewChanged`), never a save: wiring it back into a restart loops forever.
+ */
+export interface BotAlertsLink {
+  configSaved(): void;
+  botStatus(status: BotStatusView): void;
+}
+
+export function linkBotToAlerts(ports: {
+  bot(): Pick<BotService, 'reload'>;
+  hub(): { setRemoteControlHandler(active: boolean): void };
+  log(message: string): void;
+}): BotAlertsLink {
+  return {
+    configSaved() {
+      void ports.bot().reload().catch((error: unknown) => ports.log(`机器人按新配置重启失败：${describeThrown(error)}`));
+    },
+    botStatus(status) {
+      ports.hub().setRemoteControlHandler(status.running);
+    },
+  };
 }
 
 export { BotActionError, buildAccountRows, createBotActions, describeInstanceText } from './actions';

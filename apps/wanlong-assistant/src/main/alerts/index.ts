@@ -57,6 +57,7 @@ export interface AlertsServicePorts extends Omit<NotifyHubPorts, 'log' | 'onConf
   /** `EtaScheduler.refreshView`: republish the queue view after a pause record changed (its `pause` field). */
   refreshSchedulerView?(index: number): void;
   onRaised?(record: AlertRecord): void;
+  /** After a save (the bot reloads here). */
   onConfigChanged?(view: AlertsConfigView): void;
   gamePackage: string;
 }
@@ -84,6 +85,7 @@ export class AlertsService {
       ...(ports.now ? { now: ports.now } : {}),
       log: (level, message) => log(level, `[推送] ${message}`),
       ...(ports.onConfigChanged ? { onConfigChanged: ports.onConfigChanged } : {}),
+      ...(ports.onViewChanged ? { onViewChanged: ports.onViewChanged } : {}),
     });
     this.center = new AlertCenter(home, {
       notify: () => this.hub,

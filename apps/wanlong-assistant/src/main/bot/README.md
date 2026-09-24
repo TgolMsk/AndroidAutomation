@@ -39,7 +39,13 @@ src/renderer/views/bot/                设置页「Telegram 机器人 · 在助�
    动作层根本拿不到 Token；设置页只拿到 `BotStatusView`。从不加 `parse_mode`。
 6. **按钮先应答再干活**：回调在 10 秒内 `answerCallbackQuery`（「收到，正在操作模拟器，请稍等…」），慢动作排进一条有序队列
    （上限 20 个），轮询不会被一次重启游戏卡住。
+   ★ 队列里的每条请求属于收到它的那一轮运行：停止 / 重启就结束这一轮 —— 还没开始的请求直接丢弃，正在做的动作做完（它持有实例锁，
+   不能半路打断）但结果不再发回手机（与原版一致：原版在轮询循环里直接执行，stop() 一中止就什么都不剩）。每个动作 `perform`
+   之前再读一次设置：开关已关 → 回拒绝说明；两个开关都关了或换了 Chat ID / 授权用户 → 不执行、不回复。
 7. **启动时丢弃积压的旧更新**（`offset -1`）：重启助手后，睡着时发的 `/relaunch` 不会被重放。
+8. **只在保存设置时重载，且只在机器人自己的设置变了才重启**（`reload()`：开关、Token、Chat ID、授权用户）。机器人启停只调
+   `hub.setRemoteControlHandler(running)`，那一步只推视图（`onViewChanged`），**绝不能**再触发重启 —— 否则启停互相触发、永不停歇
+   （`test/bot-alerts-wiring.test.ts` 按 `main/index.ts` 的接线把 NotifyHub 与 BotService 接在一起钉死了这一条）。
 
 ## 权限（DECISIONS A.3）与鉴权
 
@@ -67,12 +73,13 @@ src/renderer/views/bot/                设置页「Telegram 机器人 · 在助�
 | 重启游戏 | 第二层任一预留模板命中都点顶号框坐标 | 只在 `tpl_dlg_kicked` 命中时点；进程在但被切到后台时用 monkey 切回前台；维护 / 更新公告单独报错 | 那个坐标只对顶号框校准过 |
 | 资源统计 / 今日统计 | 直接调 | 端口 `readResources` / `dailyStatsText`（`BotService.setPorts`），没接线时回「还没有接入」 | 统计与资源模块并行移植 |
 | 截图留底 | `<dataDir>/shots/bot/` | `automation/wanlong/bot-shots/`（0600，14 天 / 300 张），「不留痕」时不存 | 本仓库数据目录与留痕策略 |
-| 轮询 | 串行处理每条更新 | 快的部分（鉴权、应答按钮）立刻做，慢动作排队；启动时丢弃积压；每次最多 50 条 | 回调 10 秒内必须应答 |
+| 轮询 | 串行处理每条更新 | 快的部分（鉴权、应答按钮）立刻做，慢动作排队（停止 / 重启时丢弃未开始的，执行前按最新设置复核）；启动时丢弃积压；每次最多 50 条 | 回调 10 秒内必须应答 |
+| 重载 | 每次保存告警设置都重启 | 只在机器人自己的设置（开关 / Token / Chat ID / 授权用户）变了才重启 | 改别的设置不打断手机上正在排队的请求 |
 
 ## 给后续模块的接口
 
 - `BotService`（`main/index.ts` 的 `// ── bot (Telegram) ──`，变量名 `remoteBot`）：`actions`（`BotActionPort`）、`start / stop /
-  restart / status / testConnection / dispose`，**`setPorts({ readResources, recordSnapshot?, dailyStatsText })`** 给统计 / 资源模块
+  restart / reload / status / testConnection / dispose`（保存设置后用 `reload()`，只在机器人自己的设置变了才重启），**`setPorts({ readResources, recordSnapshot?, dailyStatsText })`** 给统计 / 资源模块
   在自己的区段里接线（`readResources` 已经记快照就不要再给 `recordSnapshot`）。
 - IPC（`shared/ipc/bot.ts`）：`botPerform(action, index | null)` → `BotActionResult`（`photo.jpeg` 是 `Uint8Array`）、`botInstances()`、
   `botStatus()`；事件 `bot-status`。旧的 `remoteBotConfig / saveRemoteBotConfig / testRemoteBot` 仍可用（设置保存在告警配置里）。
@@ -84,7 +91,7 @@ src/renderer/views/bot/                设置页「Telegram 机器人 · 在助�
 
 ```bash
 pnpm --filter @avdm/wanlong-assistant exec vitest run test/bot-actions.test.ts test/telegram-bot.test.ts \
-  test/shared-bot.test.ts test/bot-device.test.ts
+  test/shared-bot.test.ts test/bot-device.test.ts test/bot-alerts-wiring.test.ts
 pnpm --filter ./packages/automation exec vitest run test/wanlong-recover-game.test.ts
 ```
 

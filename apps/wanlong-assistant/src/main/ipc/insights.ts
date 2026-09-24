@@ -12,8 +12,12 @@ export interface InsightsServices {
   alerts: AlertsService;
 }
 
+/**
+ * The save already queued a reload (`onConfigChanged`); this waits for it (same serialized lifecycle, and a second
+ * reload of unchanged settings is a no-op) so the returned `running` is current.
+ */
 async function reloadBot(remoteBot: BotService): Promise<void> {
-  await remoteBot.restart().catch((error: unknown) =>
+  await remoteBot.reload().catch((error: unknown) =>
     console.warn('[wanlong] 机器人重载失败', error instanceof Error ? error.message : String(error)));
 }
 
@@ -42,7 +46,7 @@ export const insightsHandlers: DomainHandlers<InsightsApi, InsightsServices> = {
     return alerts.hub.remoteBotConfig(remoteBot.isRunning());
   },
   async saveRemoteBotConfig({ alerts, remoteBot }, patch) {
-    await alerts.hub.saveRemoteBotConfig(patchObject(patch, '只读机器人设置'));
+    await alerts.hub.saveRemoteBotConfig(patchObject(patch, '机器人设置'));
     await reloadBot(remoteBot);
     return alerts.hub.remoteBotConfig(remoteBot.isRunning());
   },

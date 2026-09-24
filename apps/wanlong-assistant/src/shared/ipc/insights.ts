@@ -1,6 +1,7 @@
 /**
  * Run insights and notifications as they exist today: daily insight buckets, alert list, per-instance
- * notification settings and the read-only Telegram bot. The stats / alerts / bot modules move or replace these.
+ * notification settings and the Telegram bot's compatibility settings (the 「查看」 switch, authorized user, connection
+ * test; both switches live in the alerts config). The stats / alerts / bot modules move or replace these.
  */
 import type {
   InsightAlert, InsightDay, NotificationConfigPatch, NotificationConfigView, NotificationTestResult,

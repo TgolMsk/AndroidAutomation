@@ -9,8 +9,9 @@
 | `accounts.ts` | 账号、实例绑定（确认改绑）、脚本参数、就绪闸门、登录会话与预览输入；推送 `account-changed` / `login-changed` | `src/main/ipc/accounts.ts` |
 | `plans.ts` | 任务计划与脚本库 | `src/main/ipc/plans.ts` |
 | `runs.ts` | 脚本执行监控：临时运行、运行快照、暂停 / 继续 / 停止、运行日志、留痕截图、匹配调试、ADBKeyboard 输入法；事件 `plan-run` / `run-logs` / `run-matches` | `src/main/ipc/runs.ts` |
-| `insights.ts` | 现有洞察、通知、只读机器人 | `src/main/ipc/insights.ts` |
-| `alerts.ts` / `bot.ts` | 告警 / 机器人（空） | 同名文件 |
+| `insights.ts` | 现有洞察（告警日账）、通知（旧的每实例接口）、机器人设置兼容接口（查看开关 / 授权用户 / 测试连接；两级开关的完整设置在 `alerts.ts`） | `src/main/ipc/insights.ts` |
+| `alerts.ts` | 告警配置、暂停记录、恢复、历史 | `src/main/ipc/alerts.ts` |
+| `bot.ts` | Telegram 机器人：在面板内执行动作（`botPerform`）、可选实例、运行状态；推送 `bot-status` | `src/main/ipc/bot.ts` |
 | `stats.ts` | 每日数据统计：按北京日期的日桶、区间、读一次资源统计；推送 `stats-today` / `stats-snapshot` | `src/main/ipc/stats.ts` |
 | `resources.ts` | 读游戏资源统计表（实例锁内）、正在读的实例、按规格从截图裁资源统计模板；推送 `resources-reading` | `src/main/ipc/resources.ts` |
 | `advisor.ts` | AI 顾问 | `src/main/ipc/advisor.ts` |

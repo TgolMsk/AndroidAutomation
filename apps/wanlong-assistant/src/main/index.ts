@@ -28,7 +28,7 @@ import { broadcast, setBroadcastLogSink } from './events';
 import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
 import { AlertsService, createAvdFreezeRecoveryIo, KICKED_TEMPLATE_IDS, ledgerAlertOf, safeStorageCodec } from './alerts';
-import { BotService } from './bot';
+import { BotService, linkBotToAlerts } from './bot';
 import { ShotStore } from './scheduler/shots';
 import { PlanService, ScriptRunner } from './plans';
 import { ResourcesService } from './resources/service';
@@ -207,6 +207,8 @@ bootstrapApp({
     const alertShots = new ShotStore(home);
     const alertLog = appLog.scoped('alerts');
     const wanlongPackage = gamePlugin('wanlong').packageName;
+    // Saves reload the bot; the bot's start / stop only toggles the alert buttons (see linkBotToAlerts).
+    const botLink = linkBotToAlerts({ bot: () => remoteBot, hub: () => alerts.hub, log: (message) => alertLog.warn(message) });
     const alerts: AlertsService = new AlertsService(home, {
       // The bot token stays in the Keychain; every plaintext that passes the codec is scrubbed from the app log.
       codec: rememberingCodec(safeStorageCodec, logSecrets),
@@ -247,10 +249,13 @@ bootstrapApp({
       // The scheduler's queue view carries the pause (pauseOf): republish it whenever the record changes.
       refreshSchedulerView: (index) => automation.eta.refreshView(index),
       onRaised: (record) => broadcast('alert-raised', record),
+      // A save: the bot restarts only when its own settings changed (`reload`). ★ The bot's start / stop only pushes the
+      // view (`onViewChanged`) — restarting there would feed its status back into another restart forever.
       onConfigChanged: (view) => {
         broadcast('alert-config-changed', view);
-        void remoteBot.restart().catch((error: unknown) => alertLog.warn(`机器人按新配置重启失败：${describeThrown(error)}`));
+        botLink.configSaved();
       },
+      onViewChanged: (view) => broadcast('alert-config-changed', view),
       gamePackage: wanlongPackage,
     });
     automation.eta.setHooks(alerts.schedulerHooks());
@@ -362,8 +367,8 @@ bootstrapApp({
       shotPolicy: () => appSettings.get().shotPolicy,
       log: (level, message, index) => botLog[level](message, undefined, index),
       onStatus: (status) => {
-        // Alert buttons are attached only while this bot answers them.
-        alerts.hub.setRemoteControlHandler(status.running);
+        // Alert buttons are attached only while this bot answers them (a view push only, never a config save).
+        botLink.botStatus(status);
         broadcast('bot-status', status);
       },
     });

@@ -402,3 +402,124 @@ describe('lifecycle (the earlier read-only bot’s cases and this app’s additi
     expect(leaks(failed.message)).toBe(false);
   });
 });
+
+describe('★ queued work never outlives a stop / restart or a switch turned off', () => {
+  /** A relaunch that blocks until released; everything else answers at once. */
+  function blockingPort(performed: Array<[BotAction, number | null]>) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const port: BotActionPort = {
+      async perform(action, index) {
+        performed.push([action, index]);
+        if (action === 'relaunch') await gate;
+        return { text: `${action} 已执行` };
+      },
+      async listInstances() { return [{ index: 0, name: '主号' }, { index: 1, name: '小号' }]; },
+    };
+    return { port, release: () => release() };
+  }
+
+  it('turning both switches off and stopping drops the queued control action (it never runs) and the running one’s reply', async () => {
+    const performed: Array<[BotAction, number | null]> = [];
+    const { port, release } = blockingPort(performed);
+    const { tg, bot, setConfig, logs } = setup({}, port);
+    await bot.start();
+    await expect.poll(() => tg.sent('setMyCommands').length).toBe(1);
+    tg.message('/relaunch 0');
+    tg.message('/pause 0');
+    await expect.poll(() => performed.length).toBe(1);
+    expect(performed).toEqual([['relaunch', 0]]);
+    setConfig({ remoteReadOnlyEnabled: false, remoteControlEnabled: false });
+    const stopping = bot.stop();
+    release();
+    await stopping;
+    await bot.idle();
+    // ★ pause:0 was queued behind the relaunch and must not run after the bot stopped.
+    expect(performed).toEqual([['relaunch', 0]]);
+    expect(tg.texts()).toEqual([]);
+    expect(logs.some((line) => line.includes('一条还没开始处理的手机请求已丢弃'))).toBe(true);
+    expect(logs.some((line) => line.includes('这次操作的结果没有发回手机'))).toBe(true);
+  });
+
+  it('a restart drops the old run’s queue; requests after the restart work', async () => {
+    const performed: Array<[BotAction, number | null]> = [];
+    const { port, release } = blockingPort(performed);
+    const { tg, bot } = setup({}, port);
+    await bot.start();
+    tg.message('/relaunch 0');
+    tg.message('/pause 1');
+    await expect.poll(() => performed.length).toBe(1);
+    const restarting = bot.restart();
+    release();
+    expect(await restarting).toBe(true);
+    await bot.idle();
+    expect(performed).toEqual([['relaunch', 0]]);
+    tg.message('/resume 1');
+    await expect.poll(() => performed.length).toBe(2);
+    await bot.idle();
+    expect(performed).toEqual([['relaunch', 0], ['resume', 1]]);
+    expect(tg.texts()).toEqual(['resume 已执行']);
+    await bot.stop();
+  });
+
+  it('a switch turned off while a request waits is judged on the fresh settings right before it runs', async () => {
+    const performed: Array<[BotAction, number | null]> = [];
+    const { port, release } = blockingPort(performed);
+    const { tg, bot, setConfig } = setup({}, port);
+    tg.message('/relaunch 0');
+    tg.message('/pause 0');
+    tg.callback('resume:1', 'cbq-queued');
+    tg.message('/status');
+    await bot.pollOnce();
+    await expect.poll(() => performed.length).toBe(1);
+    // 「允许手机远程操作」 off while pause / resume still wait behind the relaunch: they are refused, status still runs.
+    setConfig({ remoteControlEnabled: false });
+    release();
+    await bot.idle();
+    expect(performed).toEqual([['relaunch', 0], ['status', null]]);
+    const texts = tg.texts();
+    expect(texts[0]).toBe('relaunch 已执行');
+    expect(texts.filter((text) => text.includes('允许手机远程操作'))).toHaveLength(2);
+    expect(texts.at(-1)).toBe('status 已执行');
+  });
+
+  it('a changed Chat ID or authorized user drops what the old one queued, without a reply', async () => {
+    const performed: Array<[BotAction, number | null]> = [];
+    const { port, release } = blockingPort(performed);
+    const { tg, bot, setConfig } = setup({}, port);
+    tg.message('/relaunch 0');
+    tg.message('/shot 0');
+    await bot.pollOnce();
+    await expect.poll(() => performed.length).toBe(1);
+    setConfig({ authorizedUserId: '555666777' });
+    release();
+    await bot.idle();
+    expect(performed).toEqual([['relaunch', 0]]);
+    expect(tg.texts()).toEqual([]);
+  });
+
+  it('reload() restarts only when the bot’s own settings changed', async () => {
+    const { tg, bot, setConfig, statuses } = setup();
+    await bot.start();
+    await expect.poll(() => tg.sent('setMyCommands').length).toBe(1);
+    // An unrelated alert setting: the running bot is left alone.
+    setConfig({ cooldownSeconds: 1200 });
+    expect(await bot.reload()).toBe(true);
+    expect(statuses.map((status) => status.running)).toEqual([true]);
+    // A switch changed: exactly one restart.
+    setConfig({ cooldownSeconds: 1200, remoteControlEnabled: false });
+    expect(await bot.reload()).toBe(true);
+    await expect.poll(() => tg.sent('setMyCommands').length).toBe(2);
+    expect(statuses.map((status) => status.running)).toEqual([true, false, true]);
+    // Both off: stops and stays stopped (the second reload changes nothing at all).
+    setConfig({ remoteReadOnlyEnabled: false, remoteControlEnabled: false });
+    expect(await bot.reload()).toBe(false);
+    const settled = statuses.length;
+    expect(await bot.reload()).toBe(false);
+    expect(statuses).toHaveLength(settled);
+    expect(bot.isRunning()).toBe(false);
+    expect(statuses.at(-1)).toMatchObject({ running: false, readEnabled: false, controlEnabled: false });
+    expect(statuses.filter((status) => status.running)).toHaveLength(2);
+    expect(tg.sent('setMyCommands')).toHaveLength(2);
+  });
+});

@@ -70,7 +70,7 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
 | 项 | 原版 | 这里 | 原因 |
 |---|---|---|---|
 | 卡死自动重启 | 默认开 | `freezeRestartEnabled` 默认**关**，关着时只推「疑似模拟器卡死」（每段卡死一次），采样连续失败仍按掉线暂停 | DECISIONS A.3：动模拟器的自动化必须显式开启 |
-| 远程控制按钮 | 默认开 | `remoteControlEnabled` / `remoteReadOnlyEnabled` 默认关，需授权用户 ID；各管各的（控制开关不会打开只读机器人）；按钮只在机器人正在运行时才附加（机器人启动 / 停止时调 `hub.setRemoteControlHandler(running)`），且只附加开关允许的那几个：「恢复 / 重启游戏」要远程操作，「查看状态」要查看开关 | DECISIONS A.3；没人处理的按钮在手机上会一直转圈 |
+| 远程控制按钮 | 默认开 | `remoteControlEnabled` / `remoteReadOnlyEnabled` 默认关，需授权用户 ID；各管各的（远程操作开关不会放行查看类动作）；按钮只在机器人正在运行时才附加（机器人启动 / 停止时调 `hub.setRemoteControlHandler(running)`），且只附加开关允许的那几个：「恢复 / 重启游戏」要远程操作，「查看状态」要查看开关 | DECISIONS A.3；没人处理的按钮在手机上会一直转圈 |
 | 恢复 | 任何实例都能 `resume` | 只恢复生效中的暂停，其余用中文拒绝 | 首次开启自动调度要走宿主的只读探针 + 确认门槛（DECISIONS C） |
 | 重启方式 | MuMu `control restart` / 雷电 `quit+launch` | `stop({ force: true })` + `start()`（SIGKILL 保留快照失效标记 → 冷启动） | DECISIONS C：Android Emulator 的 Quick Boot 会把卡住的现场存进快照 |
 | Token 存储 / 打码 | 明文 alerts.json / 显示后 4 位 | safeStorage 密文 / 全遮 | 本仓库原有的钥匙串加固，不回退 |
@@ -97,6 +97,8 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
   `hub.telegramChannel().sendPhoto/sendText`、回调数据 `alertCallbackData` / `parseAlertCallbackData`（`resume:0` / `relaunch:0` /
   `status:0`，与原版 `bot.ts` 相同）。★ 开始处理 `callback_query` 时调 `hub.setRemoteControlHandler(true)`（停止时 false），
   告警消息才会附加按钮，设置页的「机器人模块接入后生效」标注也随之去掉（配置视图的 `remoteControlAvailable`）。
+  ★ 这一步只推视图（端口 `onViewChanged`），不算「配置已保存」：`onConfigChanged`（监听与端口）只在 `saveConfig` 成功后触发，
+  机器人按它重载。把机器人的启停接回 `onConfigChanged` 会变成「启停 → 重启 → 启停」的死循环。
 - 调度器 / 采集界面：暂停记录是唯一来源 —— 调度器自己的安全暂停、「需要人工处理」暂停与就绪门槛暂停都记成暂停记录，
   队列视图的 `pause`（`SchedulerQueueState.pause`）只经 `pauseOf` 镜像它（见铁律 2），调度器不另记一份。采集总览的红框卡片、
   实例页的红色行、诊断角标（完整 `PauseBanner`）、批量采集的跳过规则都直接读 `useAlerts()` / `pauseOf()`，「恢复」走 `resumePause(i)`。
