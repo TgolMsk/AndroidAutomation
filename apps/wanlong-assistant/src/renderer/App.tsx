@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Settings } from '@avdm/core';
 import { avdm } from './api';
 import { BADGE_SOURCES } from './badge-sources';
+import { HealthBadge } from './components/HealthBadge';
 import { Icon } from './components/Icon';
 import { Spinner, StatusDot } from './components/StatusBadge';
 import { displayStatus, displayStatusLabel, isRunning } from './format';
@@ -107,6 +108,7 @@ function TopBar() {
         <InstancePicker />
         <span className={`wl-shell-chip ${full ? 'is-warn' : ''}`} title="已开机实例数 / 模拟器同时运行上限">在线 {online}/{maxRunning ?? '—'}</span>
         <span className={`wl-shell-chip ${executing > 0 ? 'is-accent' : ''}`} title={`采集 ${runningCount} 个 · 脚本 ${activePlanRuns} 个（含排队）`}>执行中 {executing}</span>
+        <HealthBadge />
         {badges.length > 0 && <div className="wl-shell-badges" role="status" aria-label="待处理事项">
           {badges.map((badge) => (
             <button

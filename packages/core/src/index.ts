@@ -24,3 +24,14 @@ export { portsFor } from './emulator/launcher.js';
 export { parseSelector } from './util/selector.js';
 export { compareVersions } from './util/proc.js';
 export { atomicWriteJson, readJsonIfExists, withFileLock } from './util/fs.js';
+export {
+  runDoctorChecks,
+  doctorPassed,
+  findExecutableOnPath,
+  type DoctorAudience,
+  type DoctorCheck,
+  type DoctorCheckId,
+  type DoctorLevel,
+  type DoctorManager,
+  type DoctorOptions,
+} from './doctor.js';

@@ -2,6 +2,7 @@ import { ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { errorCode, errorMessage } from '@avdm/emulator-shell/main/util';
 import { isAppUrl, type WindowKind, type WindowManager } from '@avdm/emulator-shell/main/windows';
 import type { IpcEnvelope } from '@avdm/emulator-shell/main/ipc-handlers';
+import { explainLeaseTimeout } from './app/instance-access';
 import { WANLONG_INVOKE_METHODS, wanlongInvokeChannel, type WanlongDomainApi } from '../shared/ipc';
 import { accountsHandlers, type AccountsServices } from './ipc/accounts';
 import { advisorHandlers, type AdvisorServices } from './ipc/advisor';
@@ -70,7 +71,7 @@ export function registerWanlongIpcHandlers(services: WanlongServices): void {
         authorizeWanlongInvoke(event.senderFrame?.url, services.windows.kindOf(event.sender));
         return { ok: true, value: await handler({ ...services, sender: event.sender }, ...args) };
       } catch (error) {
-        return errorEnvelope(error);
+        return errorEnvelope(await explainLeaseTimeout(error, services.appHome));
       }
     });
   }

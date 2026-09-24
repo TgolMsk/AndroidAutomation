@@ -90,7 +90,7 @@ export const NAVIGATION: readonly NavigationSection[] = [
   {
     key: 'settings',
     label: '设置',
-    description: '应用信息、数据目录与各功能的设置入口',
+    description: '管理运行环境、日志与通知',
     icon: 'settings',
     views: [{ key: 'settings', label: '应用设置' }],
   },

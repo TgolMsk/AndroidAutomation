@@ -48,6 +48,7 @@ export default defineConfig({
           'home-verify-worker': resolve(__dirname, 'src/main/automation/accounts/home-verify-worker.ts'),
           'login-preview-worker': resolve(__dirname, 'src/main/automation/accounts/login-preview-worker.ts'),
           'script-worker': resolve(__dirname, 'src/main/plans/script-worker.ts'),
+          'health-worker': resolve(__dirname, 'src/main/app/health-worker.ts'),
         },
       },
     },

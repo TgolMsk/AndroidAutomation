@@ -13,7 +13,7 @@
 | `stats.ts` / `alerts.ts` / `bot.ts` / `resources.ts` | 统计 / 告警 / 机器人 / 资源统计（空） | 同名文件 |
 | `advisor.ts` | AI 顾问 | `src/main/ipc/advisor.ts` |
 | `scheduler.ts` / `instances.ts` / `update.ts` | ETA 调度 / 实例级操作 / 应用内更新（空） | 同名文件 |
-| `app.ts` | 后台服务启动失败（`appServiceFailures` + `service-failures` 事件）；应用设置、路径、自检、日志与旧版导入待 app-shell 追加 | `src/main/ipc/app.ts` |
+| `app.ts` | 后台服务启动失败、应用设置（`app-settings-changed`）、数据目录、环境自检（`app-health`）、运行日志（`app-log`）、主进程提示（`app-toast`）、实例占用查询；旧版导入待后续模块追加 | `src/main/ipc/app.ts` |
 
 每个领域文件导出 `XxxApi`、`XXX_METHODS`（`as const`）、`XxxEvents`、`XXX_EVENTS` 与 `XxxContractCheck`。
 
