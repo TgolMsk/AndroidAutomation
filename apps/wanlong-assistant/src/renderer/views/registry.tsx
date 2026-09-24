@@ -43,7 +43,7 @@ export const VIEW_REGISTRY: Readonly<Record<ViewKey, ViewEntry>> = {
 
 /**
  * Where the shared content area scrolls to when `view` is shown: a kept-alive page comes back where the user
- * left it (e.g. the script step just inserted after 「从画面截取并添加」); a freshly mounted page starts at the top.
+ * left it (e.g. the script block just inserted by 「从画面截取」); a freshly mounted page starts at the top.
  */
 export function restoredScrollTop(view: ViewKey, saved: ReadonlyMap<ViewKey, number>): number {
   return VIEW_REGISTRY[view].keepAlive ? saved.get(view) ?? 0 : 0;

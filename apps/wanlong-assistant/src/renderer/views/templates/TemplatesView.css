@@ -25,12 +25,6 @@
 .template-panel-header h2 { margin: 0; font-size: 18px; font-weight: 660; letter-spacing: -0.02em; }
 .template-panel-header p { margin: 4px 0 0; color: var(--text-dim); font-size: 12px; line-height: 1.5; }
 
-.template-script-flow { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 16px; padding: 12px 14px; border: 1px solid var(--border-2); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--panel); }
-.template-script-flow > div { display: grid; gap: 4px; }
-.template-script-flow strong { color: var(--text); font-size: 12px; }
-.template-script-flow span { color: var(--text-dim); font-size: 11px; line-height: 1.5; }
-.template-script-flow button { flex: none; }
-@media (max-width: 560px) { .template-script-flow { align-items: flex-start; flex-wrap: wrap; } }
 
 .template-panel-error {
   display: flex;

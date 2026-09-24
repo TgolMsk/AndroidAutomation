@@ -9,6 +9,7 @@
 | `validate.ts` | 静态体检：致命错误（拒绝保存 / 读取）/ 普通错误（可存草稿、拒绝执行）/ 警告；`countSteps`、`referencedTemplateIds`、`startsWithLaunch`（首步是启动游戏，或「如果游戏不在前台 → 先启动游戏」的保活写法时，允许游戏不在前台就开跑） | 纯 |
 | `interpolate.ts` | `{{ key }}`（括号内可有空格，未知键原样保留）；`mergeParams`（脚本默认 < 账号 < 任务 < 临时请求） | 纯 |
 | `describe.ts` | `describeCondition` / `describeRect` 中文摘要 | 纯 |
+| `blocks.ts` | 可视化块编辑器的纯逻辑（移植 wanlong-panel `src/shared/blocks.ts`）：块路径 `BlockPath` 与不可变增删改移（路径失效原样返回）、`nextStepId` / `cloneWithNewIds`（★ 子块 id 全换）、`countBlocks` / `collectTemplateIds`、块目录 `BLOCK_CATALOG`（四组、hint、needsTemplate，waitFor 拆成等它出现 / 等它消失）、`makeBlock` 默认值、`kindOfStep`（`kindOfStep(makeBlock(k)) === k`）、`describeBlock` / `describeCond` / `blockIssue`、条件编辑器模式 `condModeOf` / `seedCondition`、嵌套上限 `canAddAtDepth` | 纯 |
 | `builtin.ts` | 两个只读示例（`builtin_` 前缀保留），按当前游戏包名生成；`builtinCopyId` 给「另存为」挑一个不重复的 id（`_copy`、`_copy2` …），绝不覆盖用户已改过的副本 | 纯 |
 | `context.ts` | `ScriptContext`：取帧（最小间隔 400ms + 0–120ms 抖动、同帧复用、并发共享、输入后作废）、三套坐标、模板匹配、前台 1 秒缓存、留痕、状态节流（≤4 次/秒）、匹配调试（≤3 批/秒） | 包根 |
 | `conditions.ts` / `actions.ts` | 同一帧上的条件求值（带中文原因）；动作原语（长按=一次 shell 的 motionevent，中文走端口的 inputText） | 包根 |

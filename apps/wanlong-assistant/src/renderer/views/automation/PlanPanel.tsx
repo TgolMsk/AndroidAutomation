@@ -1,48 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { TemplateSet } from '@avdm/automation';
-import { builtinCopyId, isBuiltinScriptId } from '@avdm/automation/script';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { GameAccount } from '../../../main/automation/accounts/types';
-import type { AccountPlan, PlanConfig, PlanOverview, PlanRun, PlanTask, ScriptDef, ScriptIssue, ScriptMeta, ScriptStep, TaskTrigger } from '../../../main/plans/types';
+import type { AccountPlan, PlanConfig, PlanOverview, PlanTask, ScriptMeta, TaskTrigger } from '../../../main/plans/types';
 import { legacyPlanChoices } from '../../../main/plans/legacy';
 import { avdm, errMsg } from '../../api';
 import { beijingTime } from '../../format';
 import { useToast } from '../../components/Toasts';
 import { usePlanImport } from '../../state/plan-import';
-import { importLegacyScripts, legacyPlanForAccount, withImportedScripts, withLegacyPlanFile } from './plan-legacy-import';
-import { ScriptStepBlock } from './ScriptStepBlock';
-import { insertSavedTemplate, type TemplateInsertRequest, type TemplateInsertResult } from './script-template-flow';
+import { legacyPlanForAccount, withLegacyPlanFile } from './plan-legacy-import';
 import './PlanPanel.css';
 
 const api = avdm;
 const emptyPlan = (accountId: string): AccountPlan => ({ accountId, enabled: false, tasks: [], updatedAt: 0 });
 const clone = <T,>(value: T): T => structuredClone(value);
-const newScript = (packageName: string): ScriptDef => ({
-  id: `script-${Date.now()}`, name: '新脚本', version: '1.0.0', packageName,
-  refWidth: 2560, refHeight: 1440, steps: [], updatedAt: 0,
-});
-const stepKinds = [
-  ['tap', '点击坐标'], ['tapTemplate', '识别模板并点击'], ['waitFor', '等待模板'], ['swipe', '滑动'],
-  ['longPress', '长按'], ['key', '按键'], ['text', '输入文本'], ['sleep', '等待'],
-  ['launchApp', '启动游戏'], ['stopApp', '停止游戏'], ['screenshot', '截图'], ['log', '记录日志'],
-] as const;
-type SimpleKind = typeof stepKinds[number][0];
-function makeStep(kind: SimpleKind): ScriptStep {
-  const id = `${kind}-${crypto.randomUUID().slice(0, 8)}`;
-  switch (kind) {
-    case 'tap': return { id, kind, at: { x: 1280, y: 720 } };
-    case 'tapTemplate': return { id, kind, templateId: '', waitMs: 3000 };
-    case 'waitFor': return { id, kind, cond: { kind: 'template', templateId: '' }, waitMs: 3000 };
-    case 'swipe': return { id, kind, from: { x: 1000, y: 720 }, to: { x: 1500, y: 720 }, durationMs: 300 };
-    case 'longPress': return { id, kind, at: { x: 1280, y: 720 }, durationMs: 1000 };
-    case 'key': return { id, kind, key: 'BACK' };
-    case 'text': return { id, kind, text: '' };
-    case 'sleep': return { id, kind, ms: 1000 };
-    case 'launchApp': return { id, kind, cold: false };
-    case 'stopApp': return { id, kind };
-    case 'screenshot': return { id, kind, label: 'checkpoint' };
-    case 'log': return { id, kind, level: 'info', message: '' };
-  }
-}
 const triggerLabel = (trigger: TaskTrigger): string => {
   if (trigger.kind === 'manual') return '手动';
   if (trigger.kind === 'daily') return `每天 ${trigger.at.join('、')}`;
@@ -60,16 +29,11 @@ interface PlanPanelProps {
   mode?: PlanPanelMode;
   /** In `plans` mode: open the script library page (e.g. 「添加任务」 while no script exists yet). */
   onOpenScripts?(): void;
-  onCreateTemplate?(request: TemplateInsertRequest): void;
-  templateResult?: TemplateInsertResult | null;
-  onTemplateResultHandled?(requestId: string): void;
   /** After any successful action (save, run now, stop …), e.g. to refresh the shell's running-task count. */
   onChanged?(): void;
-  /** In `scripts` mode: run the saved version of a script on the current instance now (then show the monitor). */
-  onTryRun?(scriptId: string): Promise<void>;
 }
 
-export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, onCreateTemplate, templateResult, onTemplateResultHandled, onChanged, onTryRun }: PlanPanelProps) {
+export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, onChanged }: PlanPanelProps) {
   const toast = useToast();
   // Shared with the other page: scripts imported there must be found when a plan is imported here.
   const { legacy, updateLegacy } = usePlanImport();
@@ -84,44 +48,21 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
   const [scripts, setScripts] = useState<ScriptMeta[]>([]);
   const [accountId, setAccountId] = useState('');
   const [plan, setPlan] = useState<AccountPlan | null>(null);
-  const [scriptId, setScriptId] = useState('');
-  const [script, setScript] = useState<ScriptDef | null>(null);
-  const [jsonMode, setJsonMode] = useState(false);
-  const [json, setJson] = useState('');
-  const [newKind, setNewKind] = useState<SimpleKind>('tap');
-  const [captureKind, setCaptureKind] = useState<'tapTemplate' | 'waitAppear' | 'waitDisappear'>('tapTemplate');
-  const [issues, setIssues] = useState<ScriptIssue[]>([]);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [planDirty, setPlanDirty] = useState(false);
   const [configDraft, setConfigDraft] = useState<PlanConfig | null>(null);
   const [configDirty, setConfigDirty] = useState(false);
-  const [packageName, setPackageName] = useState('');
   const { planFile: legacyPlanFile, planAccountId: legacyAccountId, message: importMessage } = legacy;
-  const [invalidSteps, setInvalidSteps] = useState<Record<string, boolean>>({});
-  const [templateSets, setTemplateSets] = useState<TemplateSet[]>([]);
-  const [activeTemplateSet, setActiveTemplateSet] = useState<TemplateSet | null>(null);
-  const handledTemplateResult = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!visible) return;
-    let alive = true;
-    void Promise.all([avdm.automationTemplateSets(gameId), index === null ? Promise.resolve(null) : avdm.automationTemplateSet(gameId, index)])
-      .then(([sets, current]) => { if (alive) { setTemplateSets(sets); setActiveTemplateSet(current); } })
-      .catch((cause) => { if (alive) setError(errMsg(cause)); });
-    return () => { alive = false; };
-  }, [gameId, index, visible, templateResult?.id]);
 
   const refresh = useCallback(async () => {
     try {
-      const [state, nextAccounts, nextScripts, games] = await Promise.all([
-        api.planOverview(gameId), avdm.accountList(gameId), api.scriptList(gameId), avdm.automationGames(),
+      const [state, nextAccounts, nextScripts] = await Promise.all([
+        api.planOverview(gameId), avdm.accountList(gameId), api.scriptList(gameId),
       ]);
       setOverview(state);
       setAccounts(nextAccounts);
       setScripts(nextScripts);
-      setPackageName(games.find((game) => game.id === gameId)?.packageName ?? '');
       setAccountId((current) => current && nextAccounts.some((a) => a.id === current)
         ? current : nextAccounts.find((a) => a.binding?.index === index)?.id ?? nextAccounts[0]?.id ?? '');
       setError('');
@@ -140,16 +81,6 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
     setPlan(found ? clone(found) : accountId ? emptyPlan(accountId) : null);
   }, [accountId, overview?.plans, planDirty]);
   useEffect(() => { if (!configDirty && overview) setConfigDraft(clone(overview.config)); }, [overview?.config, configDirty]);
-  useEffect(() => {
-    if (!scriptId) return;
-    setInvalidSteps({});
-    let active = true;
-    void api.scriptGet(gameId, scriptId).then((value) => {
-      if (!active) return;
-      setScript(value); setJson(JSON.stringify(value, null, 2)); setIssues([]); setJsonMode(false);
-    }).catch((cause) => { if (active) setError(errMsg(cause)); });
-    return () => { active = false; };
-  }, [gameId, scriptId]);
 
   const selectedAccount = accounts.find((a) => a.id === accountId);
   const selectedRuns = useMemo(() => (overview?.runs ?? []).filter((run) => !accountId || run.accountId === accountId).slice(0, 20), [overview, accountId]);
@@ -158,22 +89,6 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
     setPlanDirty(true);
     setPlan((current) => current ? { ...current, tasks: current.tasks.map((task) => task.id === id ? { ...task, ...patch } : task) } : null);
   };
-  const updateScript = (next: ScriptDef): void => { setScript(next); setJson(JSON.stringify(next, null, 2)); setIssues([]); };
-  useEffect(() => {
-    if (!templateResult || handledTemplateResult.current === templateResult.id) return;
-    handledTemplateResult.current = templateResult.id;
-    const next = templateResult.gameId === gameId && templateResult.index === index && script
-      ? insertSavedTemplate(script, templateResult) : null;
-    if (next) {
-      updateScript(next);
-      setTab('scripts');
-      toast.push({ kind: 'success', title: '模板已插入脚本步骤', detail: templateResult.templateName });
-    } else toast.error('模板已保存，但未插入脚本', '脚本、步骤或模板集已变化。请在对应步骤中手动选择该模板。');
-    onTemplateResultHandled?.(templateResult.id);
-  }, [templateResult, gameId, index, script, onTemplateResultHandled, toast]);
-  const templateSetMismatch = Boolean(script?.templateSetId && activeTemplateSet?.id !== script.templateSetId);
-  const availableTemplateSets = activeTemplateSet && !templateSets.some((set) => set.id === activeTemplateSet.id)
-    ? [activeTemplateSet, ...templateSets] : templateSets;
   const act = async (label: string, fn: () => Promise<void>): Promise<void> => {
     if (busy) return;
     setBusy(label);
@@ -182,32 +97,6 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
     finally { setBusy(''); }
   };
   const savePlan = (): void => { if (plan) void act('保存计划', async () => { await api.planSave(gameId, plan); setPlanDirty(false); }); };
-  const saveScript = (): void => {
-    void act('保存脚本', async () => {
-      const edited = jsonMode ? JSON.parse(json) as ScriptDef : script;
-      if (!edited) throw new Error('请先创建或选择脚本');
-      if (!jsonMode && edited.steps.some((step) => invalidSteps[step.id])) throw new Error('有步骤 JSON 尚未写完，请先修正红色输入框');
-      // Built-in examples are read-only: saving one stores an editable copy under a free id (fresh list, so an
-      // earlier copy the user edited is never overwritten).
-      const next = isBuiltinScriptId(edited.id)
-        ? { ...edited, id: builtinCopyId(edited.id, (await api.scriptList(gameId)).map((item) => item.id)), name: `${edited.name}（副本）` }
-        : edited;
-      const results = await api.scriptValidate(gameId, next, index);
-      setIssues(results);
-      // Only structural (fatal) issues refuse saving; other errors are kept as a draft and refused at run time.
-      if (results.some((issue) => issue.fatal)) throw new Error('脚本存在结构性错误，无法保存，请查看下方问题');
-      const saved = await api.scriptSave(gameId, next);
-      setScriptId(saved.id);
-      setJsonMode(false);
-    });
-  };
-  const importScriptFiles = async (files: FileList | null): Promise<void> => {
-    if (!files?.length || !packageName) return;
-    await act('导入旧脚本', async () => {
-      const { mapping, message } = await importLegacyScripts(api, gameId, packageName, Array.from(files), scripts.map((item) => item.id));
-      updateLegacy((current) => withImportedScripts(current, mapping, message));
-    });
-  };
   const loadLegacyPlanFile = async (file: File | undefined): Promise<void> => {
     if (!file) return;
     try {
@@ -231,7 +120,6 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
   };
 
   const heading = mode === 'plans' ? { label: 'PLANS', title: '任务计划', text: '每个账号绑定一个实例。计划按北京时间触发，实例内串行执行。' }
-    : mode === 'scripts' ? { label: 'SCRIPTS', title: '脚本库', text: '脚本保存为纯数据，可复用到同一游戏的所有账号；从画面截取模板可直接生成步骤。' }
       : { label: 'WORKFLOWS', title: '脚本与任务计划', text: '每个账号绑定一个实例。计划按北京时间触发，实例内串行执行。' };
   return <section className="plan-panel" aria-label={heading.title}>
     <header className="plan-heading"><div><span>{heading.label}</span><h2>{heading.title}</h2><p>{heading.text}</p></div><button className="btn xs" onClick={() => void refresh()}>刷新</button></header>
@@ -264,32 +152,6 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
       </>}
       <div className="plan-runs"><h3>最近执行</h3>{!selectedRuns.length && <p>暂无执行记录</p>}{selectedRuns.map((run) => <div key={run.runId}><span className={`plan-phase is-${run.status}`}>{run.status}</span><strong>{scriptName(run.scriptId)}</strong><small>#{run.instanceIndex} · {fmt(run.startedAt ?? run.queuedAt)}</small><span>{run.message}</span>{['queued', 'running'].includes(run.status) && <button className="btn xs" onClick={() => void act('停止脚本', async () => { await api.planCancelRun(gameId, run.runId); })}>停止</button>}</div>)}</div>
     </>}
-    {tab === 'scripts' && <><div className="plan-import"><label className="btn xs">导入旧脚本 JSON<input type="file" accept=".json,application/json" multiple onChange={(e) => void importScriptFiles(e.currentTarget.files)} /></label><span>可多选旧 scripts 目录中的 JSON；导入后逐条校验，不会自动执行。</span></div>{importMessage && <p className="plan-import-message" role="status">{importMessage}</p>}<div className="plan-script-layout"><aside><div className="plan-script-side-head"><strong>脚本库</strong><button className="btn xs" onClick={() => { const next = newScript(packageName); setScriptId(''); updateScript(next); setJsonMode(false); }} disabled={!packageName}>新建</button></div>{scripts.map((item) => <button key={item.id} className={scriptId === item.id ? 'selected' : ''} onClick={() => { setScriptId(item.id); setDeleteConfirm(false); }}><strong>{item.name}</strong><small>{item.id} · {item.stepCount} 步</small></button>)}{!scripts.length && <p>暂无脚本</p>}</aside><div className="plan-script-editor">
-      {!script && <div className="plan-empty">选择脚本或新建一个。脚本保存为纯数据，可复用到同一游戏的其他账号。</div>}
-      {script && <><div className="plan-script-editor-head"><strong>编辑脚本</strong><label className="plan-switch"><input type="checkbox" checked={jsonMode} onChange={(e) => { setJsonMode(e.target.checked); setJson(JSON.stringify(script, null, 2)); }} />高级 JSON</label></div>
-        {jsonMode ? <textarea className="plan-json" value={json} onChange={(e) => setJson(e.target.value)} spellCheck={false} aria-label="脚本 JSON" /> : <>
-          <div className="plan-script-fields"><label>脚本 ID<input value={script.id} onChange={(e) => updateScript({ ...script, id: e.target.value })} /></label><label>名称<input value={script.name} onChange={(e) => updateScript({ ...script, name: e.target.value })} /></label><label>版本<input value={script.version} onChange={(e) => updateScript({ ...script, version: e.target.value })} /></label><label>参考宽度<input type="number" value={script.refWidth} onChange={(e) => updateScript({ ...script, refWidth: Number(e.target.value) })} /></label><label>参考高度<input type="number" value={script.refHeight} onChange={(e) => updateScript({ ...script, refHeight: Number(e.target.value) })} /></label><label>模板集<select value={script.templateSetId ?? ''} onChange={(e) => updateScript({ ...script, templateSetId: e.target.value || undefined })}><option value="">暂不绑定</option>{script.templateSetId && !availableTemplateSets.some((set) => set.id === script.templateSetId) && <option value={script.templateSetId}>{script.templateSetId} · 未在本机找到</option>}{availableTemplateSets.map((set) => <option key={set.id} value={set.id}>{set.name}{activeTemplateSet?.id === set.id ? ' · 当前实例' : ''}</option>)}</select></label></div>
-          <p className={`plan-template-context ${templateSetMismatch ? 'is-warning' : ''}`}>{activeTemplateSet ? `当前实例使用「${activeTemplateSet.name}」；新截图将保存到此模板集。` : '当前实例还没有模板集；截取时可在模板页新建。'}{templateSetMismatch && ' 脚本绑定了另一模板集，请先在模板页切换实例。'}</p>
-          <label className="plan-note">说明<input value={script.description ?? ''} onChange={(e) => updateScript({ ...script, description: e.target.value })} /></label>
-          <div className="plan-steps-heading"><h3>步骤 · {script.steps.length}</h3><div><select aria-label="截取模板后生成的步骤" value={captureKind} onChange={(e) => setCaptureKind(e.target.value as typeof captureKind)}><option value="tapTemplate">识别后点击</option><option value="waitAppear">等待出现</option><option value="waitDisappear">等待消失</option></select><button className="btn xs" disabled={index === null || !onCreateTemplate || templateSetMismatch} onClick={() => {
-            if (index === null || !onCreateTemplate) return;
-            const stepKind = captureKind === 'tapTemplate' ? 'tapTemplate' : 'waitFor';
-            onCreateTemplate({ id: crypto.randomUUID(), gameId, index, scriptId: script.id,
-              stepId: `${stepKind}-${crypto.randomUUID().slice(0, 8)}`, stepKind,
-              createStep: true, waitForPresent: captureKind !== 'waitDisappear', expectedTemplateSetId: script.templateSetId });
-          }}>从画面截取并添加</button><select aria-label="添加步骤类型" value={newKind} onChange={(e) => setNewKind(e.target.value as SimpleKind)}>{stepKinds.map(([kind, label]) => <option value={kind} key={kind}>{label}</option>)}</select><button className="btn xs" onClick={() => updateScript({ ...script, steps: [...script.steps, makeStep(newKind)] })}>添加步骤</button></div></div>
-          {!script.steps.length && <div className="plan-empty">脚本尚无步骤。选择一种动作添加，或切换高级 JSON 编写分支、循环与条件。</div>}
-          {script.steps.map((step, stepIndex) => <ScriptStepBlock key={`${script.id}-${step.id}`} step={step} ordinal={stepIndex + 1} total={script.steps.length} templates={activeTemplateSet?.templates ?? []} canCreateTemplate={index !== null && Boolean(onCreateTemplate)} templateSetMismatch={templateSetMismatch}
-            onChange={(next) => { const steps = [...script.steps]; steps[stepIndex] = next; updateScript({ ...script, steps }); }}
-            onValidity={(valid) => setInvalidSteps((current) => ({ ...current, [step.id]: !valid }))}
-            onCreateTemplate={() => { if (index === null || !onCreateTemplate) return; onCreateTemplate({ id: crypto.randomUUID(), gameId, index, scriptId: script.id, stepId: step.id, stepKind: step.kind as 'tapTemplate' | 'waitFor', expectedTemplateSetId: script.templateSetId }); }}
-            onMove={(delta) => { const steps = [...script.steps]; [steps[stepIndex], steps[stepIndex + delta]] = [steps[stepIndex + delta]!, steps[stepIndex]!]; updateScript({ ...script, steps }); }}
-            onDuplicate={() => { const copy = { ...clone(step), id: `${step.kind}-${crypto.randomUUID().slice(0, 8)}` }; const steps = [...script.steps]; steps.splice(stepIndex + 1, 0, copy); updateScript({ ...script, steps }); }}
-            onDelete={() => updateScript({ ...script, steps: script.steps.filter((one) => one.id !== step.id) })} />)}
-        </>}
-        {!!issues.length && <div className="plan-issues" role="status">{issues.map((issue, i) => <p key={i} className={issue.level}>{issue.stepId ? `${issue.stepId}：` : ''}{issue.message}</p>)}</div>}
-        <div className="plan-script-actions"><button className="btn sm" onClick={() => void act('校验脚本', async () => { const value = jsonMode ? JSON.parse(json) as ScriptDef : script; setIssues(await api.scriptValidate(gameId, value, index)); })} disabled={!!busy}>校验</button><button className="btn primary sm" onClick={saveScript} disabled={!!busy}>保存脚本</button>{onTryRun && scriptId && <button className="btn sm" title={index === null ? '请先在顶部选择实例' : '在当前实例上运行已保存的版本，并打开执行监控'} onClick={() => void act('试跑脚本', () => onTryRun(scriptId))} disabled={!!busy || index === null}>在当前实例试跑</button>}{scriptId && !scriptId.startsWith('builtin_') && <>{deleteConfirm ? <><span>确定删除？</span><button className="btn sm danger" onClick={() => void act('删除脚本', async () => { await api.scriptDelete(gameId, scriptId); setScriptId(''); setScript(null); setDeleteConfirm(false); })}>确定</button><button className="btn sm" onClick={() => setDeleteConfirm(false)}>取消</button></> : <button className="btn sm" onClick={() => setDeleteConfirm(true)}>删除</button>}</>}</div>
-      </>}
-    </div></div></>}
+    {tab === 'scripts' && <div className="plan-empty">脚本在「脚本与模板 → 脚本」页编辑（可视化块编辑器、从画面截取、校验与试跑）。<button className="btn xs" onClick={() => onOpenScripts?.()} disabled={!onOpenScripts}>打开脚本页</button></div>}
   </section>;
 }

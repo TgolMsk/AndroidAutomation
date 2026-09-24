@@ -2,7 +2,7 @@
 
 移植自 wanlong-panel 的 `TemplateEditor.tsx`，用本应用自己的 CSS（`TemplatesView.css`，类名前缀 `template-`）。
 
-- `TemplatesView.tsx`：页面入口，接上当前游戏 / 实例、AI 建议与「从画面截取」两条跨页流程（`state/template-flow`）。
+- `TemplatesView.tsx`：页面入口，接上当前游戏 / 实例与 AI 建议的跨页流程（`state/template-flow`）。脚本页的「从画面截取」不再跳到这里，而是在脚本页自己的弹窗里走同一个 `saveAutomationTemplate`（见 `views/scripts/README.md`）。
 - `TemplateEditor.tsx`：模板集切换 / 新建 / 载入文件夹 / 导入合并；模板列表（σ 与透明底徽章、尺寸｜ROI｜阈值摘要、每行「立即验证」）；详情卡；只读截图 → 拉截取框（至少 8×8）与默认 ROI；固定 ID（覆盖已有 ID 需再确认）、备注、标签；1~3 帧差分透明底（350ms 防抖预览、覆盖率解读，保存时把差分帧交给主进程重算）；方差守卫的中文指导；缺失模板快捷列表（关键 / 可选 / 字形数字）与完整编译检查。
 - `template-editor.ts`：纯函数（文案、判据、保存草稿），测试见 `test/template-editor.test.ts`。
 

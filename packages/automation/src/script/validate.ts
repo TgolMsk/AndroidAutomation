@@ -189,6 +189,7 @@ export function validateScript(raw: unknown, options: ValidateOptions = {}): Scr
   };
   const checkTemplate = (stepId: string, id: unknown): void => {
     usesTemplate = true;
+    if (id === '') { fatal('还没选模板（模板 id 为空）：选一张模板，或删掉这一块再保存。', stepId); return; }
     if (typeof id !== 'string' || !TEMPLATE_ID.test(id)) { fatal('模板 id 格式无效。', stepId); return; }
     if (templateIds && !templateIds.has(id)) error(`引用了模板集里不存在的模板：「${id}」。`, stepId);
   };

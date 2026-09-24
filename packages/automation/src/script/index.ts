@@ -10,3 +10,4 @@ export * from './interpolate.js';
 export * from './describe.js';
 export * from './validate.js';
 export * from './builtin.js';
+export * from './blocks.js';

@@ -3,7 +3,7 @@
 - `App.tsx`：左侧七个一级入口、顶部状态条（当前游戏、全局当前实例、在线 / 执行中（采集 + 排队或运行中的脚本）、角标）、组内页面切换、内容区（记住常驻页面各自的滚动位置）。`#/live/<i>` 仍由 `main.tsx` 路由到实时画面。
 - `navigation.ts`：`NAVIGATION`（每个 ViewKey 只出现一次）、`sectionForView`、页面记忆（`localStorage['wl.view']`，读写全部 try/catch）、`RETIRED_VIEWS`。
 - `views/registry.tsx`：ViewKey → 页面组件；`needsGame`（游戏模块未就绪时显示载入状态）、`keepAlive`（首次访问后隐藏保留：采集草稿与探针、计划与调度设置草稿、脚本编辑器草稿；隐藏时 `visible=false`，页面应暂停轮询）。持有未保存草稿的新页面也要设 `keepAlive`，否则切页即丢。
-- `state/`：`navigation`（当前页）、`activity`（采集运行与自动续跑，事件 + 15 秒兜底轮询）、`selection`（全局游戏 / 实例选择，`useSelectionLock` 在设备操作期间锁住实例选择器）、`plan-runs`（当前游戏的脚本执行记录，顶部「执行中」与执行监控共用）、`template-flow`（AI 模板建议 → 模板库；脚本截取 → 模板库 → 回到脚本；模板变更通知采集页作废探针）、`plan-import`（旧版脚本 / 计划导入会话，脚本页与任务计划页共用，旧 ID → 新 ID 映射不丢）、`badges`（顶部角标）。
+- `state/`：`navigation`（当前页）、`activity`（采集运行与自动续跑，事件 + 15 秒兜底轮询）、`selection`（全局游戏 / 实例选择，`useSelectionLock` 在设备操作期间锁住实例选择器）、`plan-runs`（当前游戏的脚本执行记录，顶部「执行中」与执行监控共用）、`template-flow`（AI 模板建议 → 模板库；模板变更通知采集页作废探针 —— 脚本页的「从画面截取」在自己的弹窗里存模板并插块，同样发这个通知）、`plan-import`（旧版脚本 / 计划导入会话，脚本页与任务计划页共用，旧 ID → 新 ID 映射不丢）、`badges`（顶部角标）。
 - `badge-sources.tsx`：常驻的角标来源组件列表；需要全局角标的模块把自己的组件追加进 `BADGE_SOURCES`，组件内调用 `useShellBadge(...)`。已有：游戏模块 / 实例列表读取失败；后台服务启动失败（`hooks/useServiceFailures`：挂载时读一次 `appServiceFailures()` 再跟 `service-failures` 事件，角标指向设置页的「后台服务未启动」卡片）；主进程提示 `AppToasts`（挂载时读一次 `appRecentToasts()` 补上窗口加载前发出的提示，再跟 `app-toast` 事件，按 id 去重，服务启动失败与自检问题的提示都从这里弹）。
 - `format.ts`：游戏相关时间一律 `beijingTime()`（转调 `src/shared/time.ts`），不用 `toLocaleString()`。
 - `views/update/`：应用内更新的渲染侧（`update-store.ts` 单一状态源、`UpdatePanel` 完整 / 紧凑两种形态、`SidebarUpdate` 左下角版本号与红点）；设置页的「版本与更新」卡在 `views/settings/UpdateCard.tsx`。主进程侧见 `src/main/update/README.md`。

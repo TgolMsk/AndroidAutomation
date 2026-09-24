@@ -10,7 +10,6 @@ import { Spinner } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
 import { useAvdmEvent } from '../../hooks/useAvdmEvent';
 import { useSelectionLock } from '../../state/selection';
-import type { TemplateInsertRequest, TemplateSavedForScript } from '../automation/script-template-flow';
 import {
   buildTemplateDraft, clampTolerance, DELETE_WARNING, describeCoverage, importSummary, importTouchesSet, lowVarianceGuidance,
   maskBadge, overwriteTarget, quickPicks, rectText, resolutionWarning, ROI_ADVICE, saveSuccessDetail, stdBadge,
@@ -23,9 +22,6 @@ interface TemplateEditorProps {
   index: number | null;
   onChanged?: (directory: string) => void;
   proposal?: AdvisorTemplateProposal | null;
-  scriptInsert?: TemplateInsertRequest | null;
-  onScriptTemplateSaved?: (saved: TemplateSavedForScript, requestId: string) => void;
-  onCancelScriptInsert?: () => void;
 }
 
 type BusyAction = 'load' | 'create' | 'switch' | 'capture' | 'compare' | 'save' | 'delete' | 'test' | 'import' | 'coverage' | null;
@@ -88,7 +84,7 @@ function rectStyle(rect: Rect, width: number, height: number): CSSProperties {
  * 1–3 frame 透明底, fixed id / note / tags, the variance guard's guidance, 立即验证, missing-template quick picks and
  * the only-add legacy import. Ported from wanlong-panel's TemplateEditor onto the target's own CSS.
  */
-export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInsert, onScriptTemplateSaved, onCancelScriptInsert }: TemplateEditorProps) {
+export function TemplateEditor({ gameId, index, onChanged, proposal }: TemplateEditorProps) {
   const toast = useToast();
   const [sets, setSets] = useState<TemplateSet[]>([]);
   const [activeSet, setActiveSet] = useState<TemplateSet | null>(null);
@@ -125,7 +121,6 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
   const drawStart = useRef<{ x: number; y: number; mode: DrawMode } | null>(null);
   /** Drops coverage responses of an earlier instance / request (a full check can outlive an instance switch). */
   const coverageSeq = useRef(0);
-  const startedScriptInsert = useRef<string | null>(null);
   const busyRef = useRef<BusyAction>(busy);
   busyRef.current = busy;
 
@@ -330,14 +325,14 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
     setUsingProposal(false); setProposalReviewed(false);
   }
 
-  async function captureFrame(asNew = false): Promise<void> {
+  async function captureFrame(): Promise<void> {
     if (index === null || busy || !activeSet) return;
     setBusy('capture');
     try {
       const next = await avdm.captureAutomationTemplate(gameId, index);
       // A new main frame means the diff frames are no longer "the same place".
       setFrame(next); clearDiffShots(); setTestResult(null); setProposalReviewed(false); setGuidance(null);
-      setCrop(asNew ? null : usingProposal && matchingProposal ? proposalCrop(matchingProposal, next) : selected ? templateCrop(selected, activeSet, next) : null);
+      setCrop(usingProposal && matchingProposal ? proposalCrop(matchingProposal, next) : selected ? templateCrop(selected, activeSet, next) : null);
       toast.push({ kind: 'success', title: '已读取当前画面', detail: `${next.width}×${next.height} · ${beijingTime(next.capturedAt, 'clock')}` });
     } catch (cause) { toast.error('无法读取游戏画面', errMsg(cause)); }
     finally { setBusy(null); }
@@ -362,9 +357,8 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
     roi.w >= 3 && roi.h >= 3 && roi.x + roi.w <= activeSet.refWidth && roi.y + roi.h <= activeSet.refHeight);
   const idProblem = templateIdProblem(templateId);
   const replaces = activeSet ? overwriteTarget(templateId, selectedId, activeSet.templates) : null;
-  const scriptSetMismatch = Boolean(scriptInsert?.expectedTemplateSetId && activeSet && activeSet.id !== scriptInsert.expectedTemplateSetId);
   const canSave = index !== null && !busy && Boolean(activeSet && frame && frameReady && validRoi && name.trim()) && !idProblem &&
-    Number.isFinite(threshold) && threshold >= 0 && threshold <= 1 && (!usingProposal || proposalReviewed) && !scriptSetMismatch;
+    Number.isFinite(threshold) && threshold >= 0 && threshold <= 1 && (!usingProposal || proposalReviewed);
   const saveBlocker = !frame ? '先读取当前画面' : !frameReady ? `请在画面上拉出至少 ${MIN_TEMPLATE_CROP}×${MIN_TEMPLATE_CROP} 像素的截取框`
     : !name.trim() ? '给模板起个名字，例如「联盟按钮」' : idProblem ?? (!validRoi ? '搜索区域超出参考画布' : null);
 
@@ -382,9 +376,6 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
       await refresh(result.definition.id);
       setSelectedId(result.definition.id);
       onChanged?.(activeSet.directory);
-      if (scriptInsert && scriptInsert.gameId === gameId && scriptInsert.index === index) {
-        onScriptTemplateSaved?.({ templateId: result.definition.id, templateName: result.definition.name, templateSetId: activeSet.id }, scriptInsert.id);
-      }
       setUsingProposal(false); setProposalReviewed(false);
       toast.push({ kind: 'success', title: result.replaced ? '模板已覆盖' : '模板已保存', detail: saveSuccessDetail(result.definition.name, result.std, result.maskCoverage) });
     } catch (cause) {
@@ -470,15 +461,6 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
-  useEffect(() => {
-    if (!scriptInsert || scriptInsert.gameId !== gameId || scriptInsert.index !== index || !activeSet || busy !== null ||
-      (scriptInsert.expectedTemplateSetId && activeSet.id !== scriptInsert.expectedTemplateSetId) ||
-      startedScriptInsert.current === scriptInsert.id) return;
-    startedScriptInsert.current = scriptInsert.id;
-    newTemplate();
-    void captureFrame(true);
-  }, [scriptInsert?.id, activeSet?.id, busy, gameId, index]);
-
   const lowResolution = frame && activeSet ? resolutionWarning(frame, activeSet) : null;
   const coverageHint = alphaPreview ? describeCoverage(alphaPreview.coverage) : null;
   const verdict = testResult ? testVerdict(testResult.match) : null;
@@ -495,8 +477,6 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
         <button className="btn" type="button" onClick={() => { setBusy('load'); void refresh().catch((cause) => setError(errMsg(cause))).finally(() => setBusy(null)); }} disabled={busy !== null}><Icon name="refresh" />刷新</button>
       </header>
 
-      {scriptInsert && <div className="template-script-flow" role="status"><div><strong>为脚本步骤截取模板</strong><span>{scriptInsert.createStep ? '保存后会自动生成一块脚本步骤。' : '保存后会自动填入原脚本步骤。'}截图与模板保存在当前本地模板集中。</span></div><button className="btn xs" type="button" onClick={onCancelScriptInsert}>返回脚本</button></div>}
-      {scriptSetMismatch && activeSet && <p className="template-panel-error" role="alert">当前模板集是 {activeSet.name}，脚本需要 {scriptInsert?.expectedTemplateSetId}。请先切换到脚本模板集，或返回脚本修改绑定。</p>}
 
       {error && <div className="template-panel-error" role="alert"><Icon name="alert" />{error}</div>}
       {importView && <div className={`notice ${importView.changed ? 'info' : 'warn'} template-import-result`} role="status" aria-live="polite">

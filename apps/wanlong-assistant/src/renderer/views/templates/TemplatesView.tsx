@@ -15,7 +15,6 @@ export function TemplatesView(_props: ViewProps) {
     <TemplateEditor
       gameId={game.id} index={index} proposal={flow.proposal}
       onChanged={(directory) => { flow.noteTemplateChanged(game.id, index, directory); void refreshSchedules(); }}
-      scriptInsert={flow.scriptInsert} onScriptTemplateSaved={flow.finishScriptTemplate} onCancelScriptInsert={flow.cancelScriptTemplate}
     />
   );
 }
