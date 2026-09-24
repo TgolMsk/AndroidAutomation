@@ -61,15 +61,24 @@ describe('private plan and script documents', () => {
     await scripts.save(GAME, PKG, SCRIPT);
     expect((await scripts.get(GAME, SCRIPT.id)).steps).toHaveLength(1);
     expect(validateScript({ ...SCRIPT, id: '../escape' }, PKG).some((i) => i.level === 'error')).toBe(true);
-    expect(validateScript({ ...SCRIPT, steps: [{ id: 'bad', kind: 'text', text: '中文' }] }, PKG)
-      .some((i) => i.message.includes('中文'))).toBe(true);
-    expect((await scripts.list(GAME))[0]?.name).toBe('测试脚本');
+    // Chinese text is a warning now (it needs ADBKeyboard at run time), no longer a refusal.
+    const chinese = validateScript({ ...SCRIPT, steps: [{ id: 'bad', kind: 'text', text: '中文' }] }, PKG);
+    expect(chinese.some((i) => i.level === 'warn' && i.message.includes('ADBKeyboard'))).toBe(true);
+    expect(chinese.some((i) => i.level === 'error')).toBe(false);
+    const listed = await scripts.list(GAME, PKG);
+    expect(listed.slice(0, 2).map((item) => item.id)).toEqual(['builtin_wait_tap', 'builtin_keep_alive']);
+    expect(listed.find((item) => !item.builtin)?.name).toBe('测试脚本');
+    await expect(scripts.save(GAME, PKG, { ...SCRIPT, id: 'builtin_mine' })).rejects.toThrow('内置脚本不可覆盖');
+    await expect(scripts.remove(GAME, 'builtin_wait_tap')).rejects.toThrow('内置脚本不可删除');
+    expect((await scripts.get(GAME, 'builtin_wait_tap', PKG)).packageName).toBe(PKG);
   });
 
   it('converts legacy loop and account plans without importing auto-enable or runtime counters', () => {
-    const converted = convertLegacyScript({ ...SCRIPT, loop: true }, PKG);
-    expect(converted.script.loop).toBe(false);
-    expect(converted.warnings).toHaveLength(1);
+    // Script-level loop mode is supported again; a too-short gap is raised to 3 s.
+    const converted = convertLegacyScript({ ...SCRIPT, loop: true, loopIntervalMs: 200 }, PKG);
+    expect(converted.script.loop).toBe(true);
+    expect(converted.script.loopIntervalMs).toBe(3000);
+    expect(converted.warnings).toHaveLength(2);
     const old = { version: 1, config: { enabled: true }, plans: [{ ...PLAN, accountId: 'legacy-id',
       tasks: [{ ...PLAN.tasks[0], maxRunMinutes: 0 }] }], runtime: [{ runs: 999 }] };
     const next = convertLegacyAccountPlan(old, 'legacy-id', ACCOUNT);

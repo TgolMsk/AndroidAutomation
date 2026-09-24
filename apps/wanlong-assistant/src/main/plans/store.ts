@@ -14,7 +14,7 @@ const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v ===
 const bounded = (v: unknown, min: number, max: number): v is number => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
 
 export function defaultPlanConfig(): PlanConfig {
-  return { version: 1, enabled: false, catchUpMs: 30 * 60_000, queueWaitMs: 30 * 60_000, retry: 0, retryDelayMs: 60_000 };
+  return { version: 1, enabled: false, catchUpMs: 30 * 60_000, queueWaitMs: 30 * 60_000, retry: 0, retryDelayMs: 60_000, maxConcurrentScripts: 4 };
 }
 
 export function validateTrigger(value: unknown): asserts value is TaskTrigger {
@@ -60,8 +60,12 @@ const fresh = (): PlanFile => ({ version: 1, config: defaultPlanConfig(), plans:
 function checkedConfig(raw: unknown): PlanConfig {
   if (!record(raw) || raw.version !== 1 || typeof raw.enabled !== 'boolean' ||
     !bounded(raw.catchUpMs, 0, 12 * 3_600_000) || !bounded(raw.queueWaitMs, 60_000, 12 * 3_600_000) ||
-    !Number.isInteger(raw.retry) || !bounded(raw.retry, 0, 5) || !bounded(raw.retryDelayMs, 0, 30 * 60_000)) throw new Error('计划配置无效');
-  return raw as unknown as PlanConfig;
+    !Number.isInteger(raw.retry) || !bounded(raw.retry, 0, 5) || !bounded(raw.retryDelayMs, 0, 30 * 60_000) ||
+    (raw.maxConcurrentScripts !== undefined && (!Number.isInteger(raw.maxConcurrentScripts) || !bounded(raw.maxConcurrentScripts, 1, 16)))) {
+    throw new Error('计划配置无效');
+  }
+  // Files written before the global script cap existed get the default (original MAX_CONCURRENT_INSTANCES = 4).
+  return { ...raw, maxConcurrentScripts: raw.maxConcurrentScripts ?? 4 } as unknown as PlanConfig;
 }
 
 function checkedFile(raw: unknown): PlanFile {

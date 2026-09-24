@@ -8,7 +8,7 @@
 | `templates.ts` | 模板集、截图、去底预览、保存 / 删除 / 测试模板 | `src/main/ipc/templates.ts` |
 | `accounts.ts` | 账号、实例绑定（确认改绑）、脚本参数、就绪闸门、登录会话与预览输入；推送 `account-changed` / `login-changed` | `src/main/ipc/accounts.ts` |
 | `plans.ts` | 任务计划与脚本库 | `src/main/ipc/plans.ts` |
-| `runs.ts` | 脚本执行监控（空，待 script-engine） | `src/main/ipc/runs.ts` |
+| `runs.ts` | 脚本执行监控：临时运行、运行快照、暂停 / 继续 / 停止、运行日志、留痕截图、匹配调试、ADBKeyboard 输入法；事件 `plan-run` / `run-logs` / `run-matches` | `src/main/ipc/runs.ts` |
 | `insights.ts` | 现有洞察、通知、只读机器人 | `src/main/ipc/insights.ts` |
 | `stats.ts` / `alerts.ts` / `bot.ts` / `resources.ts` | 统计 / 告警 / 机器人 / 资源统计（空） | 同名文件 |
 | `advisor.ts` | AI 顾问 | `src/main/ipc/advisor.ts` |

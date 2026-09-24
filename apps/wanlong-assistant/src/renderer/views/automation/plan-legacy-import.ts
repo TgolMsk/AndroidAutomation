@@ -52,7 +52,8 @@ export async function importLegacyScripts(
     const converted = convertLegacyScript(raw, packageName);
     const legacyId = converted.script.id;
     converted.script.id = importedScriptId(legacyId, used, suffix());
-    const errors = (await api.scriptValidate(gameId, converted.script)).filter((issue) => issue.level === 'error');
+    // Structural problems refuse the import; other errors are saved as a draft (refused at run time, shown when edited).
+    const errors = (await api.scriptValidate(gameId, converted.script)).filter((issue) => issue.level === 'error' && issue.fatal);
     if (errors.length) throw new Error(`${file.name}：${errors.map((issue) => issue.message).join('；')}`);
     const saved = await api.scriptSave(gameId, converted.script);
     mapping[legacyId] = saved.id;

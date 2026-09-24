@@ -11,7 +11,7 @@ import { broadcast } from './events';
 import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
 import { MonitoringService, ReadOnlyTelegramBot } from './monitoring';
-import { PlanService } from './plans';
+import { PlanService, ScriptRunner } from './plans';
 
 /**
  * Composition root. Services are built and wired here only, one `// ── <domain> ──` section each, so ported
@@ -83,7 +83,16 @@ bootstrapApp({
     // ── advisor (AI) ──
     const advisor = new AdvisorService(home, (gameId, index) => automation.captureReadOnly(gameId, index));
 
-    // ── plans (task plans + script library) ──
+    // ── plans (task plans + script library) + runs (script executor, run monitor) ──
+    // Scripts execute in script-worker threads; snapshots, log batches and debug matches are pushed to the monitor.
+    const scriptRunner = new ScriptRunner(home, {
+      instance: async (index) => (await services.host.get()).getState(index),
+      device: async (index) => (await services.host.get()).device(index),
+    }, {
+      onSnapshot: (snapshot) => broadcast('plan-run', { kind: 'snapshot', snapshot }),
+      onLogs: (event) => broadcast('run-logs', event),
+      onMatches: (event) => broadcast('run-matches', event),
+    });
     const plans = new PlanService(home, {
       accounts: (gameId) => accounts.list(gameId),
       instance: async (index) => (await services.host.get()).getState(index),
@@ -91,7 +100,8 @@ bootstrapApp({
       templateDir: async (gameId, index) => (await automation.settings(gameId, index)).templateDir,
       gatherScheduleEnabled: async (gameId, index) =>
         (await automation.schedules()).some((item) => item.gameId === gameId && item.index === index && item.enabled),
-    });
+      onRun: (run) => broadcast('plan-run', { kind: 'plan', run }),
+    }, scriptRunner);
 
     // ── monitoring (failure / freeze / kicked detection) ──
     monitoring = new MonitoringService(home, {

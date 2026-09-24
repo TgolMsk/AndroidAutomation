@@ -64,9 +64,11 @@ interface PlanPanelProps {
   onTemplateResultHandled?(requestId: string): void;
   /** After any successful action (save, run now, stop …), e.g. to refresh the shell's running-task count. */
   onChanged?(): void;
+  /** In `scripts` mode: run the saved version of a script on the current instance now (then show the monitor). */
+  onTryRun?(scriptId: string): Promise<void>;
 }
 
-export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, onCreateTemplate, templateResult, onTemplateResultHandled, onChanged }: PlanPanelProps) {
+export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, onCreateTemplate, templateResult, onTemplateResultHandled, onChanged, onTryRun }: PlanPanelProps) {
   const toast = useToast();
   // Shared with the other page: scripts imported there must be found when a plan is imported here.
   const { legacy, updateLegacy } = usePlanImport();
@@ -181,12 +183,15 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
   const savePlan = (): void => { if (plan) void act('保存计划', async () => { await api.planSave(gameId, plan); setPlanDirty(false); }); };
   const saveScript = (): void => {
     void act('保存脚本', async () => {
-      const next = jsonMode ? JSON.parse(json) as ScriptDef : script;
-      if (!next) throw new Error('请先创建或选择脚本');
-      if (!jsonMode && next.steps.some((step) => invalidSteps[step.id])) throw new Error('有步骤 JSON 尚未写完，请先修正红色输入框');
-      const results = await api.scriptValidate(gameId, next);
+      const edited = jsonMode ? JSON.parse(json) as ScriptDef : script;
+      if (!edited) throw new Error('请先创建或选择脚本');
+      if (!jsonMode && edited.steps.some((step) => invalidSteps[step.id])) throw new Error('有步骤 JSON 尚未写完，请先修正红色输入框');
+      // Built-in examples are read-only: saving one stores an editable copy under a new id.
+      const next = edited.id.startsWith('builtin_') ? { ...edited, id: `${edited.id.slice('builtin_'.length)}_copy`, name: `${edited.name}（副本）` } : edited;
+      const results = await api.scriptValidate(gameId, next, index);
       setIssues(results);
-      if (results.some((issue) => issue.level === 'error')) throw new Error('脚本校验未通过，请查看下方问题');
+      // Only structural (fatal) issues refuse saving; other errors are kept as a draft and refused at run time.
+      if (results.some((issue) => issue.fatal)) throw new Error('脚本存在结构性错误，无法保存，请查看下方问题');
       const saved = await api.scriptSave(gameId, next);
       setScriptId(saved.id);
       setJsonMode(false);
@@ -279,7 +284,7 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
             onDelete={() => updateScript({ ...script, steps: script.steps.filter((one) => one.id !== step.id) })} />)}
         </>}
         {!!issues.length && <div className="plan-issues" role="status">{issues.map((issue, i) => <p key={i} className={issue.level}>{issue.stepId ? `${issue.stepId}：` : ''}{issue.message}</p>)}</div>}
-        <div className="plan-script-actions"><button className="btn sm" onClick={() => void act('校验脚本', async () => { const value = jsonMode ? JSON.parse(json) as ScriptDef : script; setIssues(await api.scriptValidate(gameId, value)); })} disabled={!!busy}>校验</button><button className="btn primary sm" onClick={saveScript} disabled={!!busy}>保存脚本</button>{scriptId && <>{deleteConfirm ? <><span>确定删除？</span><button className="btn sm danger" onClick={() => void act('删除脚本', async () => { await api.scriptDelete(gameId, scriptId); setScriptId(''); setScript(null); setDeleteConfirm(false); })}>确定</button><button className="btn sm" onClick={() => setDeleteConfirm(false)}>取消</button></> : <button className="btn sm" onClick={() => setDeleteConfirm(true)}>删除</button>}</>}</div>
+        <div className="plan-script-actions"><button className="btn sm" onClick={() => void act('校验脚本', async () => { const value = jsonMode ? JSON.parse(json) as ScriptDef : script; setIssues(await api.scriptValidate(gameId, value, index)); })} disabled={!!busy}>校验</button><button className="btn primary sm" onClick={saveScript} disabled={!!busy}>保存脚本</button>{onTryRun && scriptId && <button className="btn sm" title={index === null ? '请先在顶部选择实例' : '在当前实例上运行已保存的版本，并打开执行监控'} onClick={() => void act('试跑脚本', () => onTryRun(scriptId))} disabled={!!busy || index === null}>在当前实例试跑</button>}{scriptId && !scriptId.startsWith('builtin_') && <>{deleteConfirm ? <><span>确定删除？</span><button className="btn sm danger" onClick={() => void act('删除脚本', async () => { await api.scriptDelete(gameId, scriptId); setScriptId(''); setScript(null); setDeleteConfirm(false); })}>确定</button><button className="btn sm" onClick={() => setDeleteConfirm(false)}>取消</button></> : <button className="btn sm" onClick={() => setDeleteConfirm(true)}>删除</button>}</>}</div>
       </>}
     </div></div></>}
   </section>;

@@ -10,7 +10,8 @@ export interface PlansApi {
   planCancelRun(gameId: string, runId: string): Promise<void>;
   scriptList(gameId: string): Promise<ScriptMeta[]>;
   scriptGet(gameId: string, id: string): Promise<ScriptDef>;
-  scriptValidate(gameId: string, raw: unknown): Promise<ScriptIssue[]>;
+  /** With an instance, missing templates and a template-set canvas mismatch are reported too. */
+  scriptValidate(gameId: string, raw: unknown, index?: number | null): Promise<ScriptIssue[]>;
   scriptSave(gameId: string, raw: unknown): Promise<ScriptMeta>;
   scriptDelete(gameId: string, id: string): Promise<void>;
 }

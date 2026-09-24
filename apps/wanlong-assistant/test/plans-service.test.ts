@@ -1,10 +1,12 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { PlanService } from '../src/main/plans';
+import { withFileLock } from '@avdm/core';
+import { PlanService, ScriptRunner } from '../src/main/plans';
 import type { GameAccount } from '../src/main/automation/accounts/types';
-import type { PlanHostPort, ScriptDef } from '../src/main/plans/types';
+import type { PlanHostPort, ScriptDef, ScriptRunSnapshot } from '../src/main/plans/types';
+import { FAST_PACING, fakeVision, inProcessWorkers } from './helpers/script-worker';
 
 const GAME = 'wanlong';
 const PKG = 'com.lilithgames.samo.android.cn';
@@ -53,13 +55,18 @@ describe('PlanService integration with fake device', () => {
         shell: async () => '',
       }),
     };
-    const service = new PlanService(home, port);
+    const snapshots: ScriptRunSnapshot[] = [];
+    const runner = new ScriptRunner(home, port, {
+      workerFactory: inProcessWorkers({ vision: fakeVision() }).factory, pacing: FAST_PACING, foregroundPollMs: 5,
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+    });
+    const service = new PlanService(home, port, runner);
     services.push(service);
     await service.start(GAME);
     await service.saveScript(GAME, script);
     await service.savePlan(GAME, { accountId: ACCOUNT, enabled: false, updatedAt: 0,
       tasks: [{ id: 'task-1', scriptId: script.id, enabled: true, trigger: { kind: 'manual' }, priority: 50, maxRunMinutes: 1 }] });
-    return { service, actions, home, port };
+    return { service, actions, home, port, snapshots };
   }
 
   it('runs a manual script through the shared instance lease and records success', async () => {
@@ -115,7 +122,7 @@ describe('PlanService integration with fake device', () => {
 
   it('only the scheduler lease owner may evaluate due tasks after another process edits plans', async () => {
     const { service: owner, home, port, actions } = await setup(() => false);
-    const second = new PlanService(home, port);
+    const second = new PlanService(home, port, new ScriptRunner(home, port, { workerFactory: inProcessWorkers({ vision: fakeVision() }).factory }));
     services.push(second);
     await second.start(GAME); // contended: read/edit access remains, timed execution belongs to owner.
     const nowBeijing = new Date(Date.now() + 8 * 3_600_000).toISOString().slice(11, 16);
@@ -127,5 +134,120 @@ describe('PlanService integration with fake device', () => {
     expect((await owner.overview(GAME)).runs).toHaveLength(0);
     expect(actions).toHaveLength(0);
     await expect(second.runNow(GAME, ACCOUNT, 'task-1')).rejects.toThrow('另一个万龙助手进程');
+  });
+
+  it('runs any script manually on an instance, with live snapshots and a busy instance meanwhile', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { service, actions, snapshots } = await setup(() => false, async () => { await gate; });
+    const started = await service.runScript(GAME, 1, script.id, { params: {}, maxRunMinutes: 5 });
+    expect(started).toMatchObject({ status: 'starting', source: 'manual', instanceIndex: 1, accountId: null, maxRunMs: 300_000 });
+    expect(service.isActiveForInstance(1)).toBe(true);
+    expect(service.runIdOfInstance(1)).toBe(started.runId);
+    await expect(service.runScript(GAME, 1, script.id)).rejects.toThrow('实例 #1 上已有脚本在运行');
+    release();
+    await eventually(async () => service.listRuns(GAME).find((run) => run.runId === started.runId)?.status === 'succeeded');
+    await eventually(async () => !service.isActiveForInstance(1));
+    expect(actions).toEqual(['100,100']);
+    expect(snapshots.some((snapshot) => snapshot.runId === started.runId && snapshot.status === 'running')).toBe(true);
+    expect((await service.runLogs(GAME, { runId: started.runId })).some((line) => line.message.includes('执行成功结束'))).toBe(true);
+  });
+
+  it('checks the account of a manual run and applies defaults < account < request params', async () => {
+    const { service, actions, port } = await setup(() => false);
+    const withParams = { ...account, scriptParams: { typing: { who: 'account', keep: 'account' } } } as GameAccount;
+    port.accounts = async () => [withParams];
+    await service.saveScript(GAME, { ...script, id: 'typing', params: [{ key: 'who', label: '谁', type: 'string', default: 'script' },
+      { key: 'keep', label: '保留', type: 'string', default: 'script' }], steps: [{ id: 't', kind: 'text', text: '{{who}}-{{keep}}' }] });
+    const typed: string[] = [];
+    const device = await port.device(1);
+    port.device = async () => ({ ...device, text: async (value: string) => { typed.push(value); } });
+    const run = await service.runScript(GAME, 1, 'typing', { accountId: ACCOUNT, params: { who: 'request' } });
+    await eventually(async () => service.listRuns(GAME).find((item) => item.runId === run.runId)?.status === 'succeeded');
+    expect(typed).toEqual(['request-account']);
+    expect(actions).toEqual([]);
+    await expect(service.runScript(GAME, 2, 'typing', { accountId: ACCOUNT })).rejects.toThrow('没有绑定到实例 #2');
+  });
+
+  it('refuses a manual run while another writer holds the instance lease', async () => {
+    const { service, home } = await setup(() => false);
+    let exit!: () => void;
+    const held = new Promise<void>((resolve) => { exit = resolve; });
+    let entered!: () => void;
+    const inLock = new Promise<void>((resolve) => { entered = resolve; });
+    const lock = withFileLock(path.join(home, 'run', 'automation-instance-1.lock'), async () => { entered(); await held; }, { timeoutMs: 1000 });
+    await inLock;
+    await expect(service.runScript(GAME, 1, script.id)).rejects.toThrow('正被登录、采集或脚本计划占用');
+    expect(service.isActiveForInstance(1)).toBe(false);
+    exit();
+    await lock;
+  });
+
+  it('refuses a manual run while gather scheduling is enabled, unless the scheduler lends the instance', async () => {
+    const { service, port } = await setup(() => true);
+    await expect(service.runScript(GAME, 1, script.id)).rejects.toThrow('正在自动采集');
+    const events: string[] = [];
+    port.suspendForScript = async (_game, index, reason) => { events.push(`suspend:${index}:${reason}`); return () => events.push('resume'); };
+    const run = await service.runScript(GAME, 1, script.id);
+    await eventually(async () => service.listRuns(GAME).find((item) => item.runId === run.runId)?.status === 'succeeded');
+    await eventually(async () => events.includes('resume'));
+    expect(events[0]).toMatch(/^suspend:1:临时运行脚本/);
+  });
+
+  it('caps concurrent scripts: manual runs are refused, plan runs wait instead of failing', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { service, port } = await setup(() => false, async () => { await gate; });
+    await service.saveConfig(GAME, { maxConcurrentScripts: 1 });
+    const second = { ...account, id: '00000000-0000-4000-8000-000000000002', binding: { index: 2, instanceCreatedAt: 'identity-1' } };
+    port.accounts = async () => [account, second];
+    await service.savePlan(GAME, { accountId: second.id, enabled: false, updatedAt: 0,
+      tasks: [{ id: 'task-2', scriptId: script.id, enabled: true, trigger: { kind: 'manual' }, priority: 50, maxRunMinutes: 1 }] });
+    const first = await service.runScript(GAME, 1, script.id);
+    await expect(service.runScript(GAME, 2, script.id)).rejects.toThrow('同时运行的脚本已达上限 1 个');
+    const queued = await service.runNow(GAME, second.id, 'task-2');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect((await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.status).toBe('queued');
+    release();
+    await eventually(async () => service.listRuns(GAME).find((item) => item.runId === first.runId)?.status === 'succeeded');
+    await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.status === 'succeeded', 8000);
+  }, 15_000);
+
+  it('pauses, resumes and stops a manual run through the service', async () => {
+    const { service, port } = await setup(() => false);
+    await service.saveScript(GAME, { ...script, id: 'slow', steps: [{ id: 's', kind: 'sleep', ms: 60_000 }] });
+    const run = await service.runScript(GAME, 1, 'slow');
+    await eventually(async () => service.listRuns(GAME).find((item) => item.runId === run.runId)?.status === 'running');
+    service.pauseRun(GAME, run.runId);
+    await eventually(async () => service.listRuns(GAME).find((item) => item.runId === run.runId)?.status === 'paused');
+    service.resumeRun(GAME, run.runId);
+    await service.cancelRun(GAME, run.runId);
+    expect(service.listRuns(GAME).find((item) => item.runId === run.runId)?.status).toBe('aborted');
+    await eventually(async () => !service.isActiveForInstance(1));
+    void port;
+  });
+
+  it('reports and sets up the ADBKeyboard input method under the instance lease', async () => {
+    const { service, port, home } = await setup(() => false);
+    const shells: string[] = [];
+    let installed = false;
+    const device = await port.device(1);
+    port.device = async () => ({
+      ...device,
+      install: async () => { installed = true; return 'Success'; },
+      shell: async (command: string) => {
+        shells.push(command);
+        if (command.startsWith('pm list packages')) return installed ? 'package:com.android.adbkeyboard\n' : '';
+        if (command === 'ime list -s') return installed ? 'com.android.adbkeyboard/.AdbIME\n' : '';
+        if (command.startsWith('settings get')) return installed ? 'com.android.adbkeyboard/.AdbIME\n' : 'com.android.inputmethod.latin/.LatinIME\n';
+        return '';
+      },
+    });
+    expect(await service.imeStatus(1)).toMatchObject({ installed: false, available: false });
+    const apk = path.join(home, 'ADBKeyboard.apk');
+    await writeFile(apk, 'apk');
+    expect(await service.setupIme(1, apk)).toMatchObject({ installed: true, enabled: true, selected: true, available: true });
+    expect(shells).toEqual(expect.arrayContaining(['ime enable com.android.adbkeyboard/.AdbIME', 'ime set com.android.adbkeyboard/.AdbIME']));
+    await expect(service.setupIme(1, path.join(home, 'not-an-apk.txt'))).rejects.toThrow('.apk');
   });
 });

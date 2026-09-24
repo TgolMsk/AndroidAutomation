@@ -11,8 +11,12 @@ export function convertLegacyScript(raw: unknown, expectedPackage: string): { sc
   }
   const next = { ...raw, packageName: expectedPackage } as unknown as ScriptDef;
   if (next.loop) {
-    next.loop = false;
-    warnings.push('旧版无限循环已改为单轮。请在任务计划中设置间隔触发，避免无上限占用实例。');
+    // Script-level loop mode is supported again; it only needs a sane gap between rounds.
+    if (typeof next.loopIntervalMs !== 'number' || next.loopIntervalMs < 1000) {
+      next.loopIntervalMs = 3000;
+      warnings.push('旧版循环脚本的每轮间隔小于 1 秒，已改为 3 秒。');
+    }
+    warnings.push('这是循环模式脚本：会一直运行到手动停止或达到任务的运行时长上限。');
   }
   return { script: next, warnings };
 }

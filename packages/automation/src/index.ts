@@ -28,3 +28,15 @@ export { TemplateLibrary } from './template-library.js';
 export type { TemplateDraft, TemplateSaveResult } from './template-library.js';
 export { buildTemplateAlpha } from './template-alpha.js';
 export { defaultVision, matchTemplate, prepareFrame, prepareTemplate, refToDevice } from './vision.js';
+// ── script engine (DSL types/validation are also on the renderer-safe `@avdm/automation/script` entry) ──
+export * from './script/runtime.js';
+export {
+  validateScript, fatalIssues, blockingIssues, formatIssues, walkSteps, countSteps, referencedTemplateIds, startsWithLaunch,
+  scriptMeta, interpolate, mergeParams, describeCondition, describeRect,
+  builtinScripts, getBuiltinScript, builtinScriptMetas, isBuiltinScriptId, BUILTIN_SCRIPT_PREFIX, SCRIPT_LIMITS, SCRIPT_ID,
+  LOG_LEVEL_ORDER, TERMINAL_RUN_STATUSES, SHOT_POLICIES,
+} from './script/index.js';
+export type {
+  Condition, FailPolicy, StepBase, ScriptStep, StepKind, ScriptParamDef, ScriptParamValue, ScriptDef, ScriptMeta, ScriptIssue,
+  RunStatus, ShotPolicy, RunStats, RunSnapshot, LogLevel, LogEntry, LogQuery, AiConsultRequest, AiAssistResult, ValidateOptions,
+} from './script/index.js';

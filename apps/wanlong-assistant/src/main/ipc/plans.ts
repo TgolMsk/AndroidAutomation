@@ -1,7 +1,7 @@
 import type { PlansApi } from '../../shared/ipc';
 import type { PlanService } from '../plans';
 import type { DomainHandlers } from './types';
-import { game, patchObject, text } from './validate';
+import { game, optionalIndex, patchObject, text } from './validate';
 
 export interface PlansServices {
   plans: PlanService;
@@ -23,7 +23,9 @@ export const plansHandlers: DomainHandlers<PlansApi, PlansServices> = {
   },
   async scriptList({ plans }, gameId) { return plans.listScripts(game(gameId)); },
   async scriptGet({ plans }, gameId, id) { return plans.getScript(game(gameId), text(id, '脚本 ID')); },
-  async scriptValidate({ plans }, gameId, raw) { return plans.validateScript(game(gameId), raw); },
+  async scriptValidate({ plans }, gameId, raw, index) {
+    return plans.validateScript(game(gameId), raw, index === undefined ? null : optionalIndex(index));
+  },
   async scriptSave({ plans }, gameId, raw) { return plans.saveScript(game(gameId), raw); },
   async scriptDelete({ plans }, gameId, id) { await plans.deleteScript(game(gameId), text(id, '脚本 ID')); },
 };
