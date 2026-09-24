@@ -21,6 +21,7 @@ import { PlanRunsProvider, scriptRunBadge, usePlanRuns } from './state/plan-runs
 import { SelectionProvider, useSelection } from './state/selection';
 import { TemplateFlowProvider } from './state/template-flow';
 import { VIEW_REGISTRY, restoredScrollTop } from './views/registry';
+import { SidebarUpdate } from './views/update/SidebarUpdate';
 import './shell.css';
 
 const COLLAPSED_KEY = 'wl.nav.collapsed';
@@ -152,6 +153,7 @@ function Sidebar() {
         })}
       </nav>
       <div className="wl-shell-sidebar-foot">
+        <SidebarUpdate collapsed={collapsed} />
         <button
           type="button" className="icon-btn" onClick={() => { const next = !collapsed; setCollapsed(next); storeCollapsed(next); }}
           aria-label={collapsed ? '展开导航' : '收起导航'} title={collapsed ? '展开导航' : '收起导航'} aria-expanded={!collapsed}

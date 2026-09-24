@@ -60,6 +60,8 @@ jobs:
           hdiutil verify "$emulator_dmg"
           hdiutil verify "$assistant_dmg"
           (cd release && shasum -a 256 *.dmg wanlong-assistant/*.dmg > SHA256SUMS && shasum -a 256 -c SHA256SUMS)
+          # The assistant's in-app updater downloads this asset and looks its digest up in SHA256SUMS by base name.
+          grep -Fq "  wanlong-assistant/Wanlong-Assistant-${assistant_version}-mac-arm64.dmg" release/SHA256SUMS
       - name: Smoke test both packaged apps
         run: node scripts/smoke-packaged.mjs
       - uses: actions/upload-artifact@v4

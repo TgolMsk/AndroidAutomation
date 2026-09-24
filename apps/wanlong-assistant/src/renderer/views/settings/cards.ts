@@ -13,7 +13,8 @@ import { HealthCard } from './HealthCard';
 import { LogsCard } from './LogsCard';
 import { PanelSettingsCard } from './PanelSettingsCard';
 import { ServiceFailuresCard } from './ServiceFailuresCard';
-import { AiSlotCard, BotSlotCard, LegacyImportSlotCard, NotificationsSlotCard, UpdateSlotCard } from './SlotCards';
+import { AiSlotCard, BotSlotCard, LegacyImportSlotCard, NotificationsSlotCard } from './SlotCards';
+import { UpdateCard } from './UpdateCard';
 
 export interface SettingsCardProps {
   /** False while the settings page is hidden (pause polling and live streams). */
@@ -40,7 +41,7 @@ export const SETTINGS_CARDS: readonly SettingsCardEntry[] = [
   { key: 'features', column: 'main', component: FeatureLinksCard },
   { key: 'logs', column: 'main', component: LogsCard },
   { key: 'health', column: 'side', component: HealthCard },
-  { key: 'update', column: 'side', component: UpdateSlotCard },
+  { key: 'update', column: 'side', component: UpdateCard },
   { key: 'emulator', column: 'side', component: EmulatorSettingsCard },
   { key: 'paths', column: 'side', component: DataPathsCard },
   { key: 'deviceTools', column: 'side', component: DeviceToolsCard },

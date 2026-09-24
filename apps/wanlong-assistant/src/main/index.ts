@@ -27,6 +27,8 @@ import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
 import { MonitoringService, ReadOnlyTelegramBot } from './monitoring';
 import { PlanService, ScriptRunner } from './plans';
+import { BusyGate, gatherRunProbe, loginProbe, planRunProbe, sdkInstallProbe, UpdateService } from './update';
+import { electronUpdateDeps } from './update/electron-deps';
 
 /**
  * Composition root. Services are built and wired here only, one `// ── <domain> ──` section each, so ported
@@ -258,6 +260,23 @@ bootstrapApp({
       },
     }), (report) => broadcast('app-health', report));
 
+    // ── update (in-app update from GitHub Releases) ──
+    // The install gate asks every service holding a device (or the SDK) right now. Later modules that hold devices
+    // (scheduler operations, freeze recovery, resource reading, …) register one probe each here.
+    const busyGate = new BusyGate();
+    busyGate.register('采集运行', gatherRunProbe(automation));
+    busyGate.register('脚本计划', planRunProbe(plans));
+    busyGate.register('账号登录', loginProbe(accounts, loginActive));
+    busyGate.register('SDK 安装', sdkInstallProbe(services.sdkInstall));
+    const updates = new UpdateService(() => electronUpdateDeps({
+      busy: () => busyGate.reason(),
+      publish: (state) => broadcast('update-changed', state),
+      log: (level, message) => {
+        if (level === 'warn' || level === 'error') console.warn(`[wanlong/update] ${message}`);
+        else console.log(`[wanlong/update] ${message}`);
+      },
+    }), { autoCheck: !process.env['AVDM_SCREENSHOT_PATH'] });
+
     // ── ipc ── (one service per line: a ported module appends its own line)
     registerWanlongIpcHandlers({
       automation,
@@ -284,6 +303,7 @@ bootstrapApp({
           return set ? { name: set.name, templates: set.templates.length } : null;
         },
       }),
+      updateCenter: updates.center,
       windows: services.windows,
     });
 
@@ -299,6 +319,7 @@ bootstrapApp({
           { name: '脚本计划', impact: '定时脚本不会自动运行', run: () => plans.start('wanlong') },
           { name: '运行监控', impact: '掉线与卡死不会告警', run: () => monitoring.start() },
           { name: '只读机器人', impact: 'Telegram 机器人不会响应', run: () => remoteBot.start() },
+          { name: '应用内更新', impact: '启动后不会自动检查新版本', run: () => updates.start() },
         ]);
         serviceHealth.report(failures);
         announceServiceFailures(serviceHealth.list().filter((item) => failures.some((failure) => failure.name === item.name)), appToasts);
@@ -309,6 +330,7 @@ bootstrapApp({
       /** Inbound network first, then observers, device writers, and finally stores that flush on exit. */
       async dispose() {
         await runServiceSteps('stop', [
+          { name: '应用内更新', run: () => updates.dispose() },
           { name: '只读机器人', run: () => remoteBot.stop() },
           { name: '运行监控', run: () => monitoring.dispose() },
           { name: '脚本计划', run: () => plans.shutdown() },

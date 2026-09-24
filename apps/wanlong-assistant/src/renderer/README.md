@@ -6,6 +6,7 @@
 - `state/`：`navigation`（当前页）、`activity`（采集运行与自动续跑，事件 + 15 秒兜底轮询）、`selection`（全局游戏 / 实例选择，`useSelectionLock` 在设备操作期间锁住实例选择器）、`plan-runs`（当前游戏的脚本执行记录，顶部「执行中」与执行监控共用）、`template-flow`（AI 模板建议 → 模板库；脚本截取 → 模板库 → 回到脚本；模板变更通知采集页作废探针）、`plan-import`（旧版脚本 / 计划导入会话，脚本页与任务计划页共用，旧 ID → 新 ID 映射不丢）、`badges`（顶部角标）。
 - `badge-sources.tsx`：常驻的角标来源组件列表；需要全局角标的模块把自己的组件追加进 `BADGE_SOURCES`，组件内调用 `useShellBadge(...)`。已有：游戏模块 / 实例列表读取失败；后台服务启动失败（`hooks/useServiceFailures`：挂载时读一次 `appServiceFailures()` 再跟 `service-failures` 事件，角标指向设置页的「后台服务未启动」卡片）；主进程提示 `AppToasts`（挂载时读一次 `appRecentToasts()` 补上窗口加载前发出的提示，再跟 `app-toast` 事件，按 id 去重，服务启动失败与自检问题的提示都从这里弹）。
 - `format.ts`：游戏相关时间一律 `beijingTime()`（转调 `src/shared/time.ts`），不用 `toLocaleString()`。
+- `views/update/`：应用内更新的渲染侧（`update-store.ts` 单一状态源、`UpdatePanel` 完整 / 紧凑两种形态、`SidebarUpdate` 左下角版本号与红点）；设置页的「版本与更新」卡在 `views/settings/UpdateCard.tsx`。主进程侧见 `src/main/update/README.md`。
 
 ## 新增一个页面
 
@@ -27,7 +28,7 @@
 
 ## 设置页（`views/settings/`）
 
-卡片注册表在 `cards.ts`（`SETTINGS_CARDS`，每张卡一个文件）。通知与推送、机器人、AI、版本与更新、导入旧版数据目前是占位卡（`SlotCards.tsx`，说明配置在哪并给跳转）；
+卡片注册表在 `cards.ts`（`SETTINGS_CARDS`，每张卡一个文件）。「版本与更新」（`key: 'update'`）已换成应用内更新的 `UpdateCard`；通知与推送、机器人、AI、导入旧版数据目前是占位卡（`SlotCards.tsx`，说明配置在哪并给跳转）；
 负责的模块把同 `key` 的那一行换成自己的卡片组件即可，不用改 `SettingsView.tsx`。应用设置读写走 `hooks/useAppSettings`（`saveAppSettings(patch)`，主进程严格校验）。
 
 - 「设备工具」（`DeviceToolsCard`，原版同名卡）：选一个运行中的实例 →「安装 APK…」（`pickApks` → 有采集 / 登录 / 脚本在用时先确认 → `appInstallApk`，排在该实例的设备通道里）。

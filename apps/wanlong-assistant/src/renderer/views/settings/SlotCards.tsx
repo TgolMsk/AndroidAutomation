@@ -3,15 +3,13 @@
  * lives, and links there; the owning module replaces its entry in `cards.ts` with its own card component (one
  * line, no other edit) and describes its new switches there.
  */
-import { useEffect, useState } from 'react';
-import { avdm } from '../../api';
 import { Card } from '../../components/Card';
 import { useNavigation } from '../../state/navigation';
 import type { ViewKey } from '../../navigation';
 
 function SlotCard({ title, icon, lines, link }: {
   title: string;
-  icon: 'alert' | 'terminal' | 'chip' | 'download' | 'package';
+  icon: 'alert' | 'terminal' | 'chip' | 'package';
   lines: string[];
   link?: { label: string; view: ViewKey };
 }) {
@@ -52,22 +50,6 @@ export function AiSlotCard() {
       title="AI 处理" icon="chip"
       lines={['视觉模型接口、每小时请求上限与同实例冷却、分析记录都在「AI 处理」页。', '目前 AI 只给建议与风险判断，点击和保存模板都由你决定。']}
       link={{ label: '前往 AI 处理', view: 'ai' }}
-    />
-  );
-}
-
-/** 版本与更新 (app-update module). */
-export function UpdateSlotCard() {
-  const [version, setVersion] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    avdm.appInfo().then((info) => { if (active) setVersion(info.version); }).catch(() => undefined);
-    return () => { active = false; };
-  }, []);
-  return (
-    <SlotCard
-      title="版本与更新" icon="download"
-      lines={[`当前版本：${version ?? '读取中…'}`, '新版本发布在 GitHub Release（TgolMsk/AndroidAutomation），安装包为 Wanlong-Assistant-<版本>-mac-arm64.dmg。']}
     />
   );
 }
