@@ -13,6 +13,12 @@ export interface AutomationSettings {
   templateDir: string;
   /** Game-owned configuration, normalized before a task starts. */
   config: Record<string, unknown>;
+  /**
+   * Set when `config` is the copy stored on the account bound to this instance (original
+   * `Account.scriptParams.gather`): it is read and saved there and follows the account to another instance. Absent
+   * for an instance without a current account, whose config lives in the instance's own settings file.
+   */
+  configAccount?: { id: string; name: string };
 }
 
 export interface AutomationProbeMatch {

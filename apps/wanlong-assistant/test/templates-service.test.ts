@@ -175,9 +175,10 @@ describe('AutomationHost template library', () => {
     expect(imported.result.addedTemplates).toEqual({ [bound.id]: ['tpl_new'] });
     expect(imported).toMatchObject({ changedDirectories: [bound.directory], pausedSchedules: [1] });
     expect(changes).toEqual([expect.objectContaining({ reason: 'import', directory: bound.directory, templateIds: ['tpl_new'] })]);
-    const schedules = await host.schedules();
-    expect(schedules.find((item) => item.index === 1)?.enabled).toBe(false);
-    expect(schedules.find((item) => item.index === 2)?.enabled).toBe(true);
+    // The ETA scheduler lists only instances with scheduling state: a switched-off, never-sampled one drops out.
+    expect(host.eta.isAuto(1)).toBe(false);
+    expect((await host.schedules()).some((item) => item.index === 1 && item.enabled)).toBe(false);
+    expect((await host.schedules()).find((item) => item.index === 2)?.enabled).toBe(true);
     expect((await host.templateSet('wanlong', 2))!.directory).toBe(other.directory);
   });
 

@@ -35,7 +35,7 @@ describe('PlanService integration with fake device', () => {
     await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
   });
 
-  async function setup(schedule: () => boolean, tap?: (x: number, y: number) => Promise<void>) {
+  async function setup(tap?: (x: number, y: number) => Promise<void>) {
     const home = await mkdtemp(path.join(tmpdir(), 'wanlong-plan-service-'));
     homes.push(home);
     const actions: string[] = [];
@@ -43,7 +43,6 @@ describe('PlanService integration with fake device', () => {
       accounts: async () => [account],
       instance: async () => ({ status: 'running', record: { createdAt: 'identity-1' } }),
       templateDir: async () => '',
-      gatherScheduleEnabled: async () => schedule(),
       device: async () => ({
         screencapRaw: async () => ({ width: 200, height: 200, data: new Uint8Array(200 * 200 * 4), capturedAt: Date.now() }),
         screencapPng: async () => new Uint8Array([1]),
@@ -79,7 +78,7 @@ describe('PlanService integration with fake device', () => {
   });
 
   it('never retries a run its time limit ended (original: a stopped plan run is not retried)', async () => {
-    const { service, runner } = await setup(() => false);
+    const { service, runner } = await setup();
     await service.saveConfig(GAME, { retry: 2, retryDelayMs: 0 });
     const run = vi.spyOn(runner, 'run').mockImplementation(async (options) => endedSnapshot({
       runId: options.runId, status: 'failed', timedOut: true, error: '脚本运行超过本次时间上限（1 分钟），已停止。',
@@ -97,7 +96,7 @@ describe('PlanService integration with fake device', () => {
   });
 
   it('a loop script that ran its time limit out is recorded as done, not failed', async () => {
-    const { service, runner } = await setup(() => false);
+    const { service, runner } = await setup();
     await service.saveConfig(GAME, { retry: 1, retryDelayMs: 0 });
     await service.saveScript(GAME, { ...script, loop: true, loopIntervalMs: 1000 });
     const run = vi.spyOn(runner, 'run').mockImplementation(async (options) => endedSnapshot({
@@ -110,7 +109,7 @@ describe('PlanService integration with fake device', () => {
   });
 
   it('runs without an explicit shot policy follow the app settings (app-settings.json, then saved changes)', async () => {
-    const { service, runner, port, home } = await setup(() => false);
+    const { service, runner, port, home } = await setup();
     await mkdir(path.join(home, 'automation'), { recursive: true });
     await writeFile(path.join(home, 'automation', 'app-settings.json'), JSON.stringify({ version: 1, shotPolicy: 'always' }));
     // Wired exactly as in src/main/index.ts.
@@ -141,7 +140,7 @@ describe('PlanService integration with fake device', () => {
   });
 
   it('runs a manual script through the shared instance lease and records success', async () => {
-    const { service, actions } = await setup(() => false);
+    const { service, actions } = await setup();
     const run = await service.runNow(GAME, ACCOUNT, 'task-1');
     await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === run.runId)?.status === 'succeeded');
     await eventually(async () => !service.isActiveForInstance(1));
@@ -152,7 +151,7 @@ describe('PlanService integration with fake device', () => {
 
   it('labels the instance lease and writes explicit screenshot steps whatever the shot policy (per-step shots only under 「每步都留痕」)', async () => {
     let owner: LeaseOwner | null = null;
-    const { service, port, home } = await setup(() => false, async () => { owner = await readLeaseOwner(home, 1); });
+    const { service, port, home } = await setup(async () => { owner = await readLeaseOwner(home, 1); });
     let policy: 'never' | 'always' = 'never';
     port.shotPolicy = () => policy;
     await service.saveScript(GAME, { ...script, steps: [
@@ -179,16 +178,51 @@ describe('PlanService integration with fake device', () => {
 
   it('labels the lease of a manual run', async () => {
     let owner: LeaseOwner | null = null;
-    const { service, home } = await setup(() => false, async () => { owner = await readLeaseOwner(home, 1); });
+    const { service, home } = await setup(async () => { owner = await readLeaseOwner(home, 1); });
     const run = await service.runScript(GAME, 1, script.id);
     await eventually(async () => service.listRuns(GAME).find((item) => item.runId === run.runId)?.status === 'succeeded');
     expect(owner).toMatchObject({ label: '运行脚本', pid: process.pid });
   });
 
-  it('refuses script input while gather scheduling is enabled', async () => {
-    const { service, actions } = await setup(() => true);
-    await expect(service.runNow(GAME, ACCOUNT, 'task-1')).rejects.toThrow('自动采集');
-    expect(actions).toEqual([]);
+  it('★ a plan run preempts gathering: the scheduler yields before the lease is taken and gets it back after (plan rule 1)', async () => {
+    // Gather auto being on never refuses a script any more (DECISIONS A.4): the run borrows the instance.
+    const events: string[] = [];
+    let homeDir = '';
+    const { service, port, home, actions } = await setup(async () => {
+      events.push(`tap:lease=${(await readLeaseOwner(homeDir, 1))?.label ?? 'none'}`);
+    });
+    homeDir = home;
+    port.suspendForScript = async (game, index, reason) => {
+      events.push(`suspend:${game}:${index}:lease=${(await readLeaseOwner(home, 1))?.label ?? 'none'}`);
+      expect(reason).toContain(script.id);
+      return () => { events.push('resume'); };
+    };
+    const queued = await service.runNow(GAME, ACCOUNT, 'task-1');
+    await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.status === 'succeeded');
+    await eventually(async () => events.includes('resume'));
+    expect(actions).toEqual(['100,100']);
+    // Yield first (nobody holds the lease yet), then the script runs under its labelled lease, then the give-back.
+    expect(events).toEqual([`suspend:${GAME}:1:lease=none`, 'tap:lease=运行脚本计划', 'resume']);
+    expect(await readLeaseOwner(home, 1)).toBeNull();
+  });
+
+  it('gives the instance back to gathering when the plan run fails or is skipped', async () => {
+    const { service, port } = await setup(async () => { throw new Error('fake adb failure'); });
+    let resumed = 0;
+    port.suspendForScript = async () => () => { resumed++; };
+    const queued = await service.runNow(GAME, ACCOUNT, 'task-1');
+    await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.status === 'failed');
+    await eventually(async () => resumed === 1);
+    // A scheduler that cannot yield (it throws) never blocks the script.
+    port.suspendForScript = async () => { throw new Error('调度器不可用'); };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const again = await service.runNow(GAME, ACCOUNT, 'task-1');
+      await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === again.runId)?.status === 'failed');
+      expect(warn).toHaveBeenCalledWith('[plan] 采集调度让路失败，仍然继续启动脚本', '调度器不可用');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it.each([
@@ -199,7 +233,7 @@ describe('PlanService integration with fake device', () => {
   ] as const)('stops before the next input when account becomes %s', async (_name, change) => {
     const current = structuredClone(account);
     let firstTap = true;
-    const { service, actions, port } = await setup(() => false, async () => {
+    const { service, actions, port } = await setup(async () => {
       if (firstTap) { firstTap = false; change(current); }
     });
     port.accounts = async () => [current];
@@ -214,7 +248,7 @@ describe('PlanService integration with fake device', () => {
   });
 
   it('cancels a long retry delay promptly and releases the instance', async () => {
-    const { service, actions } = await setup(() => false, async () => { throw new Error('fake adb failure'); });
+    const { service, actions } = await setup(async () => { throw new Error('fake adb failure'); });
     await service.saveConfig(GAME, { retry: 1, retryDelayMs: 30 * 60_000 });
     const run = await service.runNow(GAME, ACCOUNT, 'task-1');
     await eventually(async () => actions.length === 1);
@@ -227,7 +261,7 @@ describe('PlanService integration with fake device', () => {
   });
 
   it('only the scheduler lease owner may evaluate due tasks after another process edits plans', async () => {
-    const { service: owner, home, port, actions } = await setup(() => false);
+    const { service: owner, home, port, actions } = await setup();
     const second = new PlanService(home, port, new ScriptRunner(home, port, { workerFactory: inProcessWorkers({ vision: fakeVision() }).factory }));
     services.push(second);
     await second.start(GAME); // contended: read/edit access remains, timed execution belongs to owner.
@@ -245,7 +279,7 @@ describe('PlanService integration with fake device', () => {
   it('runs any script manually on an instance, with live snapshots and a busy instance meanwhile', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const { service, actions, snapshots } = await setup(() => false, async () => { await gate; });
+    const { service, actions, snapshots } = await setup(async () => { await gate; });
     const started = await service.runScript(GAME, 1, script.id, { params: {}, maxRunMinutes: 5 });
     expect(started).toMatchObject({ status: 'starting', source: 'manual', instanceIndex: 1, accountId: null, maxRunMs: 300_000 });
     expect(service.isActiveForInstance(1)).toBe(true);
@@ -260,7 +294,7 @@ describe('PlanService integration with fake device', () => {
   });
 
   it('checks the account of a manual run and applies defaults < account < request params', async () => {
-    const { service, actions, port } = await setup(() => false);
+    const { service, actions, port } = await setup();
     const withParams = { ...account, scriptParams: { typing: { who: 'account', keep: 'account' } } } as GameAccount;
     port.accounts = async () => [withParams];
     await service.saveScript(GAME, { ...script, id: 'typing', params: [{ key: 'who', label: '谁', type: 'string', default: 'script' },
@@ -276,7 +310,7 @@ describe('PlanService integration with fake device', () => {
   });
 
   it('refuses a manual run while another writer holds the instance lease', async () => {
-    const { service, home } = await setup(() => false);
+    const { service, home } = await setup();
     let exit!: () => void;
     const held = new Promise<void>((resolve) => { exit = resolve; });
     let entered!: () => void;
@@ -289,9 +323,8 @@ describe('PlanService integration with fake device', () => {
     await lock;
   });
 
-  it('refuses a manual run while gather scheduling is enabled, unless the scheduler lends the instance', async () => {
-    const { service, port } = await setup(() => true);
-    await expect(service.runScript(GAME, 1, script.id)).rejects.toThrow('正在自动采集');
+  it('a manual run borrows the instance from the gather scheduler (never refused because gather auto is on)', async () => {
+    const { service, port } = await setup();
     const events: string[] = [];
     port.suspendForScript = async (_game, index, reason) => { events.push(`suspend:${index}:${reason}`); return () => events.push('resume'); };
     const run = await service.runScript(GAME, 1, script.id);
@@ -310,7 +343,6 @@ describe('PlanService integration with fake device', () => {
       accounts: async () => [account],
       instance: async () => ({ status: 'running', record: { createdAt: 'identity-1' } }),
       templateDir: async () => dir,
-      gatherScheduleEnabled: async () => false,
       device: async () => device,
     };
     const runner = new ScriptRunner(home, port, { workerFactory: inProcessWorkers({ vision: fakeVision(() => true) }).factory, pacing: FAST_PACING, foregroundPollMs: 5 });
@@ -328,7 +360,7 @@ describe('PlanService integration with fake device', () => {
   it('caps concurrent scripts: manual runs are refused, plan runs wait instead of failing', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const { service, port } = await setup(() => false, async () => { await gate; });
+    const { service, port } = await setup(async () => { await gate; });
     await service.saveConfig(GAME, { maxConcurrentScripts: 1 });
     const second = { ...account, id: '00000000-0000-4000-8000-000000000002', binding: { index: 2, instanceCreatedAt: 'identity-1' } };
     port.accounts = async () => [account, second];
@@ -345,7 +377,7 @@ describe('PlanService integration with fake device', () => {
   }, 15_000);
 
   it('pauses, resumes and stops a manual run through the service', async () => {
-    const { service, port } = await setup(() => false);
+    const { service, port } = await setup();
     await service.saveScript(GAME, { ...script, id: 'slow', steps: [{ id: 's', kind: 'sleep', ms: 60_000 }] });
     const run = await service.runScript(GAME, 1, 'slow');
     await eventually(async () => service.listRuns(GAME).find((item) => item.runId === run.runId)?.status === 'running');
@@ -359,7 +391,7 @@ describe('PlanService integration with fake device', () => {
   });
 
   it('reports and sets up the ADBKeyboard input method under the instance lease', async () => {
-    const { service, port, home } = await setup(() => false);
+    const { service, port, home } = await setup();
     const shells: string[] = [];
     let installed = false;
     let owner: LeaseOwner | null = null;

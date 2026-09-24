@@ -199,9 +199,6 @@ export class PlanService {
     if (!account) throw new Error('账号不存在或不属于当前游戏');
     const available = new Set((await this.listScripts(gameId)).filter((s) => s.version !== '0').map((s) => s.id));
     for (const task of plan.tasks) if (!available.has(task.scriptId)) throw new Error(`脚本 ${task.scriptId} 不存在或无法读取`);
-    if (plan.enabled && account.binding && await this.port.gatherScheduleEnabled(gameId, account.binding.index)) {
-      throw new Error('当前实例正在自动采集。请先关闭采集调度，再启用脚本计划');
-    }
     const saved = await this.store.savePlan(gameId, plan);
     void this.tick(gameId);
     return saved;
@@ -209,16 +206,6 @@ export class PlanService {
 
   async saveConfig(gameId: string, patch: Partial<PlanConfig>): Promise<PlanConfig> {
     gamePlugin(gameId);
-    if (patch.enabled) {
-      const overview = await this.store.overview(gameId);
-      const accounts = await this.port.accounts(gameId);
-      for (const plan of overview.plans.filter((p) => p.enabled)) {
-        const binding = accounts.find((a) => a.id === plan.accountId)?.binding;
-        if (binding && await this.port.gatherScheduleEnabled(gameId, binding.index)) {
-          throw new Error(`实例 #${binding.index} 正在自动采集，不能同时启用脚本计划`);
-        }
-      }
-    }
     const config = await this.store.saveConfig(gameId, patch);
     this.caps.set(gameId, config.maxConcurrentScripts ?? DEFAULT_MAX_CONCURRENT_SCRIPTS);
     void this.tick(gameId);
@@ -235,7 +222,6 @@ export class PlanService {
     const account = (await this.port.accounts(gameId)).find((a) => a.id === accountId);
     if (!account || !account.enabled || account.login.status !== 'ready' || !account.binding) throw new Error('账号尚未启用、完成登录并绑定实例');
     if (account.packageName !== plugin.packageName) throw new Error('账号对应的游戏包名不一致');
-    if (await this.port.gatherScheduleEnabled(gameId, account.binding.index)) throw new Error('请先关闭该实例的自动采集调度');
     const run = this.newRun(gameId, account.id, account.name, account.binding.index, task.id, task.scriptId, task.priority);
     await this.store.enqueueManual(gameId, account.id, task.id, run);
     this.enqueue(run);
@@ -293,8 +279,8 @@ export class PlanService {
         const foreground = await device.foregroundPackage();
         if (foreground !== plugin.packageName) throw new Error(`${plugin.name}未处于前台（当前 ${foreground ?? '未知'}）。请先打开游戏，或让脚本以「启动游戏」开头（也可以先用「如果游戏不在前台 → 启动游戏」）。`);
       }
+      // ★ Scripts first (original plan rule 1): the instance's gather scheduler yields before the script takes it.
       if (this.port.suspendForScript) giveBack = await this.port.suspendForScript(gameId, index, `临时运行脚本「${script.name}」`);
-      else if (await this.port.gatherScheduleEnabled(gameId, index)) throw new Error('该实例正在自动采集，请先关闭自动采集调度后再运行脚本');
       lease = await this.acquireLease(index, MANUAL_LEASE_WAIT_MS, '运行脚本');
       const shotPolicy = options.shotPolicy ?? await this.defaultShotPolicy();
       const matchDefaults = await this.defaultMatch();
@@ -561,6 +547,7 @@ export class PlanService {
 
   private async execute(run: PlanRun, signal: AbortSignal): Promise<void> {
     let doneMessage = '脚本执行完成';
+    let giveBack: (() => void) | null = null;
     try {
       const overview = await this.overview(run.gameId);
       const config = overview.config;
@@ -571,7 +558,12 @@ export class PlanService {
       if (!account?.enabled || account.login.status !== 'ready' || !account.binding || account.binding.index !== run.instanceIndex) {
         throw new RunEndedError('账号绑定或登录状态已变化', 'failed');
       }
-      if (await this.port.gatherScheduleEnabled(run.gameId, run.instanceIndex)) throw new RunEndedError('自动采集已启用，脚本计划本轮跳过', 'skipped');
+      // ★ Scripts first (original plan rule 1): the gather scheduler of this instance yields (polite wait, then abort
+      // of its in-flight sample / dispatch) before the script takes the lease; it gets the instance back in `finally`.
+      if (this.port.suspendForScript) {
+        try { giveBack = await this.port.suspendForScript(run.gameId, run.instanceIndex, `执行脚本计划「${run.scriptId}」`); }
+        catch (error) { console.warn('[plan] 采集调度让路失败，仍然继续启动脚本', safeErrorMessage(error)); }
+      }
       await withLabelledLease(this.home, run.instanceIndex, '运行脚本计划', async () => {
         if (signal.aborted) throw signal.reason;
         const expectedIdentity = account.binding!.instanceCreatedAt;
@@ -581,7 +573,6 @@ export class PlanService {
         await assertAccount();
         const state = await this.port.instance(run.instanceIndex);
         if (state.status !== 'running' || state.record.createdAt !== expectedIdentity) throw new RunEndedError('实例未运行或已被替换', 'skipped');
-        if (await this.port.gatherScheduleEnabled(run.gameId, run.instanceIndex)) throw new RunEndedError('自动采集已启用，脚本计划本轮跳过', 'skipped');
         const script = await this.getScript(run.gameId, run.scriptId);
         if (!startsWithLaunch(script, pkg)) {
           const foreground = await (await this.port.device(run.instanceIndex)).foregroundPackage();
@@ -625,6 +616,9 @@ export class PlanService {
         : error instanceof RunEndedError ? error.status
           : (error as { code?: string }).code === 'LOCK_TIMEOUT' ? 'skipped' : 'failed';
       await this.finish(run, status, (error as { code?: string }).code === 'LOCK_TIMEOUT' ? '等待实例空闲超时' : message);
+    } finally {
+      // After the lease is released: the scheduler re-reads the queue 15 s later.
+      try { giveBack?.(); } catch (error) { console.error('[plan] 恢复自动采集失败', error); }
     }
   }
 

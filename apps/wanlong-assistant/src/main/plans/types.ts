@@ -64,12 +64,12 @@ export interface PlanHostPort {
   instance(index: number): Promise<{ status: string; record: { createdAt: string } }>;
   device(index: number): Promise<ScriptDevice>;
   templateDir(gameId: string, index: number): Promise<string>;
-  gatherScheduleEnabled(gameId: string, index: number): Promise<boolean>;
   onRun?(run: PlanRun): void;
   /**
-   * Scripts take priority over gathering (original plan rule 1): pause the instance's gather schedule for the
-   * run and return the function that gives it back. Wired by the scheduler; without it a manual run refuses to
-   * start while the instance's gather schedule is enabled.
+   * Scripts take priority over gathering (original plan rule 1, DECISIONS A.4): before a plan or manual run takes the
+   * instance, the ETA scheduler yields it (`EtaScheduler.suspendForScript`: polite wait, then abort of the in-flight
+   * sample / dispatch) and the returned function gives it back after the run (the queue is re-read 15 s later).
+   * Gather auto being on never refuses a script. Without the port (tests) scripts just take the instance lease.
    */
   suspendForScript?(gameId: string, index: number, reason: string): Promise<() => void>;
   /** Default trace-shot policy (the app settings' `shotPolicy`); `onFail` when absent. */

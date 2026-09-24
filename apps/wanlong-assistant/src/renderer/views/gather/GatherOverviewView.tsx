@@ -246,7 +246,7 @@ export function GatherOverviewView(_props: ViewProps) {
       </section>
 
       {game.id === 'wanlong' && draft && <section className="automation-section" aria-labelledby="automation-config-title">
-        <div className="automation-section-title"><h3 id="automation-config-title">万龙觉醒 · 采集配置</h3><p>按当前实例保存；修改后需重新校准。</p></div>
+        <div className="automation-section-title"><h3 id="automation-config-title">万龙觉醒 · 采集配置</h3><p>{settings?.configAccount ? `跟随账号「${settings.configAccount.name}」保存（换绑实例时随账号走）` : '按当前实例保存'}；修改后需重新校准。</p></div>
         <label className="automation-switch-row"><span><strong>启用自动采集</strong><small>关闭时任务不可启动</small></span><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} disabled={Boolean(busy)} /></label>
         <div className="automation-resource-head">采集资源</div>
         <div className="automation-resource-list">

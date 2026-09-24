@@ -235,7 +235,7 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
       : { label: 'WORKFLOWS', title: '脚本与任务计划', text: '每个账号绑定一个实例。计划按北京时间触发，实例内串行执行。' };
   return <section className="plan-panel" aria-label={heading.title}>
     <header className="plan-heading"><div><span>{heading.label}</span><h2>{heading.title}</h2><p>{heading.text}</p></div><button className="btn xs" onClick={() => void refresh()}>刷新</button></header>
-    {tab === 'plans' && <div className="plan-safety">脚本和自动采集都操作同一实例。启用脚本计划前，请先关闭该实例的自动采集调度；系统会在运行前再次检查并取得实例锁。</div>}
+    {tab === 'plans' && <div className="plan-safety">脚本优先于自动采集：脚本开跑前，该实例的自动采集会先让路（等正在进行的采样或派遣收尾，必要时中断），脚本结束约 15 秒后重读队列并恢复。同一时刻只有一方操作实例（实例锁）。</div>}
     {!mode && <nav className="plan-tabs"><button className={tab === 'plans' ? 'active' : ''} onClick={() => setTab('plans')}>任务计划</button><button className={tab === 'scripts' ? 'active' : ''} onClick={() => setTab('scripts')}>脚本库</button></nav>}
     {error && <p className="plan-error" role="alert">{error}</p>}
     {tab === 'plans' && <>

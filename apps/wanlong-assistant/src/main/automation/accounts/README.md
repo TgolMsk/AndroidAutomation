@@ -42,18 +42,18 @@
 - ★ 手机号和验证码只存在于调用期间：会话只返回掩码号码；core 的 adb 错误会带完整命令行（含号码），所以设备错误一律换成固定中文，
   只有 `LoginUserError` 原样返回。登录画面不保存、不发给 AI。
 - 就绪闸门 `assertInstanceAutomationReady(gameId, index)`：基础实例、登录进行中、绑定账号待登录或实例已替换时拒绝；
-  未绑定账号的实例放行。`AutomationHost` 在启用自动续跑与每次开跑前取它的判定 `readiness(gameId, index)`
+  未绑定账号的实例放行。`AutomationHost` 在启用 / 恢复自动续跑、每次读部队面板与每次开跑前取它的判定 `readiness(gameId, index)`
   （组合根接到 `automationReadiness` 钩子），关闭调度永远不经过它。
-  ★ 定时唤醒被闸门判为「不就绪」不算失败（原版告警铁律 1）：立即暂停该调度（`SchedulePauseError`，失败计数清零，
-  不走 8 次退避、不报「连续失败」），再记一条「自动续跑已暂停（不计为失败）」提醒；手动开跑 / 启用调度时照常把原因抛给界面。
-  闸门本身出错（例如账号文件读不出）才按普通失败计数、退避。
+  ★ 定时唤醒被闸门判为「不就绪」不算失败（原版告警铁律 1）：宿主抛 `AUTOMATION_NOT_READY`，ETA 调度器立即
+  `setAuto(false, 原因)` 暂停该实例（失败计数清零，不走 8 次退避、不报「连续失败」），落盘后经 `onSchedulePause` 记一条
+  「自动续跑已暂停（不计为失败）」提醒；手动开跑 / 启用调度时照常把原因抛给界面。闸门本身出错（例如账号文件读不出）才按普通失败计数、退避。
 - 旧版 `accounts.json` 导入只增不改：新账号记下旧编号（`legacyId`），再次导入同一文件时这些行在预览里标为「已导入过」、
   应用时跳过并映射到已有账号（`idMap` 仍然完整，供计划导入使用）。文件缺失 / 无权限 / 不是文件都给中文提示。
-- 采集配置跟随账号（DECISIONS B「调度器」）的接口：`gatherConfigFor(gameId, index)` 读绑定账号（按实例身份校验）里的
-  `scriptParams.gather.configJson`，`saveGatherConfig(accountId, config | null)` 写回。★ 跨模块要求：只有当采集设置
-  （`AutomationHost.settings` / `saveSettings` 与各开跑路径）改为「先读绑定账号、没有再回落到实例文件」时，才在组合根接上
-  `instanceGatherConfig` 端口；接上后绑定会把实例上的配置搬进账号（账号已有配置时不覆盖并提示），解绑时提示配置留在账号里。
-  端口没接时绑定不复制、不提示，实例文件是唯一一份，避免出现没人读的第二份配置。
+- 采集配置跟随账号（DECISIONS B「调度器」）：`gatherConfigFor(gameId, index)` 读绑定账号（按实例身份校验）里的
+  `scriptParams.gather.configJson`，`saveGatherConfig(accountId, config | null)` 写回。调度器模块已经把采集设置改成
+  「先读绑定账号、没有再回落到实例文件」（`AutomationHost.settings` / `saveSettings`、采样与每轮开跑，端口
+  `accountGatherConfig` / `saveAccountGatherConfig`），所以组合根接上了 `instanceGatherConfig`（`AutomationHost.instanceGatherConfig`）：
+  绑定会把实例上的配置搬进账号（账号已有配置时不覆盖并提示），解绑时提示配置留在账号里。
 
 ## 与原版的差异
 

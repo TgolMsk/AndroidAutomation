@@ -6,7 +6,8 @@
 
 ```
 EtaScheduler (service.ts)        排期 / 唤醒 / 退避 / 健康探针 / 让路 / 暂停；不认识 ADB，只调 EtaSchedulerPorts
-  ├─ InstanceLocks (instance-lock.ts)   进程内 FIFO + 跨进程租约 run/automation-instance-<i>.lock，AsyncLocalStorage 可重入
+  ├─ InstanceLocks (instance-lock.ts)   进程内 FIFO + 应用外壳的带标签实例租约（run/automation-instance-<i>.lock + owner.json
+  │                                     + 占用表 instanceAccess），AsyncLocalStorage 可重入
   ├─ WakeTimers (timers.ts)             每实例一个唤醒；unref；超过 2^31 分段
   └─ SchedulerStore (store.ts)          automation/games/wanlong/scheduler/{config.json, instances/<i>.json}
 AutomationHost (automation/host.ts)     实现 EtaSchedulerPorts；QueueFreeHook = 采集一轮 (gatherForScheduler)
@@ -50,7 +51,18 @@ ScheduleCompat (compat.ts)              旧 AutomationSchedule 视图（渲染�
 - 采集一轮开跑前的恢复阶梯（冷启动 → 关弹窗 → 顾问 → 盲按 BACK + 取消退出框）跑完仍过不了门槛时，与原版 G0 一样：留一张
   `g0-failed` 现场截图（主进程按 shotPolicy 落盘并在这一帧上跑顶号探针），这一轮记为 `STEP_FAILED`、`step: 'G0'` 的失败轮，
   而不是笼统的「没能启动」。
-- 实例锁同时是跨进程租约：登录、脚本计划、另一个助手进程占着实例时，调度器在 150 ms 内得到 `CONCURRENCY_LIMIT` 并让路，不算失败。
+- **实例锁就是应用外壳的那一套租约**（不是第二套锁系统）：`InstanceLocks` 在进程内 FIFO 之后拿
+  `run/automation-instance-<i>.lock`，写 `owner.json` 标签（`读取部队管理面板` / `自动采集派遣` / `运行采集` / `做健康探针` /
+  `exclusive(i, what)` 的 `what`），并在持有期间登记到占用表 `instanceAccess`。所以：
+  - 本进程的其他写入者（登录向导、脚本、模板 / 配置编辑、`withInstanceLease` 的新链路）占着实例时，调度器**立刻**以
+    `CONCURRENCY_LIMIT`「实例 #N 正在<活动>，<本次动作>稍后再试」让路，不算失败；另一个进程占着时 150 ms 租约超时后同样按标签报；
+  - 反过来，它们撞上调度器时也会看到「实例 #N 正在读取部队管理面板」这类带名字的提示；
+  - 占用表（生命周期确认、更新闸门 `occupancy.anyBusy()`）经 `registerServiceOccupancy(…, { scheduler: automation.locks })`
+    的 `scheduler` 来源看到这些持有者（`blocking: true`）；只开着自动续跑、两轮之间没人拿锁时不算忙。
+- **设备通道**（DECISIONS C）：宿主拿到的是 `deviceHost`（车道设备），视觉作业的每个 ADB 调用都在该实例的车道上；
+  「复核前台 / 身份 → 输入」「复核前台 → 截图」「截图 + 前台 + pidof（健康探针）」「captureReadOnly / probe 的 前台 → 截图 → 前台」
+  都以 `deviceLanes.run(i, …)` 整体执行（`AutomationHostOptions.deviceLane`），中间不会插进别的车道任务（预览、顾问、机器人截图）。
+  截图最小间隔 `minCaptureIntervalMs`（应用设置）由车道执行。
 - 调度器本身也有一把「单写者」租约 `automation/games/wanlong/eta-scheduler.lock`：第二个进程只读（`readOnly: true`）——不排期、
   不迁移、不落盘；`setAuto(true)`、关闭一个开着的实例、`forget`、`saveConfig`、`sampleNow` 都以 `CONCURRENCY_LIMIT` 拒绝。
   ★ 只读进程每 10 s 重试一次租约：真有另一个窗口时它一退出就接管；崩溃 / 强退 / 退出超时留下的租约心跳停了，30 s 后过期、
@@ -59,8 +71,24 @@ ScheduleCompat (compat.ts)              旧 AutomationSchedule 视图（渲染�
 - **首次开启要过只读探针**（DECISIONS C）：`AutomationHost.setSchedule(true)`（IPC 的 `setAutomationSchedule` / `schedulerSetAuto`）
   在主进程再跑一次 `probe()`，`launchReady` 才放行（渲染进程另有确认勾选）。通过记录按「实例身份 + 模板集」记在内存里，
   模板或采集配置一改就作废；之后再开启不必重探（游戏没开也会被冷启动）。恢复路径（告警恢复、机器人）直接调 `eta.setAuto(i, true)`，不过探针。
-- 采样与每轮开跑前都过 `ensureAccountReady`（原版 `assertInstanceAutomationReady`）：绑定账号未完成登录检查或实例已被替换时拒绝；
-  未绑定账号的实例放行。`accountIdOf` 同时校验 `binding.index` 与 `binding.instanceCreatedAt`。
+- **就绪门槛**（原版 `assertInstanceAutomationReady`）= 账号模块的 `AccountManager.readiness()`，经 `AutomationHostHooks.automationReadiness`
+  接入：基础实例（`InstanceProvisioner` 记录的那一个）、登录向导进行中、绑定账号未完成登录检查或实例已被替换时拒绝；未绑定账号的实例放行。
+  用户开启（`setSchedule`，在探针之前）、恢复路径（`eta.setAuto(i, true)`）、面板立即刷新、每次采样与每轮开跑前都问它，关闭时从不问。
+  ★ 定时唤醒被它拒绝不是失败（原版告警铁律 1）：宿主抛 `AUTOMATION_NOT_READY`，ETA 调度器立即 `setAuto(false, '自动续跑已暂停（不计为失败）：…')`、
+  失败计数清零、不留唤醒，落盘后经 `onReadinessPause` → `AutomationHostHooks.onSchedulePause` 记一条「不计为失败」提醒；
+  门槛本身出错（账号文件读不出）照常按失败退避。`accountIdOf` 用 `AccountManager.accountForInstance`（同时校验 `binding.index` 与
+  `binding.instanceCreatedAt`）。
+- **采集配置跟随账号**（DECISIONS B）：`accountGatherConfig` = `AccountManager.gatherConfigFor()`（`scriptParams.gather.configJson`）。
+  `AutomationHost.settings()` 与每一轮先读账号那份（`configAccount` 标明是谁的），没有账号 / 账号里没有才用实例文件；
+  `saveSettings({ config })` 在有绑定账号时写进账号（`saveAccountGatherConfig`），实例文件不动；绑定时账号模块经
+  `instanceGatherConfig`（`AutomationHost.instanceGatherConfig()`）把实例上的配置搬进还没有配置的账号。账号里那份损坏时这一轮失败并说明，
+  绝不悄悄换用别的配置。
+- **脚本优先**（DECISIONS A.4）：`PlanHostPort.suspendForScript` = `eta.suspendForScript(i, SCRIPT_PREEMPT_GRACE_MS = 8 s, reason)`，
+  计划运行与临时运行都在拿租约前调用、结束（成功 / 失败 / 跳过）后在 `finally` 里归还；开着自动采集从不阻止脚本。
+- **截图留痕**：采集失败现场跟随应用设置 `shotPolicy`（`AutomationHostHooks.shotPolicy`，原版 `saveAlertShot`）：`never` 不存、`onFail` 只存失败现场、
+  `always` 连过程留痕也存；不论哪档，失败那一帧都照样交给顶号探针。
+- **模板变更立即失效**：宿主订阅自己的 `onTemplatesChanged`（保存 / 删除 / 导入），立刻让所有视觉 worker 丢弃编译缓存；
+  worker 里按 manifest 指纹的比对保留为兜底（别的进程 / tplkit 在盘上改了模板集）。
 - 连续 8 次真失败（可配 `maxConsecutiveFailures`）自动暂停并调用 `onScheduleStop` 告警 —— 本仓库原有的安全阀，原版没有。
 
 ## 给后续模块的接口
@@ -83,14 +111,16 @@ automation.eta.setHooks({
   pauseOf: (index) => alerts.pauseInfo(index),                             // 队列视图里的暂停原因
   log: (level, message) => { ... },
 });
-// ── accounts / AI / kicked ──
+// ── accounts / AI / kicked ──（账号部分已在组合根接好）
 automation.setPorts({
-  accountIdOf, externalBusy,
-  ensureAccountReady: (i) => accounts.assertInstanceAutomationReady('wanlong', i),   // 账号模块接入后替换组合根里的临时实现
+  accountIdOf: async (i) => (await accounts.accountForInstance('wanlong', i))?.id ?? null,
   accountGatherConfig: (i) => accounts.gatherConfigFor('wanlong', i),             // 采集配置跟随账号（DECISIONS B）
+  saveAccountGatherConfig: async (id, config) => { await accounts.saveGatherConfig(id, config); },
+  externalBusy,                                                            // 排队中的脚本 / 登录向导（持锁的写入者由租约自己报）
   probeKicked: async (index, raw) => KickedProbeResult | null,             // 失败现场那一帧；模板缺失必须 return null
   adviseUnknownScreen: async (index, raw, attempt, signal) => boolean,     // 采集 G0 盲按 BACK 之前
 });
+// 就绪门槛不是端口，而是构造钩子 automationReadiness: (g, i) => accounts.readiness(g, i)（+ onSchedulePause 记提醒）
 ```
 
 钩子由视觉工作线程的消息触发时（`onUnrecognizedFrame` 等），在**这次作业自己的异步上下文**里执行（`AsyncResource`），
@@ -135,7 +165,8 @@ automation.setHooks({
 
 ★ 它们是「查询」而不是「作业」：正在跑的采样 / 采集作业等待钩子（`onUnrecognizedFrame`、`adviseUnknownScreen`、`probeKicked`）时，
 同一个 worker 照样回答（作业此时停在 await 上），而再开一个作业只会得到 `CONCURRENCY_LIMIT`。作业与同时到达的查询共用一次编译。
-`invalidateTemplates()`：AI 自学模板之后让所有 worker 丢弃编译缓存（普通模板编辑靠 manifest 指纹自动失效）。
+`invalidateTemplates()`：让所有 worker 丢弃编译缓存。经宿主保存 / 删除 / 导入的模板（包括 AI 自学用的 `saveTemplateToSet`）已经
+通过 `onTemplatesChanged` 自动调用；绕过宿主写模板的代码才需要手动调它（manifest 指纹比对是最后的兜底）。
 
 ### IPC 与事件
 
@@ -147,13 +178,14 @@ saveSchedulerConfig / schedulerWakes / schedulerCancelWake / schedulerForget / s
 ### 错误码
 
 `SchedulerError(code, message, detail)`：`CONCURRENCY_LIMIT`（让路，不算失败）、`RUN_ABORTED` / `CANCELLED`（中止）、
-`GAME_UPDATE_REQUIRED` / `AI_RISK_BLOCKED`（需要人处理：暂停、不计失败）、`STEP_FAILED`（`detail.step`）、`PROBE_REJECTED`、
-`DEVICE_NOT_READY`、`TEMPLATE_NOT_FOUND`、`TIMEOUT`。
+`GAME_UPDATE_REQUIRED` / `AI_RISK_BLOCKED`（需要人处理：暂停、不计失败）、`AUTOMATION_NOT_READY`（就绪门槛拒绝：暂停、不计失败、
+不报「运行失败」事实）、`STEP_FAILED`（`detail.step`）、`PROBE_REJECTED`、`DEVICE_NOT_READY`、`TEMPLATE_NOT_FOUND`、`TIMEOUT`。
 
 ## 与原版的差异
 
 - 旧版 `AutomationScheduler`（按上一轮结果排下一轮）已删除；`automation/scheduler/wanlong/<i>.json` 在启动时迁移（只继承开关），
-  原文件改名为 `.migrated`。脚本计划与自动采集不再互斥，改为 `suspendForScript` 抢占（由脚本计划模块调用）。
+  原文件改名为 `.migrated`；它的「门槛拒绝就暂停」规则（`SchedulePauseError` / `pauseReasons`）由 `AUTOMATION_NOT_READY` 在 ETA 调度器上实现。
+  脚本计划与自动采集不再互斥，改为 `suspendForScript` 抢占（计划模块的计划运行与临时运行都调用）。
 - 健康探针候选以「上次探针时刻」为准（原版在每次采样后都会把探针往后推，队列很少变化时相当于没有探针）。
 - `templateSetId` 只做校验（配置了就必须与模板集 id 一致），不做自动挑选；模板集按实例在「模板」页选择。
 - 视觉工作线程常驻；hook（AI 问询、等游戏更新）期间暂停作业超时，单次最多 30 分钟，作为「游戏更新时延长一轮超时」的实现。
@@ -165,7 +197,7 @@ saveSchedulerConfig / schedulerWakes / schedulerCancelWake / schedulerForget / s
 
 ```
 pnpm --filter @avdm/automation exec vitest run test/wanlong-eta-model.test.ts test/wanlong-troop-sampler.test.ts test/wanlong-number-text.test.ts
-pnpm --filter @avdm/wanlong-assistant exec vitest run test/eta-scheduler.test.ts test/eta-store.test.ts test/gather-runner.test.ts test/automation-host.test.ts test/vision-pool-context.test.ts
+pnpm --filter @avdm/wanlong-assistant exec vitest run test/eta-scheduler.test.ts test/eta-store.test.ts test/gather-runner.test.ts test/automation-host.test.ts test/vision-pool-context.test.ts test/scheduler-integration.test.ts test/account-readiness.test.ts
 WL_FRAMES_DIR=… WL_TEMPLATE_DIR=… pnpm --filter @avdm/automation exec vitest run test/wanlong-replay.test.ts   # 真机帧回放（没有就跳过）
 pnpm build:wanlong && packages/cli/node_modules/.bin/tsx apps/wanlong-assistant/scripts/live-sample.ts 0 [--sample]
 ```

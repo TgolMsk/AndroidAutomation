@@ -20,7 +20,9 @@ new AutomationHost(deviceHost, …); new AccountManager(deviceHost, …); plans 
 ```
 
 因此 `AutomationHost.captureReadOnly`、探针、模板截取/测试、顾问与机器人截图（经 captureReadOnly）、采集工作线程的设备 RPC、
-登录输入、脚本计划的设备调用、设置页「设备工具」的安装 APK（`DeviceTools`，经车道设备的 `install`）都已经在车道上。新的运行器（调度器采样、资源统计、卡死恢复……）：
+登录输入、脚本计划的设备调用、设置页「设备工具」的安装 APK（`DeviceTools`，经车道设备的 `install`）、ETA 调度器的采样 / 采集 / 健康探针
+（常驻视觉 worker 的设备 RPC）都已经在车道上；调度器与 `captureReadOnly` / `probe` 还把「复核前台 → 截图 / 输入」这类组合动作用
+`deviceLanes.run` 整体执行（`AutomationHostOptions.deviceLane`）。新的运行器（资源统计、卡死恢复……）：
 
 1. 需要设备时一律从 `deviceHost`（或 `deviceLanes.device(i, device)`）拿，不要直接 `services.host.get()` 再 `device(i)`；
 2. 需要「前台检查 → 截图 → 前台检查」这类不可被插队的组合动作时，用 `deviceLanes.run(i, async () => { … })` 包起来（内部的设备调用自动重入）；

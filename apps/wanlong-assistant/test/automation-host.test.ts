@@ -260,7 +260,7 @@ describe('AutomationHost single-cycle gathering', () => {
       await enable();
       await host.setSchedule('wanlong', 1, true);
       // The account's gather config was switched off meanwhile: startRun refuses before any cycle result exists.
-      host.setPorts({ accountGatherConfig: async () => ({ version: 2, enabled: false }) });
+      host.setPorts({ accountGatherConfig: async () => ({ accountId: 'a1', accountName: '主号', config: { version: 2, enabled: false } }) });
       await vi.advanceTimersByTimeAsync(30_000);
       await vi.waitFor(() => expect(host.eta.getState(1).failureCount).toBe(1));
       expect(runner.runOnce).not.toHaveBeenCalled();

@@ -16,6 +16,7 @@ import { AvdmError } from '@avdm/core';
 import { wanlongPlugin } from '@avdm/automation/wanlong';
 import { handlers } from '../../../packages/emulator-shell/test/helpers/electron-mock';
 import { AutomationHost } from '../src/main/automation/host';
+import { InstanceLocks } from '../src/main/scheduler/instance-lock';
 import { registerWanlongIpcHandlers, type WanlongServices } from '../src/main/ipc-handlers';
 import { InstanceProvisioner } from '../src/main/instances/provisioner';
 import type { ManagerHost } from '../src/main/manager-host';
@@ -32,13 +33,20 @@ describe('gather refuses what the accounts gate refuses', () => {
   let host: AutomationHost;
   const screencapRaw = vi.fn(async () => ({ width: 1, height: 1, data: new Uint8Array(4) }));
   const automationReadiness = vi.fn<(gameId: string, index: number) => Promise<{ ready: boolean; reason?: string }>>();
-  const runner = { runOnce: vi.fn(), stop: vi.fn(async () => undefined), dispose: vi.fn(async () => undefined), isRunning: vi.fn(() => false) };
+  const panel = () => ({ sampledAt: Date.now(), queueUsed: 2, queueTotal: 5, rows: [], warnings: [] });
+  const runner = {
+    runOnce: vi.fn(), sample: vi.fn(async () => panel()),
+    stop: vi.fn(async () => undefined), dispose: vi.fn(async () => undefined), isRunning: vi.fn(() => false),
+  };
+  /** The ETA scheduler with its test seams: no owner lease, no jitter, the instance lease faked. */
+  const etaOptions = () => ({ locks: new InstanceLocks(home, { fileLock: async (_path: string, fn: () => Promise<unknown>) => fn() }) as InstanceLocks, scheduler: { ownerLease: false, random: () => 0 } });
 
   beforeEach(async () => {
     home = await mkdtemp(path.join(tmpdir(), 'avdm-account-gate-'));
     automationReadiness.mockReset();
     screencapRaw.mockClear();
     runner.runOnce.mockClear();
+    runner.sample.mockClear();
     const manager = {
       getState: async () => ({ status: 'running', record: { createdAt: 'c1' } }),
       device: async () => ({ foregroundPackage: async () => wanlongPlugin.packageName, screencapRaw }),
@@ -59,56 +67,121 @@ describe('gather refuses what the accounts gate refuses', () => {
     expect(automationReadiness).toHaveBeenCalledWith('wanlong', 1);
     expect(screencapRaw).not.toHaveBeenCalled();
     expect(runner.runOnce).not.toHaveBeenCalled();
+    expect(runner.sample).not.toHaveBeenCalled();
     expect(await host.runs()).toEqual([]);
+    // The resume path (alerts / bot: `eta.setAuto(i, true)`, no probe) meets the same gate.
+    await expect(host.eta.setAuto(1, true)).rejects.toMatchObject({ code: 'AUTOMATION_NOT_READY', message: expect.stringContaining('基础实例用于克隆') });
+    expect(host.eta.isAuto(1)).toBe(false);
+    // So does the panel's「立即刷新」: a base instance is never driven, not even read-only.
+    await expect(host.eta.sampleNow(1)).rejects.toThrow('基础实例用于克隆');
+    expect(runner.sample).not.toHaveBeenCalled();
     // Switching off never consults the gate: a pause always wins.
+    automationReadiness.mockClear();
     await expect(host.setSchedule('wanlong', 1, false)).resolves.toMatchObject({ enabled: false });
+    expect(automationReadiness).not.toHaveBeenCalled();
   });
 
   it('pauses a scheduled wake the gate refuses at once, without counting a failure', async () => {
-    // A schedule enabled before this gate existed (or before a bind) meets a pending bound account at its next wake.
-    const file = join(home, 'automation', 'scheduler', 'wanlong', '1.json');
-    await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, JSON.stringify({ version: 1, gameId: 'wanlong', index: 1, enabled: true, nextWakeAt: 0, failureCount: 2 }));
-    const reason = '账号「主号」尚未完成登录检查，或绑定实例已改变。请在账号登录向导中继续。';
-    automationReadiness.mockResolvedValue({ ready: false, reason });
-    const onScheduleStop = vi.fn(async () => undefined);
-    const onSchedulePause = vi.fn(async () => undefined);
-    const manager = {
-      getState: async () => ({ status: 'running', record: { createdAt: 'c1' } }),
-      device: async () => ({ foregroundPackage: async () => wanlongPlugin.packageName, screencapRaw }),
-    };
-    const scheduled = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner as never, undefined,
-      { automationReadiness, onScheduleStop, onSchedulePause });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     try {
-      await scheduled.restoreSchedules();
-      await vi.waitFor(() => expect(onSchedulePause).toHaveBeenCalledWith('wanlong', 1, reason));
-      expect((await scheduled.schedules()).find((item) => item.index === 1)).toMatchObject({ enabled: false, failureCount: 0, nextWakeAt: null });
-      expect(onScheduleStop).not.toHaveBeenCalled(); // no 「连续失败」 alert
-      expect(automationReadiness).toHaveBeenCalledTimes(1); // no backoff retries
-      expect(runner.runOnce).not.toHaveBeenCalled();
-      expect(screencapRaw).not.toHaveBeenCalled();
-      expect(await scheduled.runs()).toEqual([]);
+      // A schedule enabled before this gate existed (the pre-ETA switch, migrated at restore) meets a pending bound
+      // account at its next wake.
+      const file = join(home, 'automation', 'scheduler', 'wanlong', '1.json');
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, JSON.stringify({ version: 1, gameId: 'wanlong', index: 1, enabled: true, nextWakeAt: 0, failureCount: 2 }));
+      const reason = '账号「主号」尚未完成登录检查，或绑定实例已改变。请在账号登录向导中继续。';
+      automationReadiness.mockResolvedValue({ ready: false, reason });
+      const onScheduleStop = vi.fn(async () => undefined);
+      const onSchedulePause = vi.fn(async () => undefined);
+      const manager = {
+        getState: async () => ({ status: 'running', record: { createdAt: 'c1' } }),
+        device: async () => ({ foregroundPackage: async () => wanlongPlugin.packageName, screencapRaw }),
+      };
+      const scheduled = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner as never, undefined,
+        { automationReadiness, onScheduleStop, onSchedulePause }, etaOptions());
+      const autoChanges: Array<{ enabled: boolean; reason?: string }> = [];
+      scheduled.eta.setHooks({ onAutoChanged: (_index, enabled, _at, reason) => { autoChanges.push({ enabled, ...(reason ? { reason } : {}) }); } });
+      try {
+        await scheduled.restoreSchedules();
+        expect(scheduled.eta.isAuto(1)).toBe(true);
+        await vi.advanceTimersByTimeAsync(60_000);
+        await vi.waitFor(() => expect(onSchedulePause).toHaveBeenCalledWith('wanlong', 1, reason));
+        // Paused on the ETA scheduler itself: auto off with the reason, no wake left, failure count cleared.
+        expect(scheduled.eta.getState(1)).toMatchObject({ auto: false, nextWakeAt: null, failureCount: 0 });
+        // The pause / resume statistics source (`onAutoChanged`) carries the gate's reason.
+        expect(autoChanges).toEqual([{ enabled: false, reason: `自动续跑已暂停（不计为失败）：${reason}` }]);
+        expect(scheduled.eta.listWakes()).toEqual([]);
+        expect(onScheduleStop).not.toHaveBeenCalled(); // no 「连续失败」 alert
+        expect(automationReadiness).toHaveBeenCalledTimes(1); // no backoff retries
+        expect(runner.sample).not.toHaveBeenCalled();
+        expect(runner.runOnce).not.toHaveBeenCalled();
+        expect(screencapRaw).not.toHaveBeenCalled();
+        expect(await scheduled.runs()).toEqual([]);
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+        expect(automationReadiness).toHaveBeenCalledTimes(1);
+      } finally {
+        await scheduled.dispose();
+      }
     } finally {
-      await scheduled.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('pauses when the account becomes unready between an enable and the dispatch wake', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await host.dispose();
+      const onSchedulePause = vi.fn(async () => undefined);
+      const onCycleResult = vi.fn(async () => undefined);
+      automationReadiness.mockResolvedValue({ ready: true });
+      const manager = {
+        getState: async () => ({ status: 'running', record: { createdAt: 'c1' } }),
+        device: async () => ({ foregroundPackage: async () => wanlongPlugin.packageName, screencapRaw }),
+      };
+      host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner as never, undefined,
+        { automationReadiness, onSchedulePause, onCycleResult }, etaOptions());
+      vi.spyOn(host, 'probe').mockResolvedValue({
+        gameId: 'wanlong', packageName: wanlongPlugin.packageName, foregroundPackage: wanlongPlugin.packageName, deviceWidth: 2560,
+        deviceHeight: 1440, capturedAt: Date.now(), matches: [], launchReady: true, launchReason: '已确认世界地图画面', timingsMs: {},
+      });
+      await host.saveSettings('wanlong', 1, { templateDir: home, config: { version: 2, enabled: true } });
+      expect((await host.setSchedule('wanlong', 1, true)).enabled).toBe(true);
+      expect(runner.sample).toHaveBeenCalledTimes(1);
+      // The panel shows a free slot; before the dispatch the account is reset to 待登录 (e.g. rebound elsewhere).
+      automationReadiness.mockResolvedValue({ ready: false, reason: '账号「主号」尚未完成登录检查' });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(onSchedulePause).toHaveBeenCalledWith('wanlong', 1, '账号「主号」尚未完成登录检查'));
+      expect(host.eta.getState(1)).toMatchObject({ auto: false, failureCount: 0 });
+      expect(runner.runOnce).not.toHaveBeenCalled();
+      expect(onCycleResult).not.toHaveBeenCalled(); // a verdict, not a failed cycle
+    } finally {
+      vi.useRealTimers();
     }
   });
 
   it('still counts a gate that could not decide as a failure with backoff', async () => {
-    const file = join(home, 'automation', 'scheduler', 'wanlong', '1.json');
-    await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, JSON.stringify({ version: 1, gameId: 'wanlong', index: 1, enabled: true, nextWakeAt: 0, failureCount: 0 }));
-    automationReadiness.mockRejectedValue(new Error('账号文件无法读取'));
-    const onSchedulePause = vi.fn(async () => undefined);
-    const manager = { getState: async () => ({ status: 'running', record: { createdAt: 'c1' } }), device: async () => ({}) };
-    const scheduled = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner as never, undefined,
-      { automationReadiness, onSchedulePause });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     try {
-      await scheduled.restoreSchedules();
-      await vi.waitFor(async () => expect((await scheduled.schedules()).find((item) => item.index === 1)?.failureCount).toBe(1));
-      expect((await scheduled.schedules()).find((item) => item.index === 1)?.enabled).toBe(true);
-      expect(onSchedulePause).not.toHaveBeenCalled();
+      const file = join(home, 'automation', 'scheduler', 'wanlong', '1.json');
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, JSON.stringify({ version: 1, gameId: 'wanlong', index: 1, enabled: true, nextWakeAt: 0, failureCount: 0 }));
+      automationReadiness.mockRejectedValue(new Error('账号文件无法读取'));
+      const onSchedulePause = vi.fn(async () => undefined);
+      const manager = { getState: async () => ({ status: 'running', record: { createdAt: 'c1' } }), device: async () => ({}) };
+      const scheduled = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner as never, undefined,
+        { automationReadiness, onSchedulePause }, etaOptions());
+      try {
+        await scheduled.restoreSchedules();
+        await vi.advanceTimersByTimeAsync(60_000);
+        await vi.waitFor(() => expect(scheduled.eta.getState(1).failureCount).toBe(1));
+        expect(scheduled.eta.getState(1)).toMatchObject({ auto: true, nextWakeAt: expect.any(Number) });
+        expect(scheduled.eta.getState(1).nextWakeReason).toContain('退避重试');
+        expect(onSchedulePause).not.toHaveBeenCalled();
+      } finally {
+        await scheduled.dispose();
+      }
     } finally {
-      await scheduled.dispose();
+      vi.useRealTimers();
     }
   });
 
@@ -116,6 +189,8 @@ describe('gather refuses what the accounts gate refuses', () => {
     const approval = gate();
     automationReadiness.mockImplementationOnce(async () => { await approval.promise; return { ready: false, reason: '账号「主号」尚未完成登录检查' }; });
     const enable = host.setSchedule('wanlong', 1, true).catch((error: unknown) => error as Error);
+    // The disable arrives while the gate is still deciding (not before the enable reached it).
+    await vi.waitFor(() => expect(automationReadiness).toHaveBeenCalledTimes(1));
     const disable = host.setSchedule('wanlong', 1, false);
     approval.release();
     expect((await enable)?.message).toContain('尚未完成登录检查');

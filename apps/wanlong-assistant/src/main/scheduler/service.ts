@@ -23,7 +23,7 @@ import {
 import { formatCstClock } from '../../shared/time';
 import type { SchedulerQueueState, SchedulerServiceStatus } from '../../shared/ipc/scheduler';
 import {
-  SchedulerError, abortError, codeOf, isAbortCode, isAttentionCode, messageOf, sleep, throwIfAborted,
+  SchedulerError, abortError, codeOf, isAbortCode, isAttentionCode, isGateCode, messageOf, sleep, throwIfAborted,
 } from './errors';
 import { InstanceLocks } from './instance-lock';
 import { SchedulerStore, trimHints, type PersistedQueue } from './store';
@@ -37,6 +37,11 @@ const GAME_ID = 'wanlong';
 const ABORT_DRAIN_MS = 5_000;
 /** Re-read the queue this long after a script released the instance: the screen was touched, old state is stale. */
 const RESAMPLE_AFTER_SCRIPT_MS = 15_000;
+/**
+ * How long a script waits for the in-flight sample / dispatch to finish on its own before it is aborted (original
+ * plan config `preemptGraceMs` default 8 s: polite first, then force).
+ */
+export const SCRIPT_PREEMPT_GRACE_MS = 8_000;
 /** Extra safety of this port (the original relied on the alert centre alone): pause after this many real failures. */
 const DEFAULT_MAX_CONSECUTIVE_FAILURES = 8;
 /**
@@ -76,6 +81,11 @@ export interface EtaSchedulerOptions {
    * the host's fallback alert path, so such a pause is never silent.
    */
   onAttentionPause?(index: number, info: { code: string; message: string }): void;
+  /**
+   * The readiness gate refused a scheduled wake (AUTOMATION_NOT_READY: base instance, login in progress, bound account
+   * not checked): the instance is paused with `reason`, the failure count cleared, no「连续失败」alert.
+   */
+  onReadinessPause?(index: number, reason: string): void;
 }
 
 interface Runtime {
@@ -471,7 +481,8 @@ export class EtaScheduler {
         return this.view(rt);
       }
       this.log('warn', `实例 #${index} 首次采样失败：${messageOf(error)}`);
-      if (isAttentionCode(codeOf(error))) this.pauseForAttention(index, error);
+      if (isGateCode(codeOf(error))) this.pauseNotReady(index, error);
+      else if (isAttentionCode(codeOf(error))) this.pauseForAttention(index, error);
       else this.rearm(index, `首次采样失败：${messageOf(error)}`, 1);
     }
     return this.view(rt);
@@ -722,8 +733,9 @@ export class EtaScheduler {
       rt.state = { ...rt.state, sampling: false, lastSampleOk: false, error: messageOf(error) };
       this.publish(rt);
       await this.persist(rt);
-      // Yielding to a script is not a fault; update prompts and AI risk refusals have their own alerts.
-      if (code !== 'CONCURRENCY_LIMIT' && !isAttentionCode(code)) await this.notifySampleResult(index, false, messageOf(error), signal);
+      // Yielding to a script is not a fault; update prompts and AI risk refusals have their own alerts; a readiness
+      // refusal (base instance, pending account) is a verdict about the instance, not a failed read.
+      if (code !== 'CONCURRENCY_LIMIT' && !isAttentionCode(code) && !isGateCode(code)) await this.notifySampleResult(index, false, messageOf(error), signal);
       throw error;
     }
     this.publish(rt);
@@ -742,7 +754,7 @@ export class EtaScheduler {
       return;
     }
     try {
-      await this.withLock(index, '健康探针', async () => {
+      await this.withLock(index, '做健康探针', async () => {
         let frame;
         try {
           frame = await this.ports.healthFrame(index, signal);
@@ -871,6 +883,7 @@ export class EtaScheduler {
       const code = codeOf(error);
       if (isAbortCode(code)) { this.rearmAfterStrayAbort(index, rt, error, prevStep); return; }
       this.log('warn', `实例 #${index} 唤醒采样失败：${messageOf(error)}`);
+      if (isGateCode(code)) { this.pauseNotReady(index, error); return; }
       if (isAttentionCode(code)) { this.pauseForAttention(index, error); return; }
       if (code !== 'CONCURRENCY_LIMIT' && this.noteFailure(index, messageOf(error))) return;
       this.rearm(index, messageOf(error), prevStep + 1);
@@ -910,6 +923,7 @@ export class EtaScheduler {
       const code = codeOf(error);
       if (isAbortCode(code)) { this.rearmAfterStrayAbort(index, rt, error, prevStep); return; }
       this.log('warn', `实例 #${index} 的派遣流程报错：${messageOf(error)}`);
+      if (isGateCode(code)) { this.pauseNotReady(index, error); return; }
       if (isAttentionCode(code)) { this.pauseForAttention(index, error); return; }
       if (code !== 'CONCURRENCY_LIMIT' && this.noteFailure(index, `派遣失败：${messageOf(error)}`)) return;
       this.rearm(index, `派遣失败：${messageOf(error)}`, prevStep + 1);
@@ -965,6 +979,21 @@ export class EtaScheduler {
     if (hook) this.emit(() => hook(index, info));
     else this.emit(() => this.options.onAttentionPause?.(index, info));
     void this.setAuto(index, false, `需要人工处理：${info.message}`).catch(() => undefined);
+  }
+
+  /**
+   * The readiness gate refused a scheduled wake: pause at once with the reason, clear the failure count (a verdict, not
+   * a device failure — original alerts rule 1) and tell the host, which records a「不计为失败」warning.
+   */
+  private pauseNotReady(index: number, error: unknown): void {
+    const rt = this.rt(index);
+    const reason = messageOf(error);
+    rt.failureCount = 0;
+    rt.cooldownUntil = undefined;
+    this.log('warn', `实例 #${index} 暂不能自动运行，自动调度已暂停（不计为失败）：${reason}`);
+    // Reported once the pause is persisted, so the warning never describes a state that is not on disk yet.
+    void this.setAuto(index, false, `自动续跑已暂停（不计为失败）：${reason}`).catch(() => undefined)
+      .finally(() => this.emit(() => this.options.onReadinessPause?.(index, reason)));
   }
 
   // ── helpers ──────────────────────────────────────────────────────────────

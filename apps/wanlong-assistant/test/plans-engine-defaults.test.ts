@@ -109,7 +109,6 @@ describe('script matching uses the app settings defaults (matchThreshold / shrin
       accounts: async () => [account],
       instance: async () => ({ status: 'running', record: { createdAt: 'identity-1' } }),
       templateDir: async () => dir,
-      gatherScheduleEnabled: async () => false,
       device: async () => device,
       matchDefaults: async () => defaults,
     };

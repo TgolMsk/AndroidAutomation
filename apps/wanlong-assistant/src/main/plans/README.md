@@ -24,8 +24,9 @@
    可以在游戏不在前台时启动（冷启动序章），但照样校验实例身份，之后每次输入照样复核前台。
    **只抓游戏的画面**：截图请求在 screencap 前后各查一次前台，游戏不在前台就拒绝（普通步骤失败，不是 guard ——
    重试与 `onFail: restartApp` 仍能把游戏拉回来），所以留痕截图绝不会存下别的应用、桌面或系统弹窗。
-4. **脚本优先于采集**：宿主端口 `suspendForScript`（由调度器接入）会在运行期间借走实例并在结束后归还；
-   未接入时，临时运行在该实例开着自动采集调度时拒绝启动。
+4. **脚本优先于采集**（DECISIONS A.4）：宿主端口 `suspendForScript`（组合根接 `EtaScheduler.suspendForScript(i, 8 s, reason)`）
+   在计划运行与临时运行拿租约**之前**让调度器让路（先等在飞的采样 / 派遣 8 秒，再中止），运行结束（成功 / 失败 / 跳过）后在
+   `finally` 里归还，调度器 15 秒后重读队列。开着自动采集从不阻止脚本（原来的「采集与计划互斥」与 `gatherScheduleEnabled` 端口已删除）。
 5. **AI 介入**：线程在步骤重试耗尽后发 `aiConsult`，主进程**总会**回 `aiResult`（180 秒超时、迟到的答复丢弃）。
    默认处理器回「未接入」；AI 模块用 `ScriptRunner.setAiAssist()` 接入真正的顾问。顾问在本次执行的设备队列里跑
    （租约等它），停止 / 超时 / 退出时 `signal` 中止，最多再等 5 秒；引擎在停止时立刻不再等顾问。
@@ -50,7 +51,7 @@
   `runIdOfInstance(index)` / `busyIndices()` / `activeCount()` 供忙碌判断，`pause` / `resume` / `stop(runId)`、`list` / `get`。
 - AI：`ScriptRunner.setAiAssist(handler)`，`handler(request: ScriptAiRequest) → Promise<AiAssistResult>`（类型 `ScriptAiAssist`）
   （`{ handled, message?, requiresAttention? }`）；不接时一律 `handled: false`。
-- `PlanHostPort.suspendForScript?(gameId, index, reason) → 归还函数`（调度器接）、`shotPolicy?()` 与 `matchDefaults?()`（应用设置）。
+- `PlanHostPort.suspendForScript?(gameId, index, reason) → 归还函数`（组合根接 ETA 调度器）、`shotPolicy?()` 与 `matchDefaults?()`（应用设置）。
 
 没有移植：原版的预览推流（改用模拟器实时画面窗口 LiveView）、MessagePort 直连渲染进程（改为主进程批量推送事件
 `plan-run` / `run-logs` / `run-matches`）、模板编辑器的「立即验证」（`detectOnce`，由模板库自己的测试接口承担）。

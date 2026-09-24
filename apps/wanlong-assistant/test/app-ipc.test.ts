@@ -197,9 +197,9 @@ describe('data paths', () => {
       await expect(openAppPath(root, 'wanlong', 'logs', failing)).rejects.toThrow(`无法打开目录 ${path.join(root, 'automation', 'logs')}：没有权限`);
       const entries = await listAppPaths(root, 'wanlong');
       expect(entries.find((entry) => entry.key === 'accounts')!.exists).toBe(true);
-      // Nothing writes gather scene shots yet: the entry says so instead of looking broken.
-      expect(entries.find((entry) => entry.key === 'gatherShots')!.pending).toContain('尚未接入');
-      expect(entries.filter((entry) => entry.pending).map((entry) => entry.key)).toEqual(['gatherShots']);
+      // Gather failure scenes are written there now (the scheduler's ShotStore, following the shot policy).
+      expect(entries.find((entry) => entry.key === 'gatherShots')).toMatchObject({ description: expect.stringContaining('截图留痕策略') });
+      expect(entries.filter((entry) => entry.pending).map((entry) => entry.key)).toEqual([]);
       expect(entries.find((entry) => entry.key === 'scripts')!.exists).toBe(false);
       await mkdir(path.join(root, 'automation', 'games', 'wanlong', 'scripts'), { recursive: true });
       expect((await listAppPaths(root, 'wanlong')).find((entry) => entry.key === 'scripts')!.exists).toBe(true);

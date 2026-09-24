@@ -145,6 +145,25 @@ async function writeOwner(lock: string, label: string): Promise<void> {
 }
 
 /**
+ * Label an instance lease this process already holds (`owner.json` inside the lock directory). For lock layers that
+ * keep their own in-process queue in front of the file lease (the scheduler's `InstanceLocks`); never throws.
+ */
+export function labelInstanceLease(home: string, index: number, label: string): Promise<void> {
+  return writeOwner(instanceLeasePath(home, index), label);
+}
+
+/**
+ * 「实例 #N 正在<label>（另一个助手进程）」 for a lease held elsewhere, or null when nobody labelled it (or it is free).
+ * The same wording `withInstanceLease` and `explainLeaseTimeout` use.
+ */
+export async function describeLeaseHolder(home: string, index: number): Promise<string | null> {
+  const owner = await readLeaseOwner(home, index).catch(() => null);
+  if (!owner?.label) return null;
+  const other = owner.pid !== null && owner.pid !== process.pid;
+  return `${owner.label}${other ? '（另一个助手进程）' : ''}`;
+}
+
+/**
  * Drop-in for `withFileLock(instanceLeasePath(home, i), fn, { timeoutMs })` in the existing writers (gather runs,
  * template / settings edits, login, account edits, script plans). Errors are unchanged — a busy instance still
  * fails with core's `LOCK_TIMEOUT`, so each caller's skip / mapping logic keeps working — but while it is held the

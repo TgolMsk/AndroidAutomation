@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { AppError, canonicalDirectory, TemplateLibrary, type MatchResult, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
 import {
   cycleFactOf, normalizeGatherConfig, startupFailureFact, type DispatchRecord, type GatherCycleFact,
-  type GatherCycleResult, type KickedProbeResult, type PanelSample,
+  type GatherCycleResult, type KickedProbeResult, type PanelSample, type ShotPolicy,
 } from '@avdm/automation/wanlong';
 import type { AutomationGameSummary, AutomationProbeReport, AutomationRun, AutomationSchedule, AutomationSettings, TemplateAlphaPreview, TemplateCapture, TemplateCoverage, TemplateImportResult, TemplatesChange, TemplateTestOptions, TemplateTestResult } from '../../shared/ipc';
 import { withLabelledLease } from '../app/instance-access';
@@ -15,12 +15,12 @@ import { broadcast } from '../events';
 import type { ManagerHost } from '../manager-host';
 import { asIndex, errorMessage } from '../util';
 import { ScheduleCompat, toAutomationSchedule } from '../scheduler/compat';
-import { SchedulerError, abortError, codeOf, isAttentionCode, messageOf } from '../scheduler/errors';
+import { SchedulerError, abortError, codeOf, isAttentionCode, isGateCode, messageOf } from '../scheduler/errors';
 import { InstanceLocks } from '../scheduler/instance-lock';
 import { EtaScheduler, type EtaSchedulerOptions } from '../scheduler/service';
 import { ShotStore } from '../scheduler/shots';
 import type { HealthFrame, LogLevel, QueueFreeResult, SampleRequest } from '../scheduler/types';
-import { WanlongGatherRunner, type GatherManager, type GatherRunResult, type MatchQueryOptions } from './gather-runner';
+import { WanlongGatherRunner, type DeviceLaneRun, type GatherManager, type GatherRunResult, type MatchQueryOptions } from './gather-runner';
 import { inspectGatherProbe } from './gather-probe-guard';
 import { gamePlugin, gameSummaries, gameTask } from './games';
 import type { ProbeWorkerInput, ProbeWorkerOutput } from './probe-worker';
@@ -72,12 +72,21 @@ export interface AutomationHostHooks {
   onFailure?: (run: AutomationRun, error: unknown, source: 'manual' | 'scheduled') => Promise<void>;
   onScheduleStop?: (gameId: string, index: number, failureCount: number) => Promise<void>;
   /**
-   * Accounts gate: the base instance, an active login and a pending / stale bound account are refused with a Chinese
-   * reason. A refusal is a verdict, not a failure; a rejected promise (the gate could not decide) is a failure.
+   * Accounts gate (`AccountManager.readiness`, original `assertInstanceAutomationReady`): the base instance, an active
+   * login and a pending / stale bound account are refused with a Chinese reason. Asked when auto is enabled or resumed,
+   * before every troop-panel sample and before every cycle; never when switching off. A refusal is a verdict, not a
+   * failure: a scheduled wake it refuses pauses the ETA scheduler (`setAuto(false)` with the reason) without counting
+   * a failure. A rejected promise (the gate could not decide) is an ordinary failure with backoff.
    */
   automationReadiness?: (gameId: string, index: number) => Promise<{ ready: boolean; reason?: string }>;
   /** A scheduled wake the accounts gate refused: the schedule is paused (not a failure) and `reason` is user-facing. */
   onSchedulePause?: (gameId: string, index: number, reason: string) => Promise<void>;
+  /**
+   * App settings `shotPolicy` (original AppSettings.shotPolicy): which gather scenes are written to
+   * `automation/wanlong/shots` — `never` none, `onFail` failure scenes only, `always` process shots too. Absent = the
+   * gather config's own `safety.shotPolicy`. Failure frames still reach the kicked probe under every policy.
+   */
+  shotPolicy?: () => ShotPolicy;
   /**
    * App settings defaults for script matching (threshold of templates without their own, downsampling factor).
    * 「测试模板」 uses the same values so a test hits or misses exactly as a script run would (original matchOnce).
@@ -103,14 +112,19 @@ export interface AutomationHostHooks {
  * Set them with `AutomationHost.setPorts()` from main/index.ts.
  */
 export interface AutomationHostPorts {
-  /** Account bound to the instance (queue view). */
+  /** Account bound to this AVD (index and instance identity; queue view, gather config owner). */
   accountIdOf?(index: number): Promise<string | null>;
-  /** Refuse enabling auto for an unready account / base instance (throws a Chinese reason). */
-  ensureAccountReady?(index: number): Promise<void>;
   /** Another writer owns the instance (plan script, login): a Chinese label, or null. */
   externalBusy?(index: number): string | null;
-  /** The gather config of the account bound to the instance, when it has one (else the per-instance settings). */
-  accountGatherConfig?(index: number): Promise<Record<string, unknown> | null>;
+  /**
+   * The gather config stored on the account bound to this AVD (`AccountManager.gatherConfigFor`, original
+   * Account.scriptParams.gather), or null when the instance has no current account or the account holds none (the
+   * instance's own settings apply). A corrupt stored copy rejects: it never silently falls back.
+   * The readiness gate is the `automationReadiness` hook (accounts + base instance), not a port.
+   */
+  accountGatherConfig?(index: number): Promise<{ accountId: string; accountName: string; config: Record<string, unknown> } | null>;
+  /** Save the gather config onto the bound account (`AccountManager.saveGatherConfig`). */
+  saveAccountGatherConfig?(accountId: string, config: Record<string, unknown>): Promise<void>;
   /** Second-layer kicked probe on a failure frame already captured. Must return null when templates are missing. */
   probeKicked?(index: number, raw: RawFrame): Promise<KickedProbeResult | null>;
   /** G0 unknown-screen advisor (AI / game update) inside a gather cycle. true = the screen changed. */
@@ -119,6 +133,11 @@ export interface AutomationHostPorts {
 
 export interface AutomationHostOptions {
   locks?: InstanceLocks;
+  /**
+   * The app shell's device lane (`DeviceLanes.run`). The host's manager already hands out lane-bound devices
+   * (`deviceHost`); this keeps check-then-act sequences (foreground → screencap → foreground, foreground → tap) whole.
+   */
+  deviceLane?: DeviceLaneRun;
   scheduler?: Omit<EtaSchedulerOptions, 'locks' | 'publish' | 'publishConfig' | 'publishStatus' | 'log' | 'onSafetyPause' | 'onAttentionPause'>;
   shots?: ShotStore;
 }
@@ -133,10 +152,14 @@ interface ActiveAutomationRun {
 
 const GATHER_GAME_ID = 'wanlong';
 
-/** Whether a failed scheduled start is a fact for alerts: not a stop, a hand-over to another writer or a human-needed pause. */
+/**
+ * Whether a failed scheduled start is a fact for alerts: not a stop, a hand-over to another writer, a human-needed
+ * pause or a readiness refusal (the gate's pause has its own「不计为失败」warning).
+ */
 function reportable(error: unknown, signal: AbortSignal): boolean {
   const code = codeOf(error);
-  return !signal.aborted && code !== 'CONCURRENCY_LIMIT' && code !== 'RUN_ABORTED' && code !== 'CANCELLED' && !isAttentionCode(code);
+  return !signal.aborted && code !== 'CONCURRENCY_LIMIT' && code !== 'RUN_ABORTED' && code !== 'CANCELLED' &&
+    !isAttentionCode(code) && !isGateCode(code);
 }
 
 /** Host-owned bridge from AVD instances to isolated game-vision workers. */
@@ -151,6 +174,7 @@ export class AutomationHost {
   /** The per-instance device lock shared by samples, cycles and `eta.exclusive()`. */
   readonly locks: InstanceLocks;
   private readonly shots: ShotStore;
+  private readonly deviceLane: DeviceLaneRun | undefined;
   private ports: AutomationHostPorts = {};
   private hooks: AutomationHostHooks;
   private readonly workers = new Set<Worker>();
@@ -186,7 +210,10 @@ export class AutomationHost {
     };
     this.locks = options.locks ?? new InstanceLocks(home);
     this.shots = options.shots ?? new ShotStore(home);
-    this.gatherRunner = gatherRunner ?? new WanlongGatherRunner(manager, home, { locks: this.locks });
+    this.deviceLane = options.deviceLane;
+    this.gatherRunner = gatherRunner ?? new WanlongGatherRunner(manager, home, {
+      locks: this.locks, ...(options.deviceLane ? { lane: options.deviceLane } : {}),
+    });
     this.eta = new EtaScheduler(home, {
       sample: (index, request) => this.sampleTroopPanel(index, request),
       healthFrame: (index, signal) => this.healthFrame(index, signal),
@@ -212,9 +239,17 @@ export class AutomationHost {
         void this.hooks.onNeedsAttention?.(GATHER_GAME_ID, index, info).catch((error: unknown) =>
           console.error('[avdm] 需要人工处理的告警无法保存', error));
       },
+      onReadinessPause: (index, reason) => {
+        void this.hooks.onSchedulePause?.(GATHER_GAME_ID, index, reason).catch((error: unknown) =>
+          console.error('[avdm] 调度暂停提醒无法保存', error));
+      },
     });
     this.eta.setQueueFreeHook((state, ctx) => this.gatherForScheduler(state.instanceIndex, ctx.signal));
     this.scheduler = new ScheduleCompat(this.eta);
+    // ★ Compile once, invalidate on change (DECISIONS A.7): a template save / delete / import drops the compiled sets
+    //   in the vision workers at once. The workers' manifest-fingerprint check stays as the fallback for edits made
+    //   outside the host (a set changed on disk by tplkit or another process).
+    this.onTemplatesChanged(() => this.gatherRunner.invalidateTemplates?.());
   }
 
   /** Plug in the ports of later modules (accounts, alerts, AI). Merges; `undefined` removes one. */
@@ -234,9 +269,36 @@ export class AutomationHost {
     return gameSummaries();
   }
 
-  settings(gameId: string, index: number): Promise<AutomationSettings> {
+  /**
+   * The instance's settings as automation uses them: its template set, and the gather config of the account bound to
+   * this AVD when that account holds one (original Account.scriptParams.gather, `configAccount` says whose), else the
+   * instance's own config (DECISIONS B「采集配置跟随绑定的账号」).
+   */
+  async settings(gameId: string, index: number): Promise<AutomationSettings> {
+    gamePlugin(gameId);
+    const i = asIndex(index);
+    const stored = await this.store.get(gameId, i);
+    const owned = gameId === GATHER_GAME_ID ? await this.ports.accountGatherConfig?.(i) : null;
+    return owned ? { ...stored, config: owned.config, configAccount: { id: owned.accountId, name: owned.accountName } } : stored;
+  }
+
+  /**
+   * The instance's own settings file (template set + instance gather config), ignoring any bound account. For callers
+   * that only need the template set (plans, the login home check) or copy an instance's file (base-instance clones):
+   * an account's corrupt gather config must not break them.
+   */
+  instanceSettings(gameId: string, index: number): Promise<AutomationSettings> {
     gamePlugin(gameId);
     return this.store.get(gameId, asIndex(index));
+  }
+
+  /**
+   * The gather config saved in the instance's own settings file, ignoring any bound account. For the accounts module:
+   * binding moves it into a newly bound account that has none (original afterAccountBind).
+   */
+  async instanceGatherConfig(gameId: string, index: number): Promise<Record<string, unknown> | null> {
+    const { config } = await this.instanceSettings(gameId, index);
+    return Object.keys(config).length > 0 ? config : null;
   }
 
   templateSets(gameId: string): Promise<TemplateSet[]> {
@@ -284,14 +346,17 @@ export class AutomationHost {
     const state = await manager.getState(i);
     if (state.status !== 'running') throw new Error(`实例 #${i} 尚未就绪`);
     const device = await manager.device(i);
-    const before = await device.foregroundPackage();
-    if (before !== plugin.packageName) throw new Error(`${plugin.name}未处于前台`);
-    let frame: RawFrame;
-    try { frame = await device.screencapRaw(); }
-    catch (error) { throw new Error(`ADB 截图失败: ${errorMessage(error)}`, { cause: error }); }
-    const after = await device.foregroundPackage();
-    if (before !== after) throw new Error('截图期间前台应用发生切换，请重试');
-    return { frame, foregroundPackage: after ?? null };
+    // One unit on the device lane: nothing else of this instance runs between the two foreground reads.
+    return this.onLane(i, async () => {
+      const before = await device.foregroundPackage();
+      if (before !== plugin.packageName) throw new Error(`${plugin.name}未处于前台`);
+      let frame: RawFrame;
+      try { frame = await device.screencapRaw(); }
+      catch (error) { throw new Error(`ADB 截图失败: ${errorMessage(error)}`, { cause: error }); }
+      const after = await device.foregroundPackage();
+      if (before !== after) throw new Error('截图期间前台应用发生切换，请重试');
+      return { frame, foregroundPackage: after ?? null };
+    });
   }
 
   async captureTemplate(gameId: string, index: number): Promise<TemplateCapture> {
@@ -512,7 +577,20 @@ export class AutomationHost {
         if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
       }
       this.assertTemplateEditable(i);
-      return this.withDeviceLease(i, () => this.store.save(gameId, i, patch));
+      // The config follows the account bound to this AVD (original: the gather page saved into the account's
+      // scriptParams); without a current account it stays in the instance's settings file.
+      const accountId = patch.config !== undefined && gameId === GATHER_GAME_ID && this.ports.saveAccountGatherConfig
+        ? await this.ports.accountIdOf?.(i) ?? null : null;
+      await this.withDeviceLease(i, async () => {
+        if (accountId) {
+          const { config, ...rest } = patch;
+          await this.ports.saveAccountGatherConfig!(accountId, config!);
+          if (rest.templateDir !== undefined) await this.store.save(gameId, i, rest);
+        } else {
+          await this.store.save(gameId, i, patch);
+        }
+      });
+      return this.settings(gameId, i);
     });
   }
 
@@ -542,6 +620,9 @@ export class AutomationHost {
     return this.withControlLock(i, async () => {
       if (superseded()) return this.scheduler.get(gameId, i);
       if (this.activeByIndex.has(i) || this.gatherRunner.isRunning(i)) throw new Error(`实例 #${i} 已有自动化任务在运行`);
+      // The accounts gate (base instance, login in progress, pending account) refuses before any device read.
+      await this.assertReady(gameId, i);
+      if (superseded()) return this.scheduler.get(gameId, i);
       await this.confirmProbe(gameId, i);
       if (superseded()) return this.scheduler.get(gameId, i);
       // Readiness (instance running, template set, config enabled, account) is the ETA scheduler's gate
@@ -580,10 +661,13 @@ export class AutomationHost {
     if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
     const device = await manager.device(i);
     const adbStartedAt = performance.now();
-    const foregroundBefore = await device.foregroundPackage();
-    const frame = await device.screencapRaw();
-    const foregroundPackage = await device.foregroundPackage();
-    if (foregroundBefore !== foregroundPackage) throw new Error('截图时前台应用发生切换，请重新探测');
+    const { frame, foregroundPackage } = await this.onLane(i, async () => {
+      const foregroundBefore = await device.foregroundPackage();
+      const captured = await device.screencapRaw();
+      const after = await device.foregroundPackage();
+      if (foregroundBefore !== after) throw new Error('截图时前台应用发生切换，请重新探测');
+      return { frame: captured, foregroundPackage: after };
+    });
     const adbMs = performance.now() - adbStartedAt;
     if (this.disposed) throw new Error('应用正在退出');
     const workerStartedAt = performance.now();
@@ -722,23 +806,26 @@ export class AutomationHost {
     if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
     const config = normalizeGatherConfig((await this.gatherConfig(index, settings.config)) as Parameters<typeof normalizeGatherConfig>[0]);
     if (!config.enabled) throw new Error('请先启用并保存自动采集配置');
-    await this.ports.ensureAccountReady?.(index);
-    await this.assertAccountsReady(GATHER_GAME_ID, index);
+    await this.assertReady(GATHER_GAME_ID, index);
   }
 
   /**
-   * Accounts gate (base instance, active login, pending / stale bound account): a refusal carries the Chinese
-   * reason. Checked when auto is enabled or resumed and before every cycle, never when switching off.
+   * The accounts readiness gate (base instance, active login, pending / stale bound account). A refusal throws
+   * AUTOMATION_NOT_READY with the Chinese reason: the ETA scheduler pauses a refused scheduled wake without counting a
+   * failure; a manual run or an enable shows the reason. Never asked when switching off.
    */
-  private async assertAccountsReady(gameId: string, index: number): Promise<void> {
+  private async assertReady(gameId: string, index: number): Promise<void> {
     const readiness = await this.hooks.automationReadiness?.(gameId, index);
-    if (readiness && !readiness.ready) throw new Error(readiness.reason || NOT_READY);
+    if (readiness && !readiness.ready) throw new SchedulerError('AUTOMATION_NOT_READY', readiness.reason || NOT_READY, { instanceIndex: index });
   }
 
-  /** The account's gather config when one is bound (original Account.scriptParams.gather), else the instance's. */
+  /**
+   * The account's gather config when one is bound (original Account.scriptParams.gather), else the instance's. A
+   * corrupt account copy fails the run with its Chinese reason instead of silently using another config.
+   */
   private async gatherConfig(index: number, fallback: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const fromAccount = await this.ports.accountGatherConfig?.(index).catch(() => null);
-    return fromAccount ?? fallback;
+    const fromAccount = await this.ports.accountGatherConfig?.(index);
+    return fromAccount?.config ?? fallback;
   }
 
   private async sampleTroopPanel(index: number, request: SampleRequest): Promise<PanelSample> {
@@ -746,7 +833,7 @@ export class AutomationHost {
     const settings = await this.store.get(GATHER_GAME_ID, index);
     if (!settings.templateDir) throw new SchedulerError('TEMPLATE_NOT_FOUND', '请先选择本地模板集目录');
     // Original resolveDevice → assertInstanceAutomationReady: an unready account or a base instance is never driven.
-    await this.ports.ensureAccountReady?.(index);
+    await this.assertReady(GATHER_GAME_ID, index);
     return this.gatherRunner.sample(index, {
       templateDir: settings.templateDir,
       config: request.config,
@@ -792,9 +879,17 @@ export class AutomationHost {
     return this.gatherRunner.match(i, settings.templateDir, raw, templateIds, options);
   }
 
-  /** Compiled templates are dropped in every vision worker (e.g. after an AI template harvest). */
+  /**
+   * Compiled templates are dropped in every vision worker. Template edits through the host already do this (the
+   * `onTemplatesChanged` subscription); for writers that bypass it.
+   */
   invalidateTemplates(): void {
     this.gatherRunner.invalidateTemplates?.();
+  }
+
+  /** A check-then-act device sequence as one unit on the instance's lane (when the composition root gave one). */
+  private onLane<T>(index: number, work: () => Promise<T>): Promise<T> {
+    return this.deviceLane ? this.deviceLane(index, work) : work();
   }
 
   private logLine(level: LogLevel, message: string): void {
@@ -814,7 +909,7 @@ export class AutomationHost {
     if (gameId !== 'wanlong' || task.id !== 'gather-once') throw new Error('该自动化任务尚未接入');
     const i = asIndex(index);
     if (this.activeByIndex.has(i) || this.gatherRunner.isRunning(i)) throw new Error(`实例 #${i} 已有自动化任务在运行`);
-    await this.assertAccountsReady(gameId, i);
+    await this.assertReady(gameId, i);
 
     const manager = await this.host.get();
     const [instance, settings] = await Promise.all([manager.getState(i), this.store.get(gameId, i)]);
@@ -823,7 +918,6 @@ export class AutomationHost {
     const templateDir = settings.templateDir;
     const config = normalizeGatherConfig((await this.gatherConfig(i, settings.config)) as Parameters<typeof normalizeGatherConfig>[0]);
     if (!config.enabled) throw new Error('请先启用并保存自动采集配置');
-    await this.ports.ensureAccountReady?.(i);
     // ★ No foreground requirement: a game that is not running is cold-started (monkey + look-only wait) by the cycle.
     if (this.disposed) throw new Error('应用正在退出');
     if (externalSignal?.aborted) throw externalSignal.reason ?? new Error('调度已停止');
@@ -848,11 +942,16 @@ export class AutomationHost {
       throw error;
     }
     const ports = this.ports;
+    let shotPolicy: ShotPolicy | undefined;
+    try { shotPolicy = this.hooks.shotPolicy?.(); } catch { shotPolicy = undefined; }
     const result = Promise.resolve().then(() => this.gatherRunner.runOnce(i, {
       templateDir,
       config,
       signal: controller.signal,
       allowColdStart: true,
+      // Failure scenes follow the app settings' shot policy (original saveAlertShot); the runner still hands every
+      // failure frame to the kicked probe whatever the policy.
+      ...(shotPolicy ? { shotPolicy } : {}),
       log: (level, message) => this.logLine(level, `[实例 #${i}] ${message}`),
       saveShot: (label, raw) => this.shots.save(i, label, raw),
       ...(ports.probeKicked ? { probeKicked: (raw: RawFrame) => ports.probeKicked!(i, raw) } : {}),

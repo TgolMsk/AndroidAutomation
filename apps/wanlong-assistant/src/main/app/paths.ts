@@ -25,8 +25,8 @@ const PATH_SPECS: readonly PathSpec[] = [
   { key: 'gatherSettings', label: '采集配置', kind: 'dir', segments: ['automation', '{game}'], description: '每个实例的模板集与采集配置' },
   { key: 'gatherState', label: '采集运行状态', kind: 'dir', segments: ['automation', '{game}', 'state'], description: '搜索等级记忆、放弃冷却等跨轮状态' },
   {
-    key: 'gatherShots', label: '采集现场截图', kind: 'dir', segments: ['automation', '{game}', 'shots'], description: '采集失败时的现场截图（跟随截图留痕策略）',
-    pending: '采集流程尚未接入截图留痕，目前不会写入这里',
+    key: 'gatherShots', label: '采集现场截图', kind: 'dir', segments: ['automation', '{game}', 'shots'],
+    description: '采集失败时的现场截图（跟随截图留痕策略；保留 14 天、最多 300 张）',
   },
   { key: 'templates', label: '模板库', kind: 'dir', segments: ['automation', 'templates', '{game}'], description: '在助手里新建的模板集（各实例选用的模板集见下方列表）' },
   { key: 'scripts', label: '脚本库', kind: 'dir', segments: ['automation', 'games', '{game}', 'scripts'], description: '每个脚本一个 JSON 文件' },

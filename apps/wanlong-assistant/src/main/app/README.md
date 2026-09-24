@@ -37,11 +37,15 @@
   服务里原有的 `console.warn/error('[wanlong/xxx] …')` 已自动落盘（`[xxx]` 成为来源）。`broadcast('log', …)` 也会落盘。
 - **占用**：`occupancy.register('名字', (index?) => holders)` 登记新的占用来源（只能逐个实例回答的服务用
   `perInstanceSource(indices, test, { label, source, blocking })`）；「开着的自动化」一律登记成 `blocking: false`
-  （现有：「自动采集已开启」「已启用脚本计划」）——停止 / 重启 / 删除前照样要确认，但不挡更新；
+  （现有：「自动采集已开启」「已启用脚本计划」）——停止 / 重启 / 删除前照样要确认，但不挡更新；ETA 调度器的实例锁持有者
+  （读部队面板、自动采集派遣、健康探针、`exclusive(i, what)` 借出）经 `ServiceOccupancyDeps.scheduler`（组合根传 `automation.locks`）
+  登记为 `scheduler` 来源、`blocking: true`，两轮之间没人拿锁时不算忙；
   `await occupancy.anyBusy()` 就是更新闸门（`src/main/update/busy.ts` 的 `updateBusyCheck({ occupancy, sdkInstall })`，「实例 #N 正在<活动>。」或 null，只看 `blocking` 的；另一个助手进程的租约也算忙；更新模块自己不另挂探针）；`occupancy.holders(i)` 给实例生命周期确认用（IPC `instanceOccupancy`）。
   **所有设备写入者都要带标签拿租约**：改造现有链路时把 `withFileLock(run/automation-instance-<i>.lock, fn, { timeoutMs })` 换成
-  `withLabelledLease(home, i, '活动', fn, { timeoutMs })`（错误不变）；新链路（调度器采样、资源统计、卡死恢复、基础实例克隆……）用
+  `withLabelledLease(home, i, '活动', fn, { timeoutMs })`（错误不变）；新链路（资源统计、卡死恢复、基础实例克隆……）用
   `withInstanceLease(home, i, '活动', fn, { timeoutMs })`，冲突时直接得到「实例 #N 正在<活动>」。两者都不可重入。
+  调度器的 `InstanceLocks`（`scheduler/instance-lock.ts`）是同一套租约的前端：进程内 FIFO 排队之后拿同一个租约、用
+  `labelInstanceLease` 写标签、在占用表里 `note()` 登记；本进程另有持有者时立刻按名字让路，租约超时时用 `describeLeaseHolder` 报出对方的标签。
 - **凭据**：新增的明文凭据要么经 `rememberingCodec(codec, logSecrets)` 加解密，要么 `appLog.addSecrets(() => [值])` 注册（同步取值）。
 - **设备工具**：`deviceTools.installApk(i, paths)`；渲染进程的「中文输入法」扩展位见 `src/renderer/views/settings/device-tool-slots.tsx`。
 - **错误码**：助手自己抛的带码错误用 `shared/errors.ts` 的 `WanlongErrorCode` 标注 `code`，新码追加到 `WANLONG_ERROR_CODES`；渲染进程用 `isRetryLaterCode(errorCodeOf(e))` 区分「稍后再试」。

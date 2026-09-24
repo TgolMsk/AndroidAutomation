@@ -58,6 +58,13 @@ export interface VisionJobContext {
   assertInstance?(): Promise<void>;
   /** Monkey launch of `packageName` is allowed (cold-start recovery). */
   allowColdStart: boolean;
+  /**
+   * The instance's device lane (app shell `DeviceLanes.run`): a check-then-act sequence (foreground / identity check
+   * → input, foreground check → screencap) runs as one unit on the lane, so no other lane user of this instance (a
+   * read-only preview, the advisor, the bot) interleaves between the check and the act. The device calls inside
+   * re-enter the lane. Absent in tests: the sequence just runs.
+   */
+  lane?<T>(work: () => Promise<T>): Promise<T>;
   log?(level: LogLevel, message: string): void;
   onShot?(label: string, raw: RawFrame): Promise<void>;
   onFrame?(raw: RawFrame): void;
@@ -429,19 +436,25 @@ class Job {
     throwIfAborted(this.controller.signal);
   }
 
+  /** Run a check-then-act sequence as one unit on the instance's device lane (see `VisionJobContext.lane`). */
+  private onLane<T>(work: () => Promise<T>): Promise<T> {
+    return this.ctx.lane ? this.ctx.lane(work) : work();
+  }
+
   private async handle(request: VisionRequest): Promise<{ value?: unknown; transfer?: ArrayBuffer[] }> {
     const { device, packageName } = this.ctx;
     this.check();
     switch (request.op) {
       case 'capture': {
-        // Once approved, frames are only taken of the game itself (conventions §5.3): a foreign screen ends the job.
-        if (this.approved) await this.assertForeground();
-        let frame: RawFrame;
-        try { frame = await device.screencapRaw(); }
-        catch (error) {
-          if (!this.controller.signal.aborted) this.ctx.onCaptureFailed?.(error);
-          throw new SchedulerError(codeOf(error) === 'UNKNOWN' ? 'COMMAND_FAILED' : codeOf(error), `ADB 截图失败: ${messageOf(error)}`);
-        }
+        const frame = await this.onLane(async (): Promise<RawFrame> => {
+          // Once approved, frames are only taken of the game itself (conventions §5.3): a foreign screen ends the job.
+          if (this.approved) await this.assertForeground();
+          try { return await device.screencapRaw(); }
+          catch (error) {
+            if (!this.controller.signal.aborted) this.ctx.onCaptureFailed?.(error);
+            throw new SchedulerError(codeOf(error) === 'UNKNOWN' ? 'COMMAND_FAILED' : codeOf(error), `ADB 截图失败: ${messageOf(error)}`);
+          }
+        });
         this.check();
         try { this.ctx.onFrame?.(frame); } catch { /* observers never break a job */ }
         const copy = copyFrame(frame);
@@ -456,7 +469,7 @@ class Job {
         const presence = await ensureGameForeground({
           foreground: async () => (await device.foregroundPackage()) ?? null,
           // ★ Monkey only (`startApp` without an activity): `am start` returns success but the game never starts.
-          launch: async () => { await this.assertInputTarget(false); this.check(); await device.startApp(packageName); },
+          launch: () => this.onLane(async () => { await this.assertInputTarget(false); this.check(); await device.startApp(packageName); }),
           ...(device.isAppRunning ? { isRunning: () => device.isAppRunning!(packageName) } : {}),
           log: (level, message) => this.ctx.log?.(level, message),
           sleep: (ms) => sleep(ms, this.controller.signal),
@@ -471,9 +484,11 @@ class Job {
           if (intent !== 'closePopup' && intent !== 'exitCancel') this.requireApproved('点击');
           else this.spend(intent);
         }
-        await this.assertInputTarget();
-        this.check();
-        await device.tap(x, y);
+        await this.onLane(async () => {
+          await this.assertInputTarget();
+          this.check();
+          await device.tap(x, y);
+        });
         return {};
       }
       case 'tapMany': {
@@ -484,19 +499,21 @@ class Job {
         const gap = Math.max(0, Math.min(5_000, Number.isFinite(gapMs) ? gapMs : 0));
         for (let i = 0; i < points.length; i += TAPS_PER_SHELL) {
           const chunk = points.slice(i, i + TAPS_PER_SHELL);
-          await this.assertInputTarget();
-          this.check();
-          if (device.shell) {
-            // One shell per chunk (measured: 5 taps 103 ms separately, 34 ms merged); coordinates are integers.
-            const sleepPart = gap > 0 ? `; sleep ${(gap / 1000).toFixed(3)}` : '';
-            const command = chunk.map(([x, y]) => `input tap ${Math.round(x)} ${Math.round(y)}`).join(`${sleepPart}; `);
-            await device.shell(command, { timeoutMs: 10_000 + chunk.length * (gap + 200) });
-          } else {
-            for (const [x, y] of chunk) {
-              await device.tap(x, y);
-              if (gap > 0) await sleep(gap, this.controller.signal);
+          await this.onLane(async () => {
+            await this.assertInputTarget();
+            this.check();
+            if (device.shell) {
+              // One shell per chunk (measured: 5 taps 103 ms separately, 34 ms merged); coordinates are integers.
+              const sleepPart = gap > 0 ? `; sleep ${(gap / 1000).toFixed(3)}` : '';
+              const command = chunk.map(([x, y]) => `input tap ${Math.round(x)} ${Math.round(y)}`).join(`${sleepPart}; `);
+              await device.shell(command, { timeoutMs: 10_000 + chunk.length * (gap + 200) });
+            } else {
+              for (const [x, y] of chunk) {
+                await device.tap(x, y);
+                if (gap > 0) await sleep(gap, this.controller.signal);
+              }
             }
-          }
+          });
         }
         return {};
       }
@@ -504,9 +521,11 @@ class Job {
         this.requireApproved('滑动');
         const [x1, y1, x2, y2, ms] = request.args;
         assertPoint(x1, y1, x2, y2);
-        await this.assertInputTarget();
-        this.check();
-        await device.swipe(x1, y1, x2, y2, Math.max(0, Math.min(10_000, ms)));
+        await this.onLane(async () => {
+          await this.assertInputTarget();
+          this.check();
+          await device.swipe(x1, y1, x2, y2, Math.max(0, Math.min(10_000, ms)));
+        });
         return {};
       }
       case 'key': {
@@ -515,20 +534,25 @@ class Job {
           if (intent !== 'probeBack' || key !== 'BACK') this.requireApproved('按键');
           else this.spend('probeBack');
         }
-        await this.assertInputTarget();
-        this.check();
-        await device.keyevent(key);
+        await this.onLane(async () => {
+          await this.assertInputTarget();
+          this.check();
+          await device.keyevent(key);
+        });
         return {};
       }
       case 'launchApp': {
         this.requireApproved('启动应用');
         const [pkg, cold] = request.args;
         if (pkg !== packageName) throw new SchedulerError('INVALID_ARGUMENT', '禁止启动其他应用');
-        await this.assertInputTarget(false);
-        this.check();
-        if (cold) await device.stopApp(packageName);
-        this.check();
-        await device.startApp(packageName);
+        await this.onLane(async () => {
+          await this.assertInputTarget(false);
+          this.check();
+          if (cold) await device.stopApp(packageName);
+          this.check();
+          await device.startApp(packageName);
+        });
+        // The wait polls the lane call by call: other users of the instance's lane are not held up for a minute.
         await this.waitForForeground();
         return {};
       }
@@ -536,9 +560,11 @@ class Job {
         this.requireApproved('停止应用');
         const [pkg] = request.args;
         if (pkg !== packageName) throw new SchedulerError('INVALID_ARGUMENT', '禁止停止其他应用');
-        await this.assertInputTarget();
-        this.check();
-        await device.stopApp(packageName);
+        await this.onLane(async () => {
+          await this.assertInputTarget();
+          this.check();
+          await device.stopApp(packageName);
+        });
         return {};
       }
       case 'unrecognized': {

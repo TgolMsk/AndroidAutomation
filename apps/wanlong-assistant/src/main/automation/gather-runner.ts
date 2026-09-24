@@ -94,10 +94,19 @@ export interface MatchQueryOptions {
   signal?: AbortSignal;
 }
 
+/** The app shell's per-instance device lane (`DeviceLanes.run`): runs a check-then-act sequence as one unit. */
+export type DeviceLaneRun = <T>(index: number, work: () => Promise<T>) => Promise<T>;
+
 export interface WanlongGatherRunnerOptions {
   locks?: InstanceLocks;
   pool?: VisionWorkerPool;
   workerFactory?: (entry: string) => VisionWorkerLike;
+  /**
+   * Device lane of each instance. The manager's devices already route every adb call through the lanes (the
+   * composition root passes the lane-wrapped `deviceHost`); this also keeps "check foreground → input" and the
+   * health probe's "frame + foreground + pidof" together on the lane.
+   */
+  lane?: DeviceLaneRun;
 }
 
 interface ActiveRun {
@@ -265,11 +274,13 @@ export class WanlongGatherRunner {
   private readonly active = new Map<number, ActiveRun>();
   private readonly store: GatherRuntimeStore;
   private readonly pool: VisionWorkerPool;
+  private readonly lane: DeviceLaneRun | undefined;
 
   constructor(private readonly manager: GatherManager, home: string, options: WanlongGatherRunnerOptions = {}) {
     this.store = new GatherRuntimeStore(home);
     this.locks = options.locks ?? new InstanceLocks(home);
     this.pool = options.pool ?? new VisionWorkerPool(options.workerFactory ? { workerFactory: options.workerFactory } : {});
+    this.lane = options.lane;
   }
 
   isRunning(index: number): boolean { return this.active.has(index); }
@@ -291,7 +302,7 @@ export class WanlongGatherRunner {
     const onExternalAbort = () => controller.abort(options.signal?.reason ?? new Error('采集已取消'));
     if (options.signal?.aborted) onExternalAbort();
     else options.signal?.addEventListener('abort', onExternalAbort, { once: true });
-    return this.locks.run(index, '自动采集', () => this.execute(index, options, controller.signal, timeoutMs), { signal: controller.signal })
+    return this.locks.run(index, '运行采集', () => this.execute(index, options, controller.signal, timeoutMs), { signal: controller.signal })
       .finally(() => {
         options.signal?.removeEventListener('abort', onExternalAbort);
         this.active.delete(index);
@@ -344,13 +355,17 @@ export class WanlongGatherRunner {
     if (instance.status !== 'running') throw new SchedulerError('DEVICE_NOT_READY', `实例 #${index} 未运行（${instance.status}）`);
     checkAbort(signal);
     const device = await this.manager.device(index);
-    let raw: RawFrame;
-    try { raw = await device.screencapRaw(); }
-    catch (error) { throw new SchedulerError(codeOf(error) === 'UNKNOWN' ? 'COMMAND_FAILED' : codeOf(error), `ADB 截图失败: ${messageOf(error)}`); }
-    checkAbort(signal);
-    const foreground = (await device.foregroundPackage().catch(() => undefined)) ?? null;
-    const running = device.isAppRunning ? await device.isAppRunning(wanlongPlugin.packageName).catch(() => null) : null;
-    return { raw, foreground, running };
+    const probe = async (): Promise<HealthFrame> => {
+      let raw: RawFrame;
+      try { raw = await device.screencapRaw(); }
+      catch (error) { throw new SchedulerError(codeOf(error) === 'UNKNOWN' ? 'COMMAND_FAILED' : codeOf(error), `ADB 截图失败: ${messageOf(error)}`); }
+      checkAbort(signal);
+      const foreground = (await device.foregroundPackage().catch(() => undefined)) ?? null;
+      const running = device.isAppRunning ? await device.isAppRunning(wanlongPlugin.packageName).catch(() => null) : null;
+      return { raw, foreground, running };
+    };
+    // The frame, the foreground package and pidof describe one moment: nothing else on the lane runs in between.
+    return this.lane ? this.lane(index, probe) : probe();
   }
 
   /**
@@ -413,6 +428,7 @@ export class WanlongGatherRunner {
         throw new SchedulerError('DEVICE_NOT_READY', `实例 #${index} 已停止或被替换`);
       }
     };
+    const lane = this.lane;
     return {
       device,
       packageName: wanlongPlugin.packageName,
@@ -420,6 +436,7 @@ export class WanlongGatherRunner {
       timeoutMs,
       allowColdStart,
       assertInstance,
+      ...(lane ? { lane: <T>(work: () => Promise<T>) => lane(index, work) } : {}),
       approve: async (probe: ProbeReport) => {
         const decision = inspectGatherProbe(probe);
         if (!decision.ok) throw new Error(decision.reason);

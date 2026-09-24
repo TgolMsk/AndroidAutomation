@@ -27,6 +27,7 @@ import { broadcast, setBroadcastLogSink } from './events';
 import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
 import { MonitoringService, ReadOnlyTelegramBot } from './monitoring';
+import { SCRIPT_PREEMPT_GRACE_MS } from './scheduler/service';
 import { PlanService, ScriptRunner } from './plans';
 import { updateBusyCheck, updateLog, UpdateService } from './update';
 import { electronUpdateDeps } from './update/electron-deps';
@@ -91,8 +92,13 @@ bootstrapApp({
       onSchedulePause: (gameId, index, reason) => insights.recordSchedulePause(gameId, index, reason),
       // 「测试模板」 hits or misses exactly as a script run would (same threshold / shrink as the script worker).
       matchDefaults,
+      // Gather failure scenes follow the app settings' shot policy (original saveAlertShot).
+      shotPolicy: () => appSettings.get().shotPolicy,
       // Fallback「需要人处理」alert until the alerts module sets the scheduler's own onNeedsAttention hook.
       onNeedsAttention: (gameId, index, info) => insights.recordAttentionPause(gameId, index, info),
+    }, {
+      // Check-then-act sequences (foreground → screencap → foreground, foreground → tap) stay whole on the lane.
+      deviceLane: (index, work) => deviceLanes.run(index, work),
     });
     // Template edits (save / delete / import) make compiled templates stale: tell the renderer; cache owners
     // (vision workers, sampler, resources, AI harvest) subscribe through automation.onTemplatesChanged too.
@@ -103,22 +109,24 @@ bootstrapApp({
       capture: (gameId, index) => automation.captureReadOnly(gameId, index),
       // A fresh copy inherits the base's template set; until then the base's set is the fallback.
       templateDir: async (gameId, index): Promise<string> =>
-        (await automation.settings(gameId, index)).templateDir || await provisioner.baseTemplateDir(gameId),
+        (await automation.instanceSettings(gameId, index)).templateDir || await provisioner.baseTemplateDir(gameId),
     });
     const accounts: AccountManager = new AccountManager(deviceHost, automation, home, {
       base: (gameId) => provisioner.baseIdentity(gameId),
       verifyHome: (gameId, index) => homeVerifier.verify(gameId, index),
       homeCheckIssue: (gameId, index) => homeVerifier.precheck(gameId, index),
-      // `instanceGatherConfig` (move the instance's gather config into a newly bound account) is wired by the
-      // scheduler port together with gather settings that read `accounts.gatherConfigFor()` first; until then
-      // the instance file stays the only copy.
+      // Binding moves the instance's gather config into a newly bound account that has none (original
+      // afterAccountBind); from then on gather reads and saves the account's copy (`automation.settings()` and the
+      // scheduler ports below read `gatherConfigFor()` first and fall back to the instance file).
+      instanceGatherConfig: (gameId, index) => automation.instanceGatherConfig(gameId, index),
       onAccountsChanged: (event) => broadcast('account-changed', event),
       onLoginChanged: (session) => broadcast('login-changed', session),
     });
 
     // ── instances (base instance, batch clone) ──
     const provisioner: InstanceProvisioner = new InstanceProvisioner(services.host, home, {
-      settings: (gameId, index) => automation.settings(gameId, index),
+      // A copy inherits the base's own settings file (the base instance never has an account).
+      settings: (gameId, index) => automation.instanceSettings(gameId, index),
       saveSettings: (gameId, index, patch) => automation.saveSettings(gameId, index, patch),
       disableSchedule: async (gameId, index) => { await automation.setSchedule(gameId, index, false); },
       async busyReason(index): Promise<string | null> {
@@ -153,9 +161,12 @@ bootstrapApp({
       accounts: (gameId) => accounts.list(gameId),
       instance: async (index) => (await services.host.get()).getState(index),
       device: async (index) => (await deviceHost.get()).device(index),
-      templateDir: async (gameId, index) => (await automation.settings(gameId, index)).templateDir,
-      // Preemption replaces the old mutual exclusion: plans call `automation.eta.suspendForScript()` before a run.
-      gatherScheduleEnabled: async () => false,
+      templateDir: async (gameId, index) => (await automation.instanceSettings(gameId, index)).templateDir,
+      // ★ Scripts first (DECISIONS A.4, original plan rule 1): a plan or manual run makes the instance's gather
+      // scheduler yield (polite wait, then abort) and gives it back afterwards; gather auto never refuses a script.
+      suspendForScript: (gameId, index, reason) => gameId === 'wanlong'
+        ? automation.eta.suspendForScript(index, SCRIPT_PREEMPT_GRACE_MS, reason)
+        : Promise.resolve(() => undefined),
       onRun: (run) => broadcast('plan-run', { kind: 'plan', run }),
       // App settings (DECISIONS C, one source of defaults): the default trace-shot policy of runs that chose none,
       // and the matching defaults (threshold of templates without their own, downsampling factor) handed to the
@@ -165,16 +176,15 @@ bootstrapApp({
     }, scriptRunner);
 
     // ── scheduler (ETA queue scheduler: ports and hooks; see src/main/scheduler/README.md) ──
-    /** The account bound to this AVD: same index AND same instance identity (a replaced AVD inherits nothing). */
-    const boundAccount = async (index: number) => {
-      const [list, state] = await Promise.all([accounts.list('wanlong'), (await services.host.get()).getState(index)]);
-      return list.find((account) => account.binding?.index === index &&
-        account.binding.instanceCreatedAt === state.record.createdAt) ?? null;
-    };
     automation.setPorts({
-      accountIdOf: async (index) => (await boundAccount(index))?.id ?? null,
+      // The account bound to this AVD: same index AND same instance identity (a replaced AVD inherits nothing).
+      accountIdOf: async (index) => (await accounts.accountForInstance('wanlong', index))?.id ?? null,
+      // Gather config follows the bound account (original Account.scriptParams.gather); unbound → the instance file.
+      accountGatherConfig: (index) => accounts.gatherConfigFor('wanlong', index),
+      saveAccountGatherConfig: async (accountId, config) => { await accounts.saveGatherConfig(accountId, config); },
       // The readiness gate (original assertInstanceAutomationReady: base instance, active login, bound account not
-      // checked or pointing at a replaced AVD) is the accounts module's `automationReadiness` hook above.
+      // checked or pointing at a replaced AVD) is the accounts module's `automationReadiness` hook above; a scheduled
+      // wake it refuses pauses the ETA scheduler (not a failure) and `onSchedulePause` records the warning.
       externalBusy: (index) => {
         if (plans.isActiveForInstance(index)) return '脚本计划';
         const login = accounts.loginSession(index);
@@ -200,6 +210,8 @@ bootstrapApp({
             instanceRunning: state.status === 'running',
             busy: plans.isActiveForInstance(schedule.index) ||
               runs.some((run) => run.index === schedule.index && (run.status === 'running' || run.status === 'stopping')) ||
+              // The scheduler is reading the troop panel / dispatching / probing on it right now.
+              automation.locks.holder(schedule.index) !== null ||
               Boolean(login && loginActive(login.phase)),
           }];
         });
@@ -234,7 +246,7 @@ bootstrapApp({
     // same table (`occupancy.anyBusy()`), so every later source registered here also holds the update back.
     registerServiceOccupancy(occupancy, {
       instanceIndices: async () => (await (await services.host.get()).list()).map((state) => state.record.index),
-      automation, plans, accounts, gameId: 'wanlong',
+      automation, plans, accounts, scheduler: automation.locks, gameId: 'wanlong',
     });
     const appHealth = new AppHealth(() => runAssistantHealthCheck({
       home,
@@ -303,7 +315,7 @@ bootstrapApp({
       appTemplateSets: (gameId) => listInstanceTemplateSets({
         instances: async () => (await (await services.host.get()).list()).map((state) => ({ index: state.record.index, name: state.record.name })),
         configuredIndices: () => configuredSettingsIndices(home, gameId),
-        templateDir: async (index) => (await automation.settings(gameId, index)).templateDir,
+        templateDir: async (index) => (await automation.instanceSettings(gameId, index)).templateDir,
         describe: async (index) => {
           const set = await automation.templateSet(gameId, index);
           return set ? { name: set.name, templates: set.templates.length } : null;

@@ -12,6 +12,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRuntimeState, wanlongPlugin, type GatherCycleResult } from '@avdm/automation/wanlong';
 import { AutomationHost } from '../src/main/automation/host';
+import { InstanceLocks } from '../src/main/scheduler/instance-lock';
 import { loginActive, type LoginPhase } from '../src/main/automation/accounts/types';
 import { InstanceAccess, instanceAccess, instanceLeasePath, readLeaseOwner, readLeaseOwners, withLabelledLease } from '../src/main/app/instance-access';
 import { InstanceOccupancy, OccupancyUnknownError } from '../src/main/app/occupancy';
@@ -193,6 +194,8 @@ function controlledRunner(stopGate: Promise<void>) {
   const finish = (value: GatherCycleResult) => { resolve?.(value); resolve = null; };
   return {
     runOnce: vi.fn((_index: number) => new Promise<GatherCycleResult>((yes) => { resolve = yes; })),
+    // The ETA scheduler reads the troop panel first (read-only); a free slot hands over to the gather cycle.
+    sample: vi.fn(async () => ({ sampledAt: Date.now(), queueUsed: 2, queueTotal: 5, rows: [], warnings: [] })),
     stop: vi.fn(async (_index: number) => { await stopGate; finish(result('cancelled', '采集已取消')); }),
     dispose: vi.fn(async () => { finish(result('cancelled', '采集已取消')); }),
     isRunning: vi.fn((_index: number) => false),
@@ -206,15 +209,14 @@ describe('安装闸门接在真实的 AutomationHost 上（与 main/index.ts 同
   let runner: ReturnType<typeof controlledRunner>;
   let gate: () => Promise<string | null>;
   const sdkInstall = { active: false };
+  const manager = {
+    getState: async () => ({ status: 'running', record: { createdAt: '2026-09-23T00:00:00Z' } }),
+    device: async () => ({ foregroundPackage: async () => wanlongPlugin.packageName }),
+  };
 
-  beforeEach(async () => {
-    const stopGate = new Promise<void>((resolve) => { releaseStop = resolve; });
-    runner = controlledRunner(stopGate);
-    const manager = {
-      getState: async () => ({ status: 'running', record: { createdAt: '2026-09-23T00:00:00Z' } }),
-      device: async () => ({ foregroundPackage: async () => wanlongPlugin.packageName }),
-    };
-    host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner);
+  /** A real host (optionally with test seams for the ETA scheduler) and the gate over it, wired like main/index.ts. */
+  async function build(options: ConstructorParameters<typeof AutomationHost>[5] = {}): Promise<void> {
+    host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner, undefined, {}, options);
     await host.saveSettings('wanlong', 1, { templateDir: home, config: { version: 2, enabled: true } });
     // Idle plans and login wizards, as in a fresh assistant; the automation side and the occupancy table are real.
     const occupancy = occupancyTable({
@@ -222,8 +224,15 @@ describe('安装闸门接在真实的 AutomationHost 上（与 main/index.ts 同
       automation: host,
       plans: { isActiveForInstance: () => false, hasEnabledPlanForInstance: async () => false },
       accounts: { loginActiveOn: () => false },
+      scheduler: host.locks,
     });
     gate = updateBusyCheck({ occupancy, sdkInstall });
+  }
+
+  beforeEach(async () => {
+    const stopGate = new Promise<void>((resolve) => { releaseStop = resolve; });
+    runner = controlledRunner(stopGate);
+    await build();
   });
 
   afterEach(async () => {
@@ -232,20 +241,32 @@ describe('安装闸门接在真实的 AutomationHost 上（与 main/index.ts 同
   });
 
   it('★ 只开着自动续跑（两轮之间没有在跑的一轮）不算忙；正在跑的那一轮算', async () => {
-    vi.spyOn(host, 'probe').mockResolvedValue({
-      gameId: 'wanlong', packageName: wanlongPlugin.packageName, foregroundPackage: wanlongPlugin.packageName,
-      deviceWidth: 960, deviceHeight: 540, capturedAt: Date.now(), matches: [],
-      launchReady: true, launchReason: 'known scene', timingsMs: {},
-    });
-    expect((await host.setSchedule('wanlong', 1, true)).enabled).toBe(true);
-    // The first scheduled cycle holds the device while it runs.
-    await vi.waitFor(() => expect(runner.runOnce).toHaveBeenCalledTimes(1));
-    expect(await gate()).toBe('实例 #1 正在运行采集。');
-    runner.finish(result('queueFull', '队列已满'));
-    await vi.waitFor(async () => {
-      expect((await host.schedules())[0]).toMatchObject({ gameId: 'wanlong', index: 1, enabled: true, nextWakeAt: expect.any(Number) });
-      expect((await host.runs())[0]).toMatchObject({ status: 'succeeded' });
-    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await host.dispose();
+      await build({ locks: new InstanceLocks(home, { fileLock: async (_path, fn) => fn() }), scheduler: { ownerLease: false, random: () => 0 } });
+      vi.spyOn(host, 'probe').mockResolvedValue({
+        gameId: 'wanlong', packageName: wanlongPlugin.packageName, foregroundPackage: wanlongPlugin.packageName,
+        deviceWidth: 960, deviceHeight: 540, capturedAt: Date.now(), matches: [],
+        launchReady: true, launchReason: 'known scene', timingsMs: {},
+      });
+      // Enabling reads the panel once (read-only, never dispatches); nothing holds the device afterwards.
+      expect((await host.setSchedule('wanlong', 1, true)).enabled).toBe(true);
+      expect(runner.sample).toHaveBeenCalledTimes(1);
+      expect(await gate()).toBeNull();
+      // The wake finds a free slot: the scheduled cycle holds the device while it runs.
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(runner.runOnce).toHaveBeenCalledTimes(1));
+      expect(await gate()).toBe('实例 #1 正在运行采集。');
+      runner.finish(result('queueFull', '队列已满'));
+      await vi.waitFor(async () => {
+        expect((await host.schedules())[0]).toMatchObject({ gameId: 'wanlong', index: 1, enabled: true, nextWakeAt: expect.any(Number) });
+        expect((await host.runs())[0]).toMatchObject({ status: 'succeeded' });
+        expect(host.locks.holderList()).toEqual([]);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
     // Between cycles: the schedule is still on, nothing holds the device, installing is allowed.
     expect(await gate()).toBeNull();
     const center = new UpdateCenter();

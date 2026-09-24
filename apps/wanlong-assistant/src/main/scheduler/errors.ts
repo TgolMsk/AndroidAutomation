@@ -12,6 +12,7 @@ export type SchedulerErrorCode =
   | 'STEP_FAILED'
   | 'PROBE_REJECTED'
   | 'DEVICE_NOT_READY'
+  | 'AUTOMATION_NOT_READY'
   | 'UNKNOWN';
 
 /** An Error with a stable code; the IPC envelope forwards `code` to the renderer. */
@@ -39,6 +40,15 @@ export function isAbortCode(code: string): boolean {
 /** A human must look (game update prompt, AI judged a confirm risky): not a failure, the instance is paused. */
 export function isAttentionCode(code: string): boolean {
   return code === 'GAME_UPDATE_REQUIRED' || code === 'AI_RISK_BLOCKED';
+}
+
+/**
+ * The accounts readiness gate refused the instance (base instance, login in progress, bound account not checked or
+ * pointing at a replaced AVD). A verdict, not a device failure (original alerts rule 1): a scheduled wake pauses the
+ * instance at once with the reason instead of backing off into a「连续失败」alert.
+ */
+export function isGateCode(code: string): boolean {
+  return code === 'AUTOMATION_NOT_READY';
 }
 
 /** The abort reason as a coded error (a plain reason becomes RUN_ABORTED so hooks can tell it apart). */
