@@ -27,10 +27,19 @@ itself lives in `../instances/`.
 
 The gather config follows the account bound to the AVD (`Account.scriptParams.gather.configJson`, identity-checked);
 an instance without an account uses its own settings file `automation/wanlong/<i>.json`, stamped with the AVD's
-`createdAt` (`configReplaced` flags a copy left by a deleted AVD at the same index). Binding moves the instance copy
-into an account that has none and clears it (original `afterAccountBind`). Saving validates with the shared
-`validateGatherConfig` in both the form and `AutomationHost.saveSettings` (errors are refused, never clamped), and
+`createdAt`. `configReplaced` flags a copy left by a deleted AVD at the same index: the page shows it for review, but
+runs refuse it (`AUTOMATION_NOT_READY`, a scheduled wake pauses without counting a failure) until it is re-saved —
+never inherited by index alone. Binding moves the instance copy into an account that has none and clears it
+(original `afterAccountBind`). Saving validates in both the form (`validateGatherConfig`) and
+`AutomationHost.saveSettings` (`validateGatherConfigInput`: wrong types, per-resource overrides and ranges are
+refused, never replaced or clamped; what is stored is the normalization of exactly the validated document), and
 switches an enabled schedule off (a changed policy needs a fresh probe).
+
+A copy that cannot be read never locks the page (original `loadGatherConfig`: fall back to defaults and say so):
+`getAutomationSettings` returns `accountConfigError` (the bound account's JSON is corrupt; `config` is empty, the
+form shows defaults) or `settingsError` (the instance file is unreadable / incompatible; a salvage keeps the template
+set it still names). The form shows the reason and allows 「保存」 without edits; saving rewrites the account copy and
+rebuilds the instance file (the broken one is kept as `<i>.json.corrupt`). Runs stay strict and refuse with the reason.
 
 ## Pause port (to be replaced by the alerts module)
 
@@ -38,9 +47,12 @@ switches an enabled schedule off (a changed policy needs a fresh probe).
 that exists, shows the scheduler's own safety pause (auto off after 8 consecutive failures) as 「连续失败熔断」.
 `resumeInstance()` is `schedulerSetAuto(true)` today. Point both at the alerts IPC and replace `PauseDetails` with the
 full PauseBanner; no caller changes. Rules kept: paused ≠ `!auto`; resume only through its own confirmation.
+Known gaps until then (see the header of `pause-port.ts`): a resume after an app restart needs a passing probe, and
+needsAttention / readiness pauses are not shown as paused.
 
 ## Deliberate differences
 
 - Times on cards and tooltips are Beijing time (DECISIONS A.8), the original used the host clock.
 - An unbound instance is not a config problem (its own config applies); the original flagged it.
 - Enabling auto always shows a fresh probe verdict; the main process still enforces its own probe gate.
+- Esc closes only the topmost layer (shell `escape-layers.ts`, used by Drawer / Modal / Menu), as antd did.

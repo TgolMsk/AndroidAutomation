@@ -567,7 +567,8 @@
   position: fixed;
   inset: 0;
   z-index: calc(var(--z-backdrop) - 2);
-  background: rgba(0, 0, 0, 0.35);
+  /* Design tokens only (DECISIONS A.9): the page background, dimmed. */
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
 }
 
 .gather-drawer-hint {

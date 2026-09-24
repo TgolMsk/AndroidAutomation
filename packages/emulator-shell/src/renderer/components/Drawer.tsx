@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react';
+import { pushEscapeLayer } from './escape-layers';
 import { Icon } from './Icon';
 
 export interface DrawerProps {
@@ -28,16 +29,13 @@ export function Drawer({ title, onClose, children, actions, footer, label, width
   busyRef.current = busy;
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busyRef.current) {
-        e.stopPropagation();
-        closeRef.current();
-      }
-    };
-    window.addEventListener('keydown', onKey);
+    // Only the topmost layer reacts to Esc (a dialog opened from a drawer closes alone).
+    const pop = pushEscapeLayer(() => {
+      if (!busyRef.current) closeRef.current();
+    });
     const first = panel.current?.querySelector<HTMLElement>('input:not([type=checkbox]):not([disabled]), select, textarea');
     (first ?? panel.current)?.focus({ preventScroll: true });
-    return () => window.removeEventListener('keydown', onKey);
+    return pop;
   }, []);
 
   return (

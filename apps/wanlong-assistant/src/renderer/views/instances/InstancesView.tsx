@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import type { InstanceState, SdkInfo, Settings } from '@avdm/core';
 import { canStart, canStop } from '@avdm/emulator-shell/renderer/format';
 import { CloneDialog } from '@avdm/emulator-shell/renderer/components/CloneDialog';
@@ -71,6 +71,7 @@ export function InstancesView({ visible }: ViewProps) {
   const [loginTargets, setLoginTargets] = useState<number[] | null>(null);
   const [configFor, setConfigFor] = useState<number | null>(null);
   const [batchRunning, setBatchRunning] = useState<BatchKind | null>(null);
+  const batchLock = useRef(false);
   const [maxRunning, setMaxRunning] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   // 「几分钟前」 needs only a coarse clock: every 10 s, so the table does not re-render every second.
@@ -129,8 +130,12 @@ export function InstancesView({ visible }: ViewProps) {
   }
 
   const start = (i: number) => op(i, '启动', async () => toast.batch('启动实例', await avdm.start([i]), nameOf));
+  // Original 关闭 always asked (Popconfirm「关闭这个实例？」); a busy instance gets the occupancy question instead.
   const stop = (i: number) => op(i, '关闭', async () => {
-    await guard({ action: 'stop', indices: [i], run: async () => toast.batch('关闭实例', await avdm.stop([i]), nameOf) });
+    await guard({
+      action: 'stop', indices: [i], confirmIdle: { title: `关闭实例 #${i}？`, message: '模拟器会被关机。' },
+      run: async () => toast.batch('关闭实例', await avdm.stop([i]), nameOf),
+    });
   });
   const restart = (i: number) => op(i, '重启', async () => {
     await guard({ action: 'restart', indices: [i], run: async () => toast.batch('重启实例', await avdm.restart([i]), nameOf) });
@@ -178,34 +183,45 @@ export function InstancesView({ visible }: ViewProps) {
   }
 
   async function runBatch(kind: BatchKind): Promise<void> {
-    const candidates = visibleInstances.map((instance) => {
-      const i = instance.record.index;
-      const state = queues.stateOf(i);
-      return {
-        index: i, up: instance.status === 'running', paused: pauseInfoOf(state).paused, isBase: isBaseInstance(base.view, instance),
-        auto: state.auto, autoBusy: queues.autoBusy[i] === true, sampling: queues.sampling[i] === true || state.sampling,
-        operating: state.operating === true,
-      };
-    });
-    const { targets, skipped } = batchTargets(kind, candidates);
-    setBatchRunning(kind);
-    try { await controls.runBatch(kind, targets, skipped); }
-    finally { setBatchRunning(null); }
+    // One batch at a time (original: the dropdown is disabled while one runs); the ref closes the same-tick race.
+    if (batchLock.current) return;
+    batchLock.current = true;
+    try {
+      const candidates = visibleInstances.map((instance) => {
+        const i = instance.record.index;
+        const state = queues.stateOf(i);
+        return {
+          index: i, up: instance.status === 'running', paused: pauseInfoOf(state).paused, isBase: isBaseInstance(base.view, instance),
+          auto: state.auto, autoBusy: queues.autoBusy[i] === true, sampling: queues.sampling[i] === true || state.sampling,
+          operating: state.operating === true,
+        };
+      });
+      const { targets, skipped } = batchTargets(kind, candidates);
+      setBatchRunning(kind);
+      await controls.runBatch(kind, targets, skipped);
+    } finally {
+      batchLock.current = false;
+      setBatchRunning(null);
+    }
   }
 
+  const batchDisabled = batchRunning !== null || visibleInstances.length === 0;
+  const batchHint = batchRunning !== null ? '上一次批量操作还在进行' : visibleInstances.length === 0 ? '当前筛选下没有实例' : undefined;
   const batchItems: MenuItem[] = [
-    { label: '全部开启自动采集', icon: 'play', onClick: () => void runBatch('on') },
-    { label: '全部关闭自动采集', icon: 'stop', onClick: () => void runBatch('off') },
-    { label: '全部立即采样', icon: 'refresh', divider: true, onClick: () => void runBatch('sample') },
+    { label: '全部开启自动采集', icon: 'play', disabled: batchDisabled, hint: batchHint, onClick: () => void runBatch('on') },
+    { label: '全部关闭自动采集', icon: 'stop', disabled: batchDisabled, hint: batchHint, onClick: () => void runBatch('off') },
+    { label: '全部立即采样', icon: 'refresh', divider: true, disabled: batchDisabled, hint: batchHint, onClick: () => void runBatch('sample') },
   ];
 
   function rowMenu(instance: InstanceState): MenuItem[] {
     const i = instance.record.index;
     const isBase = isBaseInstance(base.view, instance);
     const gatherRun = runs.some((run) => run.index === i && isRunActive(run));
+    const scriptRun = scriptRunByInstance.has(i);
     const stopped = instance.status === 'stopped' || instance.status === 'error';
     return [
-      { label: '账号登录', icon: 'keyboard', disabled: isBase || gatherRun || !gameId, hint: isBase ? '基础实例只用于克隆，请在副本中登录账号' : gatherRun ? '这个实例上还有采集在跑' : undefined,
+      { label: '账号登录', icon: 'keyboard', disabled: isBase || gatherRun || scriptRun || !gameId,
+        hint: isBase ? '基础实例只用于克隆，请在副本中登录账号' : gatherRun ? '这个实例上还有采集在跑' : scriptRun ? '这个实例上还有脚本在执行' : undefined,
         onClick: () => setLoginTargets([i]) },
       { label: '采集配置', icon: 'settings', disabled: !gameId, onClick: () => setConfigFor(i) },
       { label: '重启实例', icon: 'restart', disabled: !isRunning(instance), onClick: () => void restart(i) },
@@ -325,7 +341,10 @@ export function InstancesView({ visible }: ViewProps) {
                             {gameId ? (
                               <InstanceAccountCell gameId={gameId} instance={instance} instances={instances} accounts={accounts} loginSession={session}
                                 gatherFollowsAccount
-                                disabledReason={accountCellDisabledReason({ base: isBase, bound: Boolean(account), running: Boolean(gatherRun), loginActive: loginIsActive(session?.phase) })}
+                                disabledReason={accountCellDisabledReason({
+                                  base: isBase, bound: Boolean(account), running: Boolean(gatherRun), loginActive: loginIsActive(session?.phase),
+                                  scriptRunning: Boolean(script),
+                                })}
                                 onChanged={() => { refreshBadges(); void queues.reload(); }} onLogin={(target) => setLoginTargets([target])} />
                             ) : <span className="dim">—</span>}
                           </td>

@@ -9,6 +9,13 @@
  *     `SAFETY_PAUSE_FAILURES` consecutive real failures) is shown as a 「连续失败熔断」 pause.
  *   · `resumeInstance(gameId, index)` — today `schedulerSetAuto(gameId, index, true)`.
  * Integration: point both at the alerts IPC (pause records / resume) and keep every caller unchanged.
+ * ★ Known gaps of the temporary port, both closed by that switch (keep them in mind until it happens):
+ *   1. `schedulerSetAuto(true)` is the user's switch (`AutomationHost.setSchedule`), so after an app restart a resume
+ *      needs a fresh read-only probe that passes; the original resume (alerts:resume) calls `eta.setAuto(i, true)`
+ *      outside the lock with no probe gate.
+ *   2. Only the safety pause is recognized here. The scheduler's needsAttention pauses (GAME_UPDATE_REQUIRED,
+ *      AI_RISK_BLOCKED) and readiness pauses switch auto off with a reason that is not in the queue state, so those
+ *      instances neither turn red nor offer 恢复 until the alerts pause records fill `SchedulerQueueState.pause`.
  *
  * Rules kept from the original: paused is judged by `paused`, never by `!auto` (the user switching auto off is not
  * a pause); resume goes through its own confirmation and this port, never through the auto switch.

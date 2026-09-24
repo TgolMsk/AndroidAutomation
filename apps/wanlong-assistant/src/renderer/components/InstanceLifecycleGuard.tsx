@@ -9,6 +9,11 @@ export interface LifecycleRequest {
   indices: number[];
   /** The actual call (e.g. `avdm.stop(indices)` + toast); runs only after the user agreed, if asking was needed. */
   run: () => Promise<void> | void;
+  /**
+   * Ask even when nothing uses the instances (original 关闭 Popconfirm「关闭这个实例？/ 模拟器会被关机。」).
+   * When the instances are busy, the occupancy question is asked instead (it already names what gets interrupted).
+   */
+  confirmIdle?: { title: string; message: string };
 }
 
 /** Holders of every index; indices whose query failed are returned separately (the dialog then asks anyway). */
@@ -34,7 +39,10 @@ export function useInstanceLifecycleGuard(): { guard: (request: LifecycleRequest
 
   const guard = useCallback(async (request: LifecycleRequest): Promise<boolean> => {
     const { holders, unknown } = await readOccupancy(request.indices);
-    const confirmation = lifecycleConfirmation(request.action, request.indices, holders, unknown);
+    const busy = lifecycleConfirmation(request.action, request.indices, holders, unknown);
+    const confirmation = !busy.needed && request.confirmIdle
+      ? { needed: true, title: request.confirmIdle.title, lines: [], warning: request.confirmIdle.message }
+      : busy;
     if (!confirmation.needed) {
       await request.run();
       return true;
@@ -56,10 +64,10 @@ export function useInstanceLifecycleGuard(): { guard: (request: LifecycleRequest
     <ConfirmDialog
       title={pending.confirmation.title}
       danger
-      confirmLabel={`仍然${pending.request.action === 'remove' ? '删除' : pending.request.action === 'restart' ? '重启' : '关闭'}`}
+      confirmLabel={`${pending.confirmation.lines.length > 0 ? '仍然' : ''}${pending.request.action === 'remove' ? '删除' : pending.request.action === 'restart' ? '重启' : '关闭'}`}
       message={(
         <>
-          <ul className="confirm-list">{pending.confirmation.lines.map((line) => <li key={line}>{line}</li>)}</ul>
+          {pending.confirmation.lines.length > 0 && <ul className="confirm-list">{pending.confirmation.lines.map((line) => <li key={line}>{line}</li>)}</ul>}
           <p>{pending.confirmation.warning}</p>
         </>
       )}

@@ -160,9 +160,12 @@ export function gestureInput(start: { x: number; y: number; t: number }, end: { 
 /** Why the instance row's account cell is disabled (null = editable). */
 export function accountCellDisabledReason(options: {
   base: boolean; bound: boolean; running: boolean; loginActive: boolean;
+  /** A script (plan task or temporary run) is active on the instance (original hasRun covers every run). */
+  scriptRunning?: boolean;
 }): string | null {
   if (options.loginActive) return '该实例正在登录，请在登录向导中完成或结束后再改绑';
   if (options.running) return '该实例正在运行自动采集，请结束后再改绑';
+  if (options.scriptRunning) return '该实例上还有脚本在执行，改绑会让正在跑的脚本对不上账号，请等它结束再改绑';
   if (options.base && !options.bound) return '基础实例只用于克隆，不需要绑定账号';
   return null;
 }

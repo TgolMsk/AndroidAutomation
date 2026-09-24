@@ -173,7 +173,11 @@ describe('clone from base', () => {
     const result = await service.cloneFromBase('wanlong', { count: 3, expectedBaseIndex: 0 });
     expect(result.created.map((item) => item.index)).toEqual([10, 11, 12]);
     expect(clones).toEqual([{ from: 0, opts: { count: 3, namePrefix: '基础', identity: 'random' } }]);
-    expect(saved).toEqual([10, 11, 12].map((index) => ({ index, patch: { templateDir: '/templates/set-a', config: { version: 2 } } })));
+    // The template set and the gather config are copied separately (a stale base config cannot cost the template set).
+    expect(saved).toEqual([10, 11, 12].flatMap((index) => [
+      { index, patch: { templateDir: '/templates/set-a' } },
+      { index, patch: { config: { version: 2 } } },
+    ]));
     expect(result.warnings).toEqual([]);
     // ★ The opt-out must reach core explicitly: omitted, core rotates a managed source anyway.
     await service.cloneFromBase('wanlong', { count: 1, expectedBaseIndex: 0, rotateIdentity: false });
@@ -251,10 +255,29 @@ describe('clone from base', () => {
   });
 
   it('reports a copy that could not inherit the template set as a warning, not a failure', async () => {
-    const service = provisioner({ saveSettings: async (_gameId, index) => { if (index === 11) throw new Error('模板目录不存在'); return { templateDir: '', config: {} }; } });
+    const service = provisioner({ saveSettings: async (_gameId, index, patch) => {
+      saved.push({ index, patch });
+      if (index === 11 && patch.templateDir !== undefined) throw new Error('模板目录不存在');
+      return { templateDir: '', config: {} };
+    } });
     await service.setBase('wanlong', 0);
     const result = await service.cloneFromBase('wanlong', { count: 2, expectedBaseIndex: 0 });
     expect(result.created).toHaveLength(2);
     expect(result.warnings).toEqual(['实例 #11 未能继承基础实例的模板集设置：模板目录不存在']);
+    // The gather config was still copied to #11.
+    expect(saved).toContainEqual({ index: 11, patch: { config: { version: 2 } } });
+  });
+
+  it('a base config refused by save-time validation still leaves the copy its template set', async () => {
+    const service = provisioner({ saveSettings: async (_gameId, index, patch) => {
+      saved.push({ index, patch });
+      if (patch.config !== undefined) throw new Error('采集配置有错误（共 1 处），没有保存：可放宽到的最低值 9 比固定搜索下限 7 还高。');
+      return { templateDir: '', config: {} };
+    } });
+    await service.setBase('wanlong', 0);
+    const result = await service.cloneFromBase('wanlong', { count: 1, expectedBaseIndex: 0 });
+    expect(saved[0]).toEqual({ index: 10, patch: { templateDir: '/templates/set-a' } });
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('实例 #10 未能继承基础实例的采集配置');
   });
 });

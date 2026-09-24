@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { pushEscapeLayer } from './escape-layers';
 import { Icon, type IconName } from './Icon';
 
 export interface MenuItem {
@@ -45,14 +46,12 @@ export function DropdownMenu({
     const onDown = (e: MouseEvent) => {
       if (root.current && !root.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
     window.addEventListener('mousedown', onDown);
-    window.addEventListener('keydown', onKey);
+    // An open menu is the topmost Esc layer: Esc closes the menu, not the drawer or dialog it sits in.
+    const pop = pushEscapeLayer(() => setOpen(false));
     return () => {
       window.removeEventListener('mousedown', onDown);
-      window.removeEventListener('keydown', onKey);
+      pop();
     };
   }, [open]);
 

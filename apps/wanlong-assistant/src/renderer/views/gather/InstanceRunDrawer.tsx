@@ -11,6 +11,7 @@ import { RUN_LABEL, isRunActive, useActivity } from '../../state/activity';
 import { useNavigation } from '../../state/navigation';
 import { useSelection } from '../../state/selection';
 import { useTemplateFlow } from '../../state/template-flow';
+import { frameResolutionHint } from '../instances/instance-model';
 import { MaskedDrawer } from './MaskedDrawer';
 
 /** The probe passed the launch check for this game (foreground package, frame size, one known scene anchor). */
@@ -68,6 +69,7 @@ export function InstanceRunDrawer({ game, index, instance, autoOn, status, onClo
   const instanceRuns = runs.filter((run) => run.gameId === game.id && run.index === index);
   const activeRun = runs.find((run) => run.index === index && isRunActive(run));
   const launchReady = probeReady(probe, game);
+  const frameHint = probe && probe.deviceWidth > 0 ? frameResolutionHint(probe.deviceWidth, probe.deviceHeight) : null;
   const configEnabled = settings?.config['enabled'] === true;
   const canProbe = Boolean(ready && settings?.templateDir && !busy && !activeRun);
   const canRun = Boolean(ready && settings?.templateDir && launchReady && probeConfirmed && !busy && !activeRun && !autoOn && taskId &&
@@ -156,6 +158,9 @@ export function InstanceRunDrawer({ game, index, instance, autoOn, status, onClo
                 <div><dt>画面尺寸</dt><dd className="mono">{probe.deviceWidth} × {probe.deviceHeight}</dd></div>
                 <div><dt>截图时间（北京）</dt><dd>{beijingTime(probe.capturedAt, 'clock')}</dd></div>
               </dl>
+              {frameHint && (
+                <div className="notice warn" role="status"><Icon name="alert" /><div>{frameHint}</div></div>
+              )}
               {probe.matches.length > 0 && (
                 <div className="table-wrap"><table className="inst-table gather-probe-table">
                   <thead><tr><th>模板</th><th>结果</th><th>分数 / 阈值</th><th>位置</th></tr></thead>

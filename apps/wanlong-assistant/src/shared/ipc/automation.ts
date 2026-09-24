@@ -24,6 +24,16 @@ export interface AutomationSettings {
    * but flagged so the user checks and re-saves it (never inherited by index alone; binding does not move it).
    */
   configReplaced?: boolean;
+  /**
+   * The gather config stored on the bound account cannot be parsed (Chinese reason). `config` is then empty (the page
+   * shows defaults) and saving writes a fresh copy to the account; runs refuse until then.
+   */
+  accountConfigError?: string;
+  /**
+   * The instance's own settings file cannot be read or is incompatible (Chinese reason). `templateDir` / `config` are
+   * a salvage (the template set is kept when the file still names one); saving a gather config rebuilds the file.
+   */
+  settingsError?: string;
 }
 
 export interface AutomationProbeMatch {

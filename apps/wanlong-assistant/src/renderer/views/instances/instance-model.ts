@@ -50,3 +50,12 @@ export function resolutionWarning(spec: Pick<InstanceSpec, 'width' | 'height'> |
   }
   return null;
 }
+
+/**
+ * The same warning for a captured frame (probe results, DECISIONS C「在探针结果里提示当前分辨率偏低」): the size of the
+ * frame actually read, which is what the templates are matched against. null = fine or unknown.
+ */
+export function frameResolutionHint(width: number, height: number): string | null {
+  const warning = resolutionWarning({ width, height });
+  return warning ? `${warning.label}：${warning.tip}` : null;
+}

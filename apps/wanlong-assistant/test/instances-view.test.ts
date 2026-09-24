@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { InstanceState } from '@avdm/core';
 import type { GameAccount } from '../src/main/automation/accounts/types';
 import type { AutomationProbeReport, SchedulerQueueState } from '../src/shared/ipc';
-import { countUp, filterInstances, resolutionWarning } from '../src/renderer/views/instances/instance-model';
+import { countUp, filterInstances, frameResolutionHint, resolutionWarning } from '../src/renderer/views/instances/instance-model';
 import { describeGatherStatus } from '../src/renderer/views/gather/InstanceGatherControls';
 import { onlineState, resumeMessage } from '../src/renderer/views/gather/InstanceMarchCard';
 import { probeVerdict } from '../src/renderer/views/gather/EnableAutoDialog';
@@ -54,6 +54,12 @@ describe('instance list: search, status filter, running count', () => {
     expect(resolutionWarning({ width: 960, height: 540 })?.label).toBe('分辨率偏低');
     expect(resolutionWarning({ width: 1280, height: 800 })?.label).toBe('比例不是 16:9');
     expect(resolutionWarning(undefined)).toBeNull();
+  });
+
+  it('the probe result warns about a low-resolution frame too (DECISIONS C「设备分辨率」)', () => {
+    expect(frameResolutionHint(2560, 1440)).toBeNull();
+    expect(frameResolutionHint(1280, 720)).toMatch(/^分辨率偏低：当前分辨率 1280×720 低于 1920×1080/);
+    expect(frameResolutionHint(0, 0)).toBeNull();
   });
 });
 

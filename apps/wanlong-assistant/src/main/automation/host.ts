@@ -9,7 +9,7 @@ import {
   cycleFactOf, normalizeGatherConfig, startupFailureFact, type DispatchRecord, type GatherCycleFact,
   type GatherCycleResult, type KickedProbeResult, type PanelSample, type ShotPolicy,
 } from '@avdm/automation/wanlong';
-import { coerceGatherConfig, describeBlockingIssues, validateGatherConfig } from '@avdm/automation/wanlong/pure';
+import { coerceGatherConfig, describeBlockingIssues, validateGatherConfigInput } from '@avdm/automation/wanlong/pure';
 import type { AutomationGameSummary, AutomationProbeReport, AutomationRun, AutomationSchedule, AutomationSettings, TemplateAlphaPreview, TemplateCapture, TemplateCoverage, TemplateImportResult, TemplatesChange, TemplateTestOptions, TemplateTestResult } from '../../shared/ipc';
 import { withLabelledLease } from '../app/instance-access';
 import { broadcast } from '../events';
@@ -280,23 +280,26 @@ export class AutomationHost {
    * The instance's settings as automation uses them: its template set, and the gather config of the account bound to
    * this AVD when that account holds one (original Account.scriptParams.gather, `configAccount` says whose), else the
    * instance's own config (DECISIONS B「采集配置跟随绑定的账号」).
-   * An account copy that cannot be read (corrupt JSON) shows the instance's config instead of failing: the page that
-   * shows it is where the user re-saves a fresh copy (saving writes to the account). Runs never fall back like this.
+   * This is the page read, so it never fails on a broken copy (original configStorage.loadGatherConfig: fall back to
+   * defaults and say so): an account copy that cannot be parsed shows defaults with `accountConfigError`, a broken
+   * instance file shows a salvage with `settingsError`; saving from the gather config page rewrites both. Runs never
+   * fall back like this (`gatherConfig()` and `store.get()` refuse with the reason).
    */
   async settings(gameId: string, index: number): Promise<AutomationSettings> {
     gamePlugin(gameId);
     const i = asIndex(index);
-    const stored = await this.store.get(gameId, i);
-    const own = () => this.instanceView(i, stored);
+    const read = await this.store.inspect(gameId, i);
+    const broken = read.error ? { settingsError: read.error } : {};
+    const own = async (): Promise<AutomationSettings> => ({ ...(await this.instanceView(i, read.settings)), ...broken });
     if (gameId !== GATHER_GAME_ID || !this.ports.accountGatherConfig) return own();
     let owned: Awaited<ReturnType<NonNullable<AutomationHostPorts['accountGatherConfig']>>>;
     try { owned = await this.ports.accountGatherConfig(i); }
     catch (error) {
-      this.logLine('warn', `[实例 #${i}] 读不出绑定账号里的采集配置，先显示实例上的那份（重新保存即可修复）：${messageOf(error)}`);
-      return own();
+      this.logLine('warn', `[实例 #${i}] 读不出绑定账号里的采集配置，采集配置页先显示默认配置（重新保存即可修复）：${messageOf(error)}`);
+      return { templateDir: read.settings.templateDir, config: {}, accountConfigError: messageOf(error), ...broken };
     }
     return owned
-      ? { templateDir: stored.templateDir, config: owned.config, configAccount: { id: owned.accountId, name: owned.accountName } }
+      ? { templateDir: read.settings.templateDir, config: owned.config, configAccount: { id: owned.accountId, name: owned.accountName }, ...broken }
       : own();
   }
 
@@ -306,11 +309,15 @@ export class AutomationHost {
    */
   private async instanceView(index: number, stored: StoredAutomationSettings): Promise<AutomationSettings> {
     const view: AutomationSettings = { templateDir: stored.templateDir, config: stored.config };
-    if (stored.configFor && Object.keys(stored.config).length > 0) {
-      const identity = await this.instanceIdentity(index).catch(() => null);
-      if (identity && identity.createdAt !== stored.configFor) view.configReplaced = true;
-    }
+    if (await this.isConfigReplaced(index, stored)) view.configReplaced = true;
     return view;
+  }
+
+  /** The instance file's gather config was saved for another AVD that used to sit at this index (identity stamp). */
+  private async isConfigReplaced(index: number, stored: StoredAutomationSettings): Promise<boolean> {
+    if (!stored.configFor || Object.keys(stored.config).length === 0) return false;
+    const identity = await this.instanceIdentity(index).catch(() => null);
+    return identity !== null && identity.createdAt !== stored.configFor;
   }
 
   /**
@@ -612,12 +619,12 @@ export class AutomationHost {
         const config = patch.config;
         if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('自动化参数无效');
         if ('version' in config && config.version !== 2) throw new Error('万龙觉醒配置版本不兼容');
-        // Original validateGatherConfig: out-of-range values are refused with Chinese reasons instead of being
-        // silently clamped by the runtime normalization below (the form shows the same issues before saving).
-        const blocking = describeBlockingIssues(validateGatherConfig(coerceGatherConfig(config)));
+        // Original validateGatherConfig: wrong types and out-of-range values (per-resource overrides included) are
+        // refused with Chinese reasons instead of being silently replaced or clamped (the form shows the same issues
+        // before saving). What is stored is the normalization of exactly the document that was validated.
+        const blocking = describeBlockingIssues(validateGatherConfigInput(config));
         if (blocking) throw new Error(blocking);
-        // The game package owns its schema and defaults; preserve its full normalized document.
-        patch = { ...patch, config: normalizeGatherConfig(config as Parameters<typeof normalizeGatherConfig>[0]) as unknown as Record<string, unknown> };
+        patch = { ...patch, config: normalizeGatherConfig(coerceGatherConfig(config)) as unknown as Record<string, unknown> };
       }
       // A changed template or policy needs a fresh scene probe before the next automatic write.
       if (patch.templateDir !== undefined || patch.config !== undefined) {
@@ -635,7 +642,10 @@ export class AutomationHost {
         if (accountId) {
           const { config, ...rest } = patch;
           await this.ports.saveAccountGatherConfig!(accountId, config!);
-          if (rest.templateDir !== undefined) await this.store.save(gameId, i, rest);
+          // A broken instance file is rebuilt too (template set kept when it still names one): saving from the page
+          // is the documented repair, and the account copy is the config in effect anyway.
+          const broken = Boolean((await this.store.inspect(gameId, i)).error);
+          if (rest.templateDir !== undefined || broken) await this.store.save(gameId, i, broken ? { ...rest, config: {} } : rest);
         } else {
           await this.store.save(gameId, i, patch, { configFor });
         }
@@ -856,7 +866,7 @@ export class AutomationHost {
     if (instance.status !== 'running') throw new Error(`实例 #${index} 尚未就绪，请先启动并等待 Android 启动完成`);
     const settings = await this.store.get(GATHER_GAME_ID, index);
     if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
-    const config = normalizeGatherConfig((await this.gatherConfig(index, settings.config)) as Parameters<typeof normalizeGatherConfig>[0]);
+    const config = normalizeGatherConfig((await this.gatherConfig(index, settings)) as Parameters<typeof normalizeGatherConfig>[0]);
     if (!config.enabled) throw new Error('请先启用并保存自动采集配置');
     await this.assertReady(GATHER_GAME_ID, index);
   }
@@ -875,9 +885,16 @@ export class AutomationHost {
    * The account's gather config when one is bound (original Account.scriptParams.gather), else the instance's. A
    * corrupt account copy fails the run with its Chinese reason instead of silently using another config.
    */
-  private async gatherConfig(index: number, fallback: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private async gatherConfig(index: number, stored: StoredAutomationSettings): Promise<Record<string, unknown>> {
     const fromAccount = await this.ports.accountGatherConfig?.(index);
-    return fromAccount?.config ?? fallback;
+    if (fromAccount) return fromAccount.config;
+    // ★ Never inherited by index alone (docs/APPLICATIONS.md): a config left by a deleted AVD at this index is shown
+    //   for review but never run; a gate refusal pauses a scheduled wake without counting a failure.
+    if (await this.isConfigReplaced(index, stored)) {
+      throw new SchedulerError('AUTOMATION_NOT_READY',
+        `实例 #${index} 的采集配置是这个序号上已删除的旧实例留下的，不会按序号沿用。请打开采集配置核对后点「保存」`, { instanceIndex: index });
+    }
+    return stored.config;
   }
 
   private async sampleTroopPanel(index: number, request: SampleRequest): Promise<PanelSample> {
@@ -1014,7 +1031,7 @@ export class AutomationHost {
     if (instance.status !== 'running') throw new Error(`实例 #${i} 尚未就绪，请先启动并等待 Android 启动完成`);
     if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
     const templateDir = settings.templateDir;
-    const config = normalizeGatherConfig((await this.gatherConfig(i, settings.config)) as Parameters<typeof normalizeGatherConfig>[0]);
+    const config = normalizeGatherConfig((await this.gatherConfig(i, settings)) as Parameters<typeof normalizeGatherConfig>[0]);
     if (!config.enabled) throw new Error('请先启用并保存自动采集配置');
     // ★ No foreground requirement: a game that is not running is cold-started (monkey + look-only wait) by the cycle.
     if (this.disposed) throw new Error('应用正在退出');

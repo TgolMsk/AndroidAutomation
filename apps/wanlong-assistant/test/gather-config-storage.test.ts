@@ -4,7 +4,7 @@
  * account and clears it (original afterAccountBind), the fallback copy is identity-aware, and saving refuses the
  * original validateGatherConfig errors instead of silently clamping them.
  */
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -76,6 +76,102 @@ describe('save-time validation (original validateGatherConfig, not silent clampi
   it('refuses an incompatible version before validation', async () => {
     await expect(host.saveSettings('wanlong', 1, { config: { version: 1 } })).rejects.toThrow('万龙觉醒配置版本不兼容');
   });
+
+  it('refuses wrong types instead of letting normalization turn them into clamped numbers', async () => {
+    await host.saveSettings('wanlong', 1, { templateDir: home, config: { version: 2, enabled: false } });
+    // "9" used to pass (coerce → default 1) and then be stored as 5 (normalize → Number("9") clamped).
+    await expect(host.saveSettings('wanlong', 1, { config: { version: 2, resources: [{ type: 'wood', enabled: true, priority: 1, queues: '9' }] } }))
+      .rejects.toThrow('「resources.wood.queues」必须是数字，当前是 "9"');
+    await expect(host.saveSettings('wanlong', 1, { config: { version: 2, enabled: 'yes' } })).rejects.toThrow('「enabled」只能是 true 或 false');
+    expect((await host.settings('wanlong', 1)).config['enabled']).toBe(false);
+  });
+
+  it('validates the per-resource overrides that normalization would clamp', async () => {
+    await expect(host.saveSettings('wanlong', 1, { templateDir: home, config: {
+      version: 2,
+      resources: [{ type: 'gold', enabled: true, priority: 2, queues: 1, levelPolicy: { mode: 'absolute', level: 7, minLevel: 9, allowRelax: true, maxLevelHardCap: 15 }, minStorage: -1 }],
+    } })).rejects.toThrow('「金币」单独设置的「可放宽到的最低值 9」比「固定搜索下限 7」还高');
+  });
+
+  it('stores the normalization of the validated document (overrides kept, fixed resource set)', async () => {
+    const saved = await host.saveSettings('wanlong', 1, { templateDir: home, config: {
+      version: 2, resources: [{ type: 'iron', enabled: true, priority: 3, queues: 2, maxTravelSeconds: 300 }],
+    } });
+    const iron = (saved.config['resources'] as Array<Record<string, unknown>>).find((item) => item['type'] === 'iron');
+    expect(iron).toMatchObject({ queues: 2, maxTravelSeconds: 300 });
+    expect(saved.config['resources']).toHaveLength(4);
+  });
+});
+
+describe('a broken settings file can be repaired from the gather config page', () => {
+  const fileOf = (index: number) => path.join(home, 'automation', 'wanlong', `${index}.json`);
+  async function writeRaw(index: number, text: string): Promise<void> {
+    await mkdir(path.dirname(fileOf(index)), { recursive: true });
+    await writeFile(fileOf(index), text);
+  }
+
+  it('bad JSON: the page read shows defaults with the reason, saving rebuilds the file and keeps a backup', async () => {
+    await writeRaw(1, '{ not json');
+    const view = await host.settings('wanlong', 1);
+    expect(view.settingsError).toContain('自动化配置无法读取');
+    expect(view.settingsError).toContain('点「保存」即可重建');
+    expect(view.config).toEqual({});
+    // Runs and template-only edits stay strict.
+    await expect(host.instanceSettings('wanlong', 1)).rejects.toThrow('自动化配置无法读取');
+    await expect(host.saveSettings('wanlong', 1, { templateDir: home })).rejects.toThrow('自动化配置无法读取');
+
+    const saved = await host.saveSettings('wanlong', 1, { config: { version: 2, enabled: true } });
+    expect(saved.settingsError).toBeUndefined();
+    expect(saved.config['enabled']).toBe(true);
+    expect(await readFile(`${fileOf(1)}.corrupt`, 'utf8')).toBe('{ not json');
+    expect((await host.instanceSettings('wanlong', 1)).config['enabled']).toBe(true);
+  });
+
+  it('wrong shape: the template set the file still names survives the repair', async () => {
+    await writeRaw(2, JSON.stringify({ version: 7, templateDir: home, config: 'x' }));
+    const view = await host.settings('wanlong', 2);
+    expect(view.settingsError).toContain('自动化配置格式不兼容');
+    expect(view.templateDir).toBe(home);
+    const saved = await host.saveSettings('wanlong', 2, { config: { version: 2 } });
+    expect(saved.settingsError).toBeUndefined();
+    expect(saved.templateDir).not.toBe('');
+  });
+
+  it('account-bound: a broken instance file never hides the account copy, and saving rebuilds both', async () => {
+    const account = await accounts.create('wanlong', { name: '主号' });
+    await host.saveSettings('wanlong', 1, { templateDir: home });
+    await accounts.bind(account.id, 1);
+    await host.saveSettings('wanlong', 1, { config: { version: 2, enabled: true } });
+    await writeRaw(1, JSON.stringify({ version: 1, templateDir: home, config: [] }));
+
+    const view = await host.settings('wanlong', 1);
+    expect(view.configAccount).toEqual({ id: account.id, name: '主号' });
+    expect(view.config['enabled']).toBe(true);
+    expect(view.settingsError).toContain('自动化配置格式不兼容');
+
+    const saved = await host.saveSettings('wanlong', 1, { config: { version: 2, enabled: false } });
+    expect(saved.settingsError).toBeUndefined();
+    expect(saved.configAccount?.name).toBe('主号');
+    expect((await accounts.gatherConfigFor('wanlong', 1))?.config['enabled']).toBe(false);
+    expect((await host.instanceSettings('wanlong', 1)).templateDir).not.toBe('');
+  });
+
+  it('a corrupt account copy shows defaults with accountConfigError (not the instance copy), and saving fixes it', async () => {
+    const account = await accounts.create('wanlong', { name: '主号' });
+    await host.saveSettings('wanlong', 1, { templateDir: home });
+    await accounts.bind(account.id, 1);
+    await host.saveSettings('wanlong', 1, { config: { version: 2, enabled: true } });
+    await accounts.setScriptParams(account.id, 'gather', { configJson: '{ broken' });
+
+    const view = await host.settings('wanlong', 1);
+    expect(view.accountConfigError).toContain('账号「主号」里保存的采集配置已损坏');
+    expect(view.config).toEqual({});
+    expect(view.configAccount).toBeUndefined();
+
+    const saved = await host.saveSettings('wanlong', 1, { config: { version: 2, enabled: true } });
+    expect(saved.accountConfigError).toBeUndefined();
+    expect(saved.configAccount?.name).toBe('主号');
+  });
 });
 
 describe('instance fallback copy is identity-aware', () => {
@@ -91,6 +187,8 @@ describe('instance fallback copy is identity-aware', () => {
     expect(view.config['enabled']).toBe(true);
     // Binding a new account never moves another AVD's config into it.
     expect(await host.instanceGatherConfig('wanlong', 2)).toBeNull();
+    // ★ Runs never use it: the manual run is refused with the Chinese reason until it is re-saved.
+    await expect(host.run('wanlong', 'gather-once', 2)).rejects.toThrow('已删除的旧实例留下的，不会按序号沿用');
     // Re-saving stamps the current AVD.
     await host.saveSettings('wanlong', 2, { config: view.config });
     expect((await host.settings('wanlong', 2)).configReplaced).toBeUndefined();

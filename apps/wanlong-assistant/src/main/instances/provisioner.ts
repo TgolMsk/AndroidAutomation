@@ -246,9 +246,18 @@ export class InstanceProvisioner {
     catch (error) { return [`副本未能继承基础实例的模板集设置：${(error as Error).message}`]; }
     if (!settings.templateDir && Object.keys(settings.config).length === 0) return [];
     const warnings: string[] = [];
+    const hasConfig = Object.keys(settings.config).length > 0;
     for (const record of records) {
-      try { await this.ports.saveSettings(gameId, record.index, { templateDir: settings.templateDir, config: settings.config }); }
-      catch (error) { warnings.push(`实例 #${record.index} 未能继承基础实例的模板集设置：${(error as Error).message}`); }
+      // The template set and the gather config are copied separately: a base config that no longer passes save-time
+      // validation (stored before it existed) must not cost the copy its template set.
+      if (settings.templateDir) {
+        try { await this.ports.saveSettings(gameId, record.index, { templateDir: settings.templateDir }); }
+        catch (error) { warnings.push(`实例 #${record.index} 未能继承基础实例的模板集设置：${(error as Error).message}`); }
+      }
+      if (hasConfig) {
+        try { await this.ports.saveSettings(gameId, record.index, { config: settings.config }); }
+        catch (error) { warnings.push(`实例 #${record.index} 未能继承基础实例的采集配置（打开采集配置核对后保存即可）：${(error as Error).message}`); }
+      }
     }
     return warnings;
   }

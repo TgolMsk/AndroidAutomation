@@ -75,6 +75,9 @@ describe('accounts page model', () => {
     expect(accountCellDisabledReason({ base: true, bound: true, running: false, loginActive: false })).toBeNull();
     expect(accountCellDisabledReason({ base: false, bound: true, running: true, loginActive: false })).toContain('自动采集');
     expect(accountCellDisabledReason({ base: false, bound: true, running: false, loginActive: true })).toContain('正在登录');
+    // Any active run blocks rebinding (original hasRun), a script as much as a gather cycle.
+    expect(accountCellDisabledReason({ base: false, bound: true, running: false, loginActive: false, scriptRunning: true })).toContain('脚本在执行');
+    expect(accountCellDisabledReason({ base: true, bound: false, running: false, loginActive: false, scriptRunning: true })).toContain('脚本在执行');
     expect(isBaseInstance(base, instances[0])).toBe(true);
     expect(isBaseInstance(base, instance(0, 'stopped', 'recycled'))).toBe(false);
   });

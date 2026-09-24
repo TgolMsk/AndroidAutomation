@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   ABSOLUTE_LEVEL_POLICY_DEFAULT, DEFAULT_GATHER_CONFIG, coerceGatherConfig, defaultGatherConfig, defaultLevelPolicy,
-  describeBlockingIssues, describeLevelPolicy, exportGatherConfig, formatSeconds, formatStorage, hasBlockingIssue,
-  importGatherConfig, normalizeGatherConfig, validateGatherConfig, type ConfigIssue, type GatherConfig,
+  describeBlockingIssues, describeLevelPolicy, exportGatherConfig, formatSeconds, formatStorage, gatherConfigTypeIssues,
+  hasBlockingIssue, importGatherConfig, normalizeGatherConfig, validateGatherConfig, validateGatherConfigInput,
+  type ConfigIssue, type GatherConfig,
 } from '../src/wanlong/pure.js';
 
 function cfg(patch: (draft: GatherConfig) => void): GatherConfig {
@@ -195,6 +196,58 @@ describe('validateGatherConfig（原版每条规则的路径与级别）', () =>
     const text = describeBlockingIssues(many)!;
     expect(text.startsWith('采集配置有错误（等 7 处），没有保存：')).toBe(true);
     expect(text.split('；')).toHaveLength(6);
+  });
+});
+
+describe('资源覆盖项与原始输入的类型把关（保存闸门）', () => {
+  it('每种资源单独设置的等级策略 / 最低储量 / 最长行军也按同一套规则校验，路径挂在资源下', () => {
+    const issues = validateGatherConfig(cfg((d) => {
+      const gold = d.resources.find((r) => r.type === 'gold')!;
+      gold.levelPolicy = { mode: 'absolute', level: 7, minLevel: 9, allowRelax: true, maxLevelHardCap: 15 };
+      gold.minStorage = -1;
+      gold.maxTravelSeconds = 90_000;
+    }));
+    expect(at(issues, 'resources.gold.levelPolicy.minLevel')[0]?.message).toContain('「金币」单独设置的「可放宽到的最低值 9」比「固定搜索下限 7」还高');
+    expect(at(issues, 'resources.gold.minStorage')[0]?.message).toBe('「金币」单独设置的最低储量不能是负数。');
+    expect(at(issues, 'resources.gold.maxTravelSeconds')[0]?.level).toBe('error');
+    // 全局策略的路径与文案不变。
+    expect(at(validateGatherConfig(cfg((d) => { d.levelPolicy = { mode: 'absolute', level: 5, minLevel: 6, allowRelax: true, maxLevelHardCap: 15 }; })), 'levelPolicy.minLevel')[0]?.message)
+      .toBe('「可放宽到的最低值 6」比「固定搜索下限 5」还高，放宽将永远无法生效。');
+  });
+
+  it('默认配置、导出的配置、归一化过的配置都没有类型问题', () => {
+    expect(gatherConfigTypeIssues(defaultGatherConfig())).toEqual([]);
+    expect(gatherConfigTypeIssues(JSON.parse(exportGatherConfig(defaultGatherConfig())))).toEqual([]);
+    expect(gatherConfigTypeIssues(normalizeGatherConfig({ resources: [{ type: 'iron', enabled: true, priority: 3, queues: 2, maxTravelSeconds: 300 }] }))).toEqual([]);
+    expect(gatherConfigTypeIssues({ version: 2 })).toEqual([]);
+  });
+
+  it('被 coerce 悄悄换掉的值（类型不对 / 小数 / 认不出的资源 / 重复资源 / 空退避序列）一律报错', () => {
+    const issues = gatherConfigTypeIssues({
+      version: 2,
+      enabled: 'yes',
+      resources: [{ type: 'wood', queues: '9' }, { type: 'wood' }, { type: 'food' }, { type: 'gold', levelPolicy: 'x' }],
+      thresholds: { minStorage: 1.5, allianceTerritory: 'mine' },
+      schedule: { retryBackoffSeconds: [] },
+      safety: 3,
+    });
+    const paths = issues.map((issue) => issue.path);
+    expect(paths).toEqual(expect.arrayContaining([
+      'enabled', 'resources.wood.queues', 'resources.wood', 'resources', 'resources.gold.levelPolicy',
+      'thresholds.minStorage', 'thresholds.allianceTerritory', 'schedule.retryBackoffSeconds', 'safety',
+    ]));
+    expect(issues.every((issue) => issue.level === 'error')).toBe(true);
+    expect(issues.find((issue) => issue.path === 'resources.wood.queues')?.message).toBe('「resources.wood.queues」必须是数字，当前是 "9"。');
+    expect(issues.find((issue) => issue.path === 'thresholds.minStorage')?.message).toBe('「thresholds.minStorage」必须是整数，当前是 1.5。');
+    expect(gatherConfigTypeIssues([])[0]?.message).toBe('采集配置必须是一个 JSON 对象。');
+    expect(gatherConfigTypeIssues({ version: 3 }).map((issue) => issue.path)).toEqual(['version']);
+  });
+
+  it('validateGatherConfigInput = 类型问题 + 还原后的取值问题', () => {
+    const issues = validateGatherConfigInput({ version: 2, enabled: true, resources: [{ type: 'wood', enabled: true, priority: 1, queues: 20 }], safety: { swipeRetry: '2' } });
+    expect(at(issues, 'resources.wood.queues')[0]?.message).toContain('必须在 0 ~ 5 之间');
+    expect(at(issues, 'safety.swipeRetry')[0]?.message).toContain('必须是数字');
+    expect(hasBlockingIssue(validateGatherConfigInput(defaultGatherConfig()))).toBe(false);
   });
 });
 

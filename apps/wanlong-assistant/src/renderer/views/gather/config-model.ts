@@ -13,19 +13,38 @@ import {
 } from '@avdm/automation/wanlong/pure';
 import type { AutomationSettings } from '../../../shared/ipc';
 
-export type GatherConfigOrigin = 'account' | 'instance' | 'default';
+/** `account-broken`: the bound account's copy cannot be parsed, so the form shows defaults (original warning path). */
+export type GatherConfigOrigin = 'account' | 'account-broken' | 'instance' | 'default';
 
 /** Where the shown config came from. */
-export function configOriginOf(settings: Pick<AutomationSettings, 'config' | 'configAccount'>): GatherConfigOrigin {
+export function configOriginOf(settings: Pick<AutomationSettings, 'config' | 'configAccount' | 'accountConfigError'>): GatherConfigOrigin {
   if (settings.configAccount) return 'account';
+  if (settings.accountConfigError) return 'account-broken';
   return Object.keys(settings.config).length > 0 ? 'instance' : 'default';
 }
 
 /** 「当前配置来源」 text (original ORIGIN_TEXT, adapted to the account-or-instance storage). */
 export function originText(origin: GatherConfigOrigin, settings: Pick<AutomationSettings, 'configAccount'>, index: number): string {
   if (origin === 'account') return `存于绑定账号「${settings.configAccount?.name ?? ''}」（accounts.json，跟着账号走）`;
+  if (origin === 'account-broken') return '绑定账号里的那份读不出来，当前显示的是默认配置（保存后覆盖账号里的那份）';
   if (origin === 'instance') return `存于实例 #${index} 的本机设置（未绑定账号）`;
   return '尚未保存过，当前是默认配置';
+}
+
+/**
+ * The stored copies the page could not read (original configStorage warning): the bound account's gather config and
+ * the instance's own settings file. Saving from the page rewrites both; runs refuse until then.
+ */
+export function storageWarnings(settings: Pick<AutomationSettings, 'accountConfigError' | 'settingsError'> | null): string[] {
+  if (!settings) return [];
+  const list: string[] = [];
+  if (settings.accountConfigError) {
+    list.push(`${settings.accountConfigError.replace(/。$/, '')}。下面显示的是默认配置，采集在修好之前不会开跑；核对后点「保存」即可用它覆盖账号里损坏的那份。`);
+  }
+  if (settings.settingsError) {
+    list.push(`实例的本机设置文件读不出来：${settings.settingsError.replace(/。$/, '')}。采集在修好之前不会开跑。`);
+  }
+  return list;
 }
 
 /** Where 「保存」 will write (the drawer's permanent hint). `boundAccount` = the account bound to this AVD, if any. */
@@ -80,7 +99,15 @@ export function describeGatherConfigBadge(entry: GatherConfigEntry | undefined, 
   if (!entry?.settings) {
     return {
       enabled: false, bound, errors: 0, tone: entry?.error ? 'danger' : null,
-      text: entry?.error ? `采集配置读不出来：${entry.error}。打开采集配置恢复默认并保存即可修复。` : '正在读取采集配置…',
+      text: entry?.error ? `采集配置读不出来：${entry.error.replace(/。$/, '')}。打开采集配置核对后点「保存」即可修复。` : '正在读取采集配置…',
+    };
+  }
+  // A copy that cannot be read blocks every run (original: a load failure falls back to defaults and says so).
+  const unreadable = entry.settings.accountConfigError ?? entry.settings.settingsError;
+  if (unreadable) {
+    return {
+      enabled: false, bound, errors: 0, tone: 'danger',
+      text: `采集配置读不出来：${unreadable.replace(/。$/, '')}。打开采集配置核对后点「保存」即可修复。`,
     };
   }
   const config = draftOf(entry.settings);
@@ -98,9 +125,10 @@ export function describeGatherConfigBadge(entry: GatherConfigEntry | undefined, 
     };
   }
   if (entry.settings.configReplaced) {
+    // Runs refuse it (never inherited by index alone), so it is a problem even with auto off.
     return {
-      enabled, bound, errors, tone: autoOn ? 'warning' : null,
-      text: '这份采集配置是这个序号上被删掉的旧实例留下的。点开核对后重新保存一次，它才算这个实例自己的配置。',
+      enabled, bound, errors, tone: autoOn ? 'danger' : 'warning',
+      text: '这份采集配置是这个序号上被删掉的旧实例留下的，采集不会用它（会拒绝开跑）。点开核对后重新保存一次，它才算这个实例自己的配置。',
     };
   }
   if (!enabled) {

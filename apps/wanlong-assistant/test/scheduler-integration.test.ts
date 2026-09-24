@@ -329,11 +329,14 @@ describe('accounts: readiness gate and gather config', () => {
       await vi.waitFor(async () => expect((await host.runs())[0]?.status).toBe('succeeded'));
       expect((runner.runOnce.mock.calls[0] as unknown as [number, { config: { safety: { maxCapturesPerCycle: number } } }])[1].config.safety.maxCapturesPerCycle).toBe(45);
       // A corrupt account copy: a run refuses with the reason (never silently another config); the page still loads
-      // (the instance's copy) so the user can re-save, which repairs the account's copy.
+      // (defaults plus the reason, original loadGatherConfig — never the instance copy posing as the account's) so the
+      // user can re-save, which repairs the account's copy.
       await accounts.setScriptParams(account.id, 'gather', { configJson: '{坏掉的 JSON' });
       await expect(host.run('wanlong', 'gather-once', 1)).rejects.toThrow('已损坏');
       expect(runner.runOnce).toHaveBeenCalledTimes(1);
-      expect(await host.settings('wanlong', 1)).toMatchObject({ config: { safety: { maxCapturesPerCycle: 60 } } });
+      const broken = await host.settings('wanlong', 1);
+      expect(broken.config).toEqual({});
+      expect(broken.accountConfigError).toContain('已损坏');
       await host.saveSettings('wanlong', 1, { config: { version: 2, enabled: true, safety: { maxCapturesPerCycle: 45 } } });
       expect((await host.settings('wanlong', 1)).configAccount).toEqual({ id: account.id, name: '主号' });
       // Unbinding: the instance file applies again (the account keeps its copy for a later bind).

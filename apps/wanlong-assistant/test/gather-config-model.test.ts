@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_GATHER_CONFIG, RESOURCE_LABEL } from '@avdm/automation/wanlong/pure';
 import type { AutomationSettings } from '../src/shared/ipc';
 import {
-  configOriginOf, describeGatherConfigBadge, draftOf, originText, savedMessage, saveTargetText,
+  configOriginOf, describeGatherConfigBadge, draftOf, originText, savedMessage, saveTargetText, storageWarnings,
 } from '../src/renderer/views/gather/config-model';
 import { GATHER_RESOURCE_META, readResourceType } from '../src/renderer/views/gather/resources';
 
@@ -20,6 +20,17 @@ describe('config storage view (account first, instance fallback)', () => {
     expect(originText('default', {}, 3)).toBe('尚未保存过，当前是默认配置');
     expect(saveTargetText('主号', 1)).toBe('配置存在账号「主号」里，跟着账号走。');
     expect(saveTargetText(null, 1)).toContain('这个实例还没绑账号');
+  });
+
+  it('an unreadable account copy says so instead of pretending the instance copy is in effect', () => {
+    const broken = settings({}, { accountConfigError: '账号「主号」里保存的采集配置已损坏，请打开采集配置重新保存。' });
+    expect(configOriginOf(broken)).toBe('account-broken');
+    expect(originText('account-broken', {}, 1)).toContain('绑定账号里的那份读不出来');
+    expect(storageWarnings(broken)[0]).toContain('账号「主号」里保存的采集配置已损坏');
+    expect(storageWarnings(broken)[0]).toContain('点「保存」即可用它覆盖账号里损坏的那份');
+    expect(storageWarnings(settings({}, { settingsError: '自动化配置格式不兼容：/x/1.json。' }))[0]).toContain('实例的本机设置文件读不出来');
+    expect(storageWarnings(settings({ version: 2 }))).toEqual([]);
+    expect(storageWarnings(null)).toEqual([]);
   });
 
   it('the draft of a never-saved instance equals the single default; saved values are kept as they are', () => {
@@ -52,6 +63,13 @@ describe('describeGatherConfigBadge (single implementation for header, cards and
     expect(describeGatherConfigBadge({ settings: settings(enabled, { templateDir: '' }) }, false, false).tone).toBeNull();
     expect(describeGatherConfigBadge({ settings: settings(enabled) }, true, false).tone).toBeNull();
     expect(describeGatherConfigBadge({ error: '自动化配置格式不兼容：/x.json' }, false, false)).toMatchObject({ tone: 'danger' });
+    // Unreadable stored copies block every run: a problem with auto off too, and the text says how to fix it.
+    expect(describeGatherConfigBadge({ settings: settings({}, { accountConfigError: '账号「主号」里保存的采集配置已损坏。' }) }, false, true))
+      .toMatchObject({ tone: 'danger', text: '采集配置读不出来：账号「主号」里保存的采集配置已损坏。打开采集配置核对后点「保存」即可修复。' });
+    expect(describeGatherConfigBadge({ settings: settings({}, { settingsError: '自动化配置无法读取：/x.json' }) }, false, false).tone).toBe('danger');
+    // A config left by a deleted AVD is refused by runs, so it is reported even with auto off.
+    expect(describeGatherConfigBadge({ settings: settings(enabled, { configReplaced: true }) }, false, false).tone).toBe('warning');
+    expect(describeGatherConfigBadge({ settings: settings(enabled, { configReplaced: true }) }, true, false).tone).toBe('danger');
     expect(describeGatherConfigBadge(undefined, true, false)).toMatchObject({ tone: null, text: '正在读取采集配置…' });
   });
 });

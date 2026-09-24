@@ -225,6 +225,62 @@ function atMost(issues: ConfigIssue[], path: string, label: string, v: number, m
 
 const RESOURCE_NAME: Record<GatherResourceType, string> = { wood: '木材', gold: '金币', iron: '铁矿石', mana: '魔水' }
 
+/**
+ * 一份等级策略的校验。全局策略 prefix / who 都是空串（路径就是 levelPolicy.*）；
+ * 资源上的覆盖项 prefix = `resources.<type>.`、who = 「木材」单独设置的。
+ */
+function checkLevelPolicy(issues: ConfigIssue[], prefix: string, who: string, lp: LevelPolicy): void {
+  const at = (field: string) => `${prefix}levelPolicy.${field}`
+  if (lp.mode === 'relative') {
+    range(issues, at('offset'), `${who}相对上限的偏移`, lp.offset, -5, 0)
+    range(issues, at('minLevel'), `${who}下限可放宽到的最低值`, lp.minLevel, 1, 15)
+    range(issues, at('assumedMaxLevel'), `${who}探测失败时假定的上限`, lp.assumedMaxLevel, 1, 15)
+    range(issues, at('maxLevelHardCap'), `${who}上限硬顶`, lp.maxLevelHardCap, 1, 30)
+    if (lp.assumedMaxLevel + lp.offset < lp.minLevel) {
+      issues.push({
+        level: 'warning',
+        path: at('offset'),
+        message:
+          `${who}按当前假定上限 ${lp.assumedMaxLevel} 算出的搜索下限是 ${lp.assumedMaxLevel + lp.offset}，` +
+          `已经低于「可放宽到的最低值 ${lp.minLevel}」，放宽机制形同虚设。`
+      })
+    }
+    // ★ 本工程补：运行期归一化会把这两个值夹到硬顶以下，这里提前报出来。
+    if (Number.isInteger(lp.maxLevelHardCap) && lp.assumedMaxLevel > lp.maxLevelHardCap) {
+      issues.push({
+        level: 'error',
+        path: at('assumedMaxLevel'),
+        message: `${who}「探测失败时假定的上限 ${lp.assumedMaxLevel}」超过了「上限硬顶 ${lp.maxLevelHardCap}」，会被当成识别错误。`
+      })
+    }
+    if (Number.isInteger(lp.maxLevelHardCap) && lp.minLevel > lp.maxLevelHardCap) {
+      issues.push({
+        level: 'error',
+        path: at('minLevel'),
+        message: `${who}「下限可放宽到的最低值 ${lp.minLevel}」超过了「上限硬顶 ${lp.maxLevelHardCap}」。`
+      })
+    }
+  } else {
+    range(issues, at('level'), `${who}固定搜索下限`, lp.level, 1, 15)
+    range(issues, at('minLevel'), `${who}下限可放宽到的最低值`, lp.minLevel, 1, 15)
+    range(issues, at('maxLevelHardCap'), `${who}上限硬顶`, (lp as AbsolutePolicy).maxLevelHardCap, 1, 30)
+    if (lp.minLevel > lp.level) {
+      issues.push({
+        level: 'error',
+        path: at('minLevel'),
+        message: `${who}「可放宽到的最低值 ${lp.minLevel}」比「固定搜索下限 ${lp.level}」还高，放宽将永远无法生效。`
+      })
+    }
+    if (Number.isInteger(lp.maxLevelHardCap) && lp.level > lp.maxLevelHardCap) {
+      issues.push({
+        level: 'error',
+        path: at('level'),
+        message: `${who}「固定搜索下限 ${lp.level}」超过了「上限硬顶 ${lp.maxLevelHardCap}」。`
+      })
+    }
+  }
+}
+
 /** 返回全部问题（不是遇到第一个就停），方便表单一次性把红字标满。 */
 export function validateGatherConfig(cfg: GatherConfig): ConfigIssue[] {
   const issues: ConfigIssue[] = []
@@ -273,53 +329,23 @@ export function validateGatherConfig(cfg: GatherConfig): ConfigIssue[] {
   }
 
   // 等级下限
-  const lp = cfg.levelPolicy
-  if (lp.mode === 'relative') {
-    range(issues, 'levelPolicy.offset', '相对上限的偏移', lp.offset, -5, 0)
-    range(issues, 'levelPolicy.minLevel', '下限可放宽到的最低值', lp.minLevel, 1, 15)
-    range(issues, 'levelPolicy.assumedMaxLevel', '探测失败时假定的上限', lp.assumedMaxLevel, 1, 15)
-    range(issues, 'levelPolicy.maxLevelHardCap', '上限硬顶', lp.maxLevelHardCap, 1, 30)
-    if (lp.assumedMaxLevel + lp.offset < lp.minLevel) {
-      issues.push({
-        level: 'warning',
-        path: 'levelPolicy.offset',
-        message:
-          `按当前假定上限 ${lp.assumedMaxLevel} 算出的搜索下限是 ${lp.assumedMaxLevel + lp.offset}，` +
-          `已经低于「可放宽到的最低值 ${lp.minLevel}」，放宽机制形同虚设。`
-      })
+  checkLevelPolicy(issues, '', '', cfg.levelPolicy)
+
+  // ★ 每种资源单独设置的覆盖项（界面不编辑，但旧配置 / 手改的 JSON / 直接送进来的负载里可能有）：
+  //   运行期 normalizeGatherConfig 同样会把它们夹掉，所以一样要在保存时报出来。
+  for (const r of cfg.resources) {
+    const name = RESOURCE_NAME[r.type] ?? r.type
+    const prefix = `resources.${r.type}.`
+    const who = `「${name}」单独设置的`
+    if (r.levelPolicy) checkLevelPolicy(issues, prefix, who, r.levelPolicy)
+    if (r.minStorage !== undefined) {
+      if (r.minStorage < 0) issues.push({ level: 'error', path: `${prefix}minStorage`, message: `${who}最低储量不能是负数。` })
+      else atMost(issues, `${prefix}minStorage`, `${who}最低储量`, r.minStorage, 100_000_000)
     }
-    // ★ 本工程补：运行期归一化会把这两个值夹到硬顶以下，这里提前报出来。
-    if (Number.isInteger(lp.maxLevelHardCap) && lp.assumedMaxLevel > lp.maxLevelHardCap) {
-      issues.push({
-        level: 'error',
-        path: 'levelPolicy.assumedMaxLevel',
-        message: `「探测失败时假定的上限 ${lp.assumedMaxLevel}」超过了「上限硬顶 ${lp.maxLevelHardCap}」，会被当成识别错误。`
-      })
-    }
-    if (Number.isInteger(lp.maxLevelHardCap) && lp.minLevel > lp.maxLevelHardCap) {
-      issues.push({
-        level: 'error',
-        path: 'levelPolicy.minLevel',
-        message: `「下限可放宽到的最低值 ${lp.minLevel}」超过了「上限硬顶 ${lp.maxLevelHardCap}」。`
-      })
-    }
-  } else {
-    range(issues, 'levelPolicy.level', '固定搜索下限', lp.level, 1, 15)
-    range(issues, 'levelPolicy.minLevel', '下限可放宽到的最低值', lp.minLevel, 1, 15)
-    range(issues, 'levelPolicy.maxLevelHardCap', '上限硬顶', (lp as AbsolutePolicy).maxLevelHardCap, 1, 30)
-    if (lp.minLevel > lp.level) {
-      issues.push({
-        level: 'error',
-        path: 'levelPolicy.minLevel',
-        message: `「可放宽到的最低值 ${lp.minLevel}」比「固定搜索下限 ${lp.level}」还高，放宽将永远无法生效。`
-      })
-    }
-    if (Number.isInteger(lp.maxLevelHardCap) && lp.level > lp.maxLevelHardCap) {
-      issues.push({
-        level: 'error',
-        path: 'levelPolicy.level',
-        message: `「固定搜索下限 ${lp.level}」超过了「上限硬顶 ${lp.maxLevelHardCap}」。`
-      })
+    if (r.maxTravelSeconds !== undefined) {
+      if (r.maxTravelSeconds < 0) {
+        issues.push({ level: 'error', path: `${prefix}maxTravelSeconds`, message: `${who}最长单程行军不能是负数。填 0 表示不限制。` })
+      } else atMost(issues, `${prefix}maxTravelSeconds`, `${who}最长单程行军`, r.maxTravelSeconds, 86_400)
     }
   }
 
@@ -482,6 +508,120 @@ export function describeBlockingIssues(issues: readonly ConfigIssue[]): string |
   const shown = errors.slice(0, 6).map((i) => i.message.replace(/。$/, ''))
   const more = errors.length > shown.length ? `等 ${errors.length} 处` : `共 ${errors.length} 处`
   return `采集配置有错误（${more}），没有保存：${shown.join('；')}。`
+}
+
+// ── 原始输入的类型把关（主进程保存 / 导入用）────────────────────────────────
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
+function shortJson(v: unknown): string {
+  let text: string
+  try {
+    text = JSON.stringify(v) ?? String(v)
+  } catch {
+    text = String(v)
+  }
+  return text.length > 40 ? `${text.slice(0, 40)}…` : text
+}
+
+/** 叶子字段：原始值存在、却和还原后的值不同，说明 coerceGatherConfig 把它换掉（类型不对）或取整了。 */
+function leafIssue(issues: ConfigIssue[], path: string, raw: unknown, coerced: unknown): void {
+  if (raw === undefined || raw === coerced) return
+  let message: string
+  if (typeof coerced === 'number') {
+    message = typeof raw === 'number' && Number.isFinite(raw)
+      ? `「${path}」必须是整数，当前是 ${raw}。`
+      : `「${path}」必须是数字，当前是 ${shortJson(raw)}。`
+  } else if (typeof coerced === 'boolean') {
+    message = `「${path}」只能是 true 或 false，当前是 ${shortJson(raw)}。`
+  } else {
+    message = typeof raw === 'string'
+      ? `「${path}」的取值 ${shortJson(raw)} 无效（不在可选范围内或超长）。`
+      : `「${path}」必须是文字，当前是 ${shortJson(raw)}。`
+  }
+  issues.push({ level: 'error', path, message })
+}
+
+function diffNode(issues: ConfigIssue[], path: string, raw: unknown, coerced: unknown): void {
+  if (raw === undefined) return
+  if (Array.isArray(coerced)) {
+    if (!Array.isArray(raw)) {
+      issues.push({ level: 'error', path, message: `「${path}」必须是一个数组，当前是 ${shortJson(raw)}。` })
+      return
+    }
+    if (raw.length === 0) {
+      issues.push({ level: 'error', path, message: `「${path}」不能为空。` })
+      return
+    }
+    if (raw.length !== coerced.length || raw.some((v, i) => v !== coerced[i])) {
+      issues.push({ level: 'error', path, message: `「${path}」里每一项都必须是数字，当前是 ${shortJson(raw)}。` })
+    }
+    return
+  }
+  if (isPlainObject(coerced)) {
+    if (!isPlainObject(raw)) {
+      issues.push({ level: 'error', path, message: `「${path}」必须是一个对象，当前是 ${shortJson(raw)}。` })
+      return
+    }
+    for (const key of Object.keys(coerced)) diffNode(issues, path ? `${path}.${key}` : key, raw[key], coerced[key])
+    return
+  }
+  leafIssue(issues, path, raw, coerced)
+}
+
+/**
+ * 原始输入里「认得的字段」类型对不对。coerceGatherConfig 为了表单好用，会把类型不对的值换成默认值、
+ * 把小数取整、丢掉认不出的资源 —— 界面上看得见，可 IPC 直接送进来的负载（手改的 JSON、旧版本存下来的）
+ * 就被悄悄改掉了。这里把每一处「被换掉的」都报成错误（路径与 validateGatherConfig 同一套：资源按类型）。
+ */
+export function gatherConfigTypeIssues(raw: unknown): ConfigIssue[] {
+  const issues: ConfigIssue[] = []
+  if (!isPlainObject(raw)) {
+    issues.push({ level: 'error', path: '', message: '采集配置必须是一个 JSON 对象。' })
+    return issues
+  }
+  const coerced = coerceGatherConfig(raw)
+  for (const key of Object.keys(coerced) as (keyof GatherConfig)[]) {
+    if (key === 'version' || key === 'resources') continue
+    diffNode(issues, key, raw[key], coerced[key])
+  }
+  if (raw.version !== undefined && raw.version !== GATHER_CONFIG_VERSION) {
+    issues.push({ level: 'error', path: 'version', message: `配置版本是 ${shortJson(raw.version)}，只认 version = ${GATHER_CONFIG_VERSION}。` })
+  }
+  if (raw.resources === undefined) return issues
+  if (!Array.isArray(raw.resources)) {
+    issues.push({ level: 'error', path: 'resources', message: `「resources」必须是一个数组，当前是 ${shortJson(raw.resources)}。` })
+    return issues
+  }
+  const seen = new Set<string>()
+  for (const entry of raw.resources as unknown[]) {
+    const type = isPlainObject(entry) ? entry.type : undefined
+    if (typeof type !== 'string' || !(GATHER_RESOURCE_ORDER as readonly string[]).includes(type)) {
+      issues.push({ level: 'error', path: 'resources', message: `认不出的资源条目 ${shortJson(entry)}：type 只能是 wood / gold / iron / mana。` })
+      continue
+    }
+    if (seen.has(type)) {
+      issues.push({ level: 'error', path: `resources.${type}`, message: `资源「${RESOURCE_NAME[type as GatherResourceType]}」出现了不止一次。` })
+      continue
+    }
+    seen.add(type)
+    const found = coerced.resources.find((r) => r.type === type)!
+    const { type: _type, ...fields } = found
+    diffNode(issues, `resources.${type}`, entry, fields)
+  }
+  return issues
+}
+
+/**
+ * 保存闸门：原始输入的类型问题 + 还原后的取值问题（主进程保存采集配置前调它，有错误就拒绝，
+ * 存下去的是**这份还原后的文档**再归一化，不会出现「校验过的是一份、存下去的是另一份」）。
+ */
+export function validateGatherConfigInput(raw: unknown): ConfigIssue[] {
+  const typeIssues = gatherConfigTypeIssues(raw)
+  if (!isPlainObject(raw)) return typeIssues
+  return [...typeIssues, ...validateGatherConfig(coerceGatherConfig(raw))]
 }
 
 // ── 便于界面解释的派生说明 ──────────────────────────────────────────────────

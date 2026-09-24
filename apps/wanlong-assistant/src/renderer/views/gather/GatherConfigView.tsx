@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ABSOLUTE_LEVEL_POLICY_DEFAULT, GATHER_RESOURCE_ORDER, defaultGatherConfig, defaultLevelPolicy, describeLevelPolicy,
-  exportGatherConfig, formatSeconds, formatStorage, hasBlockingIssue, importGatherConfig, validateGatherConfig,
+  exportGatherConfig, formatSeconds, formatStorage, gatherConfigTypeIssues, hasBlockingIssue, importGatherConfig, validateGatherConfig,
   type AllianceTerritory, type GatherConfig, type GatherResourceType, type ResourceEntry,
 } from '@avdm/automation/wanlong/pure';
 import type { AutomationSettings } from '../../../shared/ipc';
@@ -14,7 +14,7 @@ import { useToast } from '../../components/Toasts';
 import { ConfigField, ConfigSection, IssueList, NumberInput } from './ConfigField';
 import {
   configOriginOf, draftOf, originText, parseBackoffText, savedMessage, saveTargetText, schedulerMismatch, schedulerSyncPatch,
-  type GatherConfigOrigin,
+  storageWarnings, type GatherConfigOrigin,
 } from './config-model';
 import { useGatherQueues } from './queue-store';
 import { GATHER_RESOURCE_META } from './resources';
@@ -88,6 +88,9 @@ export function GatherConfigView({ gameId, index, boundAccount, autoOn, onSaved,
   }, [gameId, index]);
 
   const origin: GatherConfigOrigin = settings ? configOriginOf(settings) : 'default';
+  const warnings = storageWarnings(settings);
+  /** Saving is the repair for an unreadable or index-inherited copy, so it is allowed without edits. */
+  const needsSave = Boolean(loadError) || warnings.length > 0 || Boolean(settings?.configReplaced);
   const issues = useMemo(() => validateGatherConfig(cfg), [cfg]);
   const blocked = hasBlockingIssue(issues);
   const errorCount = issues.filter((issue) => issue.level === 'error').length;
@@ -153,11 +156,21 @@ export function GatherConfigView({ gameId, index, boundAccount, autoOn, onSaved,
 
   function applyImport(): void {
     try {
-      setCfg(importGatherConfig(ioText));
+      const imported = importGatherConfig(ioText);
+      // Values of the wrong type were replaced by defaults while importing: say which, never silently.
+      const replaced = gatherConfigTypeIssues(JSON.parse(ioText) as unknown);
+      setCfg(imported);
       setDirty(true);
       setIoOpen(false);
       setIoError(null);
-      toast.push({ kind: 'success', title: '已导入，检查无误后点「保存」落盘。' });
+      if (replaced.length > 0) {
+        toast.push({
+          kind: 'warn', title: `已导入，但有 ${replaced.length} 处值不认识，已换成默认值`,
+          detail: `${replaced.slice(0, 4).map((issue) => issue.message.replace(/。$/, '')).join('；')}${replaced.length > 4 ? ' 等' : ''}。检查无误后点「保存」落盘。`,
+        });
+      } else {
+        toast.push({ kind: 'success', title: '已导入，检查无误后点「保存」落盘。' });
+      }
     } catch (error) {
       setIoError(errMsg(error));
     }
@@ -178,13 +191,19 @@ export function GatherConfigView({ gameId, index, boundAccount, autoOn, onSaved,
       {loadError && (
         <div className="notice bad" role="alert">
           <Icon name="alert" />
-          <div>读取已保存的配置失败：{loadError}。下面显示的是默认配置；核对后点「保存」即可用它覆盖掉读不出来的那份。</div>
+          <div>读取已保存的配置失败：{loadError}。下面显示的是默认配置；核对后点「保存」会用它覆盖已保存的那份。</div>
         </div>
       )}
+      {warnings.map((text) => (
+        <div key={text} className="notice bad" role="alert">
+          <Icon name="alert" />
+          <div>{text}</div>
+        </div>
+      ))}
       {settings?.configReplaced && (
         <div className="notice warn" role="status">
           <Icon name="alert" />
-          <div>这份配置是这个序号上已被删除的旧实例留下的（实例 #{index} 已重建）。它现在只是按序号沿用的旧值，核对后点「保存」才算这个实例自己的配置。</div>
+          <div>这份配置是这个序号上已被删除的旧实例留下的（实例 #{index} 已重建），采集不会按序号沿用它、在重新保存之前会拒绝开跑。核对后点「保存」才算这个实例自己的配置。</div>
         </div>
       )}
       <p className="gather-micro">{saveTargetText(boundAccount, index)}</p>
@@ -542,7 +561,7 @@ export function GatherConfigView({ gameId, index, boundAccount, autoOn, onSaved,
         <div className="gather-inline">
           <button type="button" className="btn sm" onClick={openIo}><Icon name="download" />导出 / 导入</button>
           <button type="button" className="btn sm" onClick={() => setResetting(true)}><Icon name="restart" />恢复默认</button>
-          <button type="button" className="btn sm primary" disabled={saving || blocked || (!dirty && !loadError && !settings?.configReplaced)} onClick={() => void save()}>
+          <button type="button" className="btn sm primary" disabled={saving || blocked || (!dirty && !needsSave)} onClick={() => void save()}>
             {saving ? <Spinner size={12} /> : <Icon name="check" />}保存
           </button>
         </div>
