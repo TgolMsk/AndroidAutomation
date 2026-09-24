@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AvdmError } from '@avdm/core';
 import { readLeaseOwner, withLabelledLease } from '../src/main/app/instance-access';
 import type { GameAccount } from '../src/main/automation/accounts/types';
+import { AiRecoveryService } from '../src/main/automation/ai-recover';
 import { PlanService, ScriptRunner } from '../src/main/plans';
 import type { ScriptExecuteOptions } from '../src/main/plans/script-runner';
 import type { AccountPlan, PlanConfig, PlanConfigEvent, PlanHostPort, PlanOverview, PlanTask, PlanTaskState, ScriptDef, ScriptRunSnapshot } from '../src/main/plans/types';
@@ -425,6 +426,44 @@ describe('planner additions', () => {
     expect(w.graces).toEqual([12_000]);
     expect(w.started[0]).toMatchObject({ aiAssist: false, params: { who: 'task', keep: 'account', n: 1 }, source: 'plan', taskId: 't1' });
     expect(w.started[0]?.maxRunMs).toBe(30 * MIN);
+  });
+
+  it('the AI module reads PlanConfig.aiAssist live (composition root: planAiAssist → aiAssistEnabled)', async () => {
+    const w = await scenario([], [account(1, 0)], [script('s1')]);
+    const deviceTouched: string[] = [];
+    const ai = new AiRecoveryService({
+      gameId: GAME, packageName: PKG,
+      advisor: {
+        isActive: () => true,
+        consultFrame: async () => { throw new Error('不该问到模型'); },
+        claimConfirmation: () => false, note: () => undefined,
+        settings: () => ({ minConfidence: 0.7, autoActions: true, autoHarvest: false }),
+      },
+      manager: {
+        getState: async () => { deviceTouched.push('getState'); throw new Error('离线自检：不碰设备'); },
+        device: async () => { throw new Error('离线自检：不碰设备'); },
+      },
+      instanceTemplateSet: async () => null,
+      loadTemplateSet: async () => { throw new Error('unused'); },
+      recognize: async () => false,
+      match: async () => [],
+      updateVerdict: async () => ({ target: null, downloading: false, progress: false }),
+      saveTemplate: async () => { throw new Error('unused'); },
+      planAiAssist: (gameId) => w.service.aiAssistEnabled(gameId),
+      log: () => undefined,
+    });
+    const request = {
+      gameId: GAME, runId: 'r1', instanceIndex: 0, instanceIdentity: 'identity-0', scriptId: 's1', templateSetId: null, templateDir: null,
+      stepId: 'tap-1', reason: '等不到按钮', expectTemplateIds: [], signal: new AbortController().signal,
+    };
+    expect(await w.service.aiAssistEnabled(GAME)).toBe(true);
+    await ai.assistScript(request);
+    expect(deviceTouched).toEqual(['getState']);
+    // Switched off in 「计划设置」: the next consult of a run already going is refused before the device is touched.
+    await w.service.saveConfig(GAME, { aiAssist: false });
+    expect(await w.service.aiAssistEnabled(GAME)).toBe(false);
+    expect(await ai.assistScript(request)).toMatchObject({ handled: false, message: expect.stringContaining('关掉了') });
+    expect(deviceTouched).toEqual(['getState']);
   });
 
   it('pushes plan-changed overviews with flattened rows, queue views and orphan warnings', async () => {

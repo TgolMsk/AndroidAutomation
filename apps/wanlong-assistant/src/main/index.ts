@@ -292,8 +292,9 @@ bootstrapApp({
         const saved = await automation.saveTemplateToSet('wanlong', directory, draft);
         return { id: saved.definition.id, std: saved.std };
       },
-      // Plan config「脚本执行期间允许 AI 介入」: default on until the plans module stores it (DECISIONS A.3).
-      planAiAssist: async (gameId) => ((await plans.overview(gameId)).config as { aiAssist?: unknown }).aiAssist !== false,
+      // The plan config's「脚本执行期间允许 AI 介入」(PlanConfig.aiAssist, default on; DECISIONS A.3), read live at each
+      // consult (original planRunner.getConfig().aiAssist): switching it off stops AI help in runs already going.
+      planAiAssist: (gameId) => plans.aiAssistEnabled(gameId),
       // AI_RISK_BLOCKED / GAME_UPDATE_REQUIRED on every chain (scheduled or manual gather, a sample of any kind, the
       // re-sample after a dispatch, a script run) take the scheduler's one「需要人处理」exit — the same one a scheduled
       // wake uses — whose hook is the alerts module (`alerts.raiseNeedsAttention`): pause first (pause record,

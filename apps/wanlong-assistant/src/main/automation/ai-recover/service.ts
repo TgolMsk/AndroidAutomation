@@ -81,7 +81,7 @@ export interface AiRecoveryDeps {
   updateVerdict(index: number, directory: string, raw: RawFrame, signal?: AbortSignal): Promise<UpdateVerdict>;
   /** Save a learnt template through the template library (change notification invalidates compiled caches). */
   saveTemplate(directory: string, draft: TemplateDraft): Promise<{ id: string; std: number }>;
-  /** Plan config「脚本执行期间允许 AI 介入」(default true until the plans module provides it). */
+  /** Plan config「脚本执行期间允许 AI 介入」(`PlanService.aiAssistEnabled`, default true), read at every script consult. */
   planAiAssist?(gameId: string): Promise<boolean>;
   /**
    * A human must look, on every chain: the host pauses first, then alerts (`EtaScheduler.raiseAttention`). Called
