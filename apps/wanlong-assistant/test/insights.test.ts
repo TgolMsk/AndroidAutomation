@@ -66,7 +66,7 @@ describe('automation insights', () => {
     ]);
   });
 
-  it('keeps failures and the alerts module conclusions in the day ledger, idempotent by id', async () => {
+  it('counts failed runs as cycles only; the ledger holds the alerts module conclusions, idempotent by id', async () => {
     const service = new InsightsService(home);
     const now = Date.now();
     await service.recordCycle(run('bad', 1, now), result('error'), 'scheduled');
@@ -77,8 +77,10 @@ describe('automation insights', () => {
     expect(await service.recordAlert(pause)).toBe(true);
     expect(await service.recordAlert(pause)).toBe(false);
     await service.dispose();
-    expect((await service.days('wanlong', 1, 1))[0]).toMatchObject({ cycles: 1, failed: 1, alerts: 2 });
-    expect((await service.alerts('wanlong', 1)).map((alert) => alert.kind)).toEqual(['consecutiveFailures', 'runFailed']);
+    await service.recordFailure(run('crash', 1, now + 2), new Error('工作线程崩溃'), 'scheduled');
+    // ★ A failed run is no alert (the original alerts only on thresholds): 2 failed cycles, 1 alert.
+    expect((await service.days('wanlong', 1, 1))[0]).toMatchObject({ cycles: 2, failed: 2, alerts: 1 });
+    expect((await service.alerts('wanlong', 1)).map((alert) => alert.kind)).toEqual(['consecutiveFailures']);
   });
 
   it('accepts every alert type of the alerts module (incl. deviceOffline / emulatorFrozen) with evidence', async () => {

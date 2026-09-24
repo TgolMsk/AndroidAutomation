@@ -13,7 +13,10 @@
  *   persists and publishes; no path re-arms an instance with auto off. It never takes the instance lock, so it is safe
  *   from inside a hook that runs in the lock (gather cycle facts, sample results, health probes).
  * ★ `resume()` calls `setAuto(i, true)`, which samples and takes the lock: call it only from IPC or the bot, never
- *   from inside the lock (deadlock).
+ *   from inside the lock (deadlock). It only re-enables what an alert switched off: an instance without an active
+ *   pause is refused (turning auto on for the first time goes through the probe + confirmation gate of the host).
+ * ★ The scheduler's published queue view reads the pause through `pauseInfo()` (`SchedulerHooks.pauseOf`): the record
+ *   is set BEFORE auto goes off (setAuto publishes), and every record change republishes the view (`refreshScheduler`).
  */
 import {
   ALERT_HISTORY_LIMIT, ALERT_SPECS, defaultAlertDetectConfig, emptyPauseState, makeAlertEvent, pauseStateFromEvent,
@@ -44,6 +47,8 @@ export interface AlertCenterPorts {
   resetCounters(index: number): void;
   log(level: AlertLogLevel, message: string, index?: number): void;
   onPauseChanged?(pause: InstancePauseState): void;
+  /** Republish the scheduler's queue view of the instance (its `pause` comes from `pauseInfo()`). */
+  refreshScheduler?(index: number): void;
   onRaised?(record: AlertRecord): void;
   /** Daily ledger (statistics: alerts per day). Info events (resume, test) are not ledger alerts. */
   ledger?(record: AlertRecord): Promise<void>;
@@ -147,8 +152,11 @@ export class AlertCenter {
    * in the background (a network request of up to a minute must not hold the device lock). Never throws.
    */
   async raiseInLock(event: AlertEvent, options: RaiseOptions = {}): Promise<void> {
-    const staged = await this.pauseStep(event, options);
-    this.track(this.deliver(staged.event, staged.pausedNow));
+    const staged = this.pauseStep(event, options);
+    // Tracked from the start (not once the pause is done): `whenIdle()` / `dispose()` never miss a delivery that is
+    // about to begin — the pause record is visible (`isPaused`) before `setAuto(false)` returns.
+    this.track(staged.then((step) => this.deliver(step.event, step.pausedNow)));
+    await staged;
   }
 
   /** Fire and forget (non-pausing events from anywhere). */
@@ -199,22 +207,37 @@ export class AlertCenter {
     });
   }
 
-  /** Switch auto off, then write and publish the pause record at once (the push result is filled in later). */
+  /**
+   * Record the pause in memory, switch auto off, then persist and publish the record at once (the push result is
+   * filled in later). ★ The record comes first: `setAuto` publishes the scheduler's queue view, whose `pause` is read
+   * from `pauseInfo()`; recorded afterwards, the published state would say「not paused」. A failed switch rolls the
+   * record back.
+   */
   private async doPause(event: AlertEvent): Promise<boolean> {
     const index = event.instanceIndex;
+    const previous = this.pauses.get(index);
+    // The identity is looked up after the switch: nothing may delay the pause itself.
+    const pause: StoredPause = { ...pauseStateFromEvent(event, { notified: null, notifyError: null }), instanceIdentity: null };
+    this.pauses.set(index, pause);
     try {
       await this.ports.setAuto(index, false, `${ALERT_SPECS[event.type].title}：${event.reason}`);
     } catch (error) {
+      if (this.pauses.get(index) === pause) {
+        if (previous) this.pauses.set(index, previous);
+        else this.pauses.delete(index);
+      }
+      this.refreshScheduler(index);
       this.log('error', `[告警] 想暂停实例 #${index} 但没成功（自动调度可能还开着，请到采集页手动关闭）：${messageOf(error)}`, index);
       return false;
     }
     let identity: string | null = null;
     try { identity = await this.ports.identityOf(index); } catch { identity = null; }
-    const pause: StoredPause = { ...pauseStateFromEvent(event, { notified: null, notifyError: null }), instanceIdentity: identity };
-    this.pauses.set(index, pause);
+    const current = this.pauses.get(index);
+    const recorded: StoredPause = current?.eventId === pause.eventId ? { ...current, instanceIdentity: identity } : pause;
+    if (current?.eventId === pause.eventId) this.pauses.set(index, recorded);
     this.log('warn', `[告警] 已暂停实例 #${index} 的自动调度：${event.reason}`, index);
     await this.persistPausesQuietly();
-    this.emitPause(pause);
+    this.emitPause(recorded);
     return true;
   }
 
@@ -267,10 +290,17 @@ export class AlertCenter {
   /**
    * The user's 「恢复」 (or the bot's). ★ Only from IPC / the bot, never inside the instance lock: `setAuto(true)` samples
    * and takes the lock. The pause is cleared FIRST so a failing first sample can pause again cleanly.
+   * ★ Only an active pause can be resumed: this path skips the host's first-enable probe + confirmation gate, so it
+   *   may only re-enable what an alert switched off. @throws Chinese when the instance is not paused.
    */
   async resume(index: number): Promise<InstancePauseState> {
     await this.ready;
+    // A pause of a deleted / recreated AVD is void (and must not switch the new one on).
+    await this.reconcileIdentities([index]);
     const before = this.pauses.get(index);
+    if (!before?.paused) {
+      throw new Error(`实例 #${index} 当前没有因异常被暂停，无需恢复。要开启自动调度，请到「采集总览」里打开该实例的自动调度开关（首次开启需要先通过只读探针并确认）。`);
+    }
     const cleared: StoredPause = { ...emptyPauseState(index), instanceIdentity: before?.instanceIdentity ?? null };
     this.pauses.set(index, cleared);
     try { this.ports.resetCounters(index); } catch (error) { this.log('warn', `[告警] 清零实例 #${index} 的失败计数失败：${messageOf(error)}`, index); }
@@ -342,7 +372,13 @@ export class AlertCenter {
   }
 
   private emitPause(pause: InstancePauseState): void {
+    this.refreshScheduler(pause.instanceIndex);
     try { this.ports.onPauseChanged?.(toView(pause)); } catch (error) { this.log('warn', `[告警] 推送暂停态到界面失败：${messageOf(error)}`); }
+  }
+
+  /** The scheduler's published queue view carries the pause (`pauseInfo`): republish it after every record change. */
+  private refreshScheduler(index: number): void {
+    try { this.ports.refreshScheduler?.(index); } catch (error) { this.log('warn', `[告警] 刷新实例 #${index} 的调度视图失败：${messageOf(error)}`, index); }
   }
 
   private async persistPausesQuietly(): Promise<void> {

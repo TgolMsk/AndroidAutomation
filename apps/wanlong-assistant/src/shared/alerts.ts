@@ -682,6 +682,11 @@ export interface TelegramConfigView extends Omit<TelegramConfig, 'botToken'> {
 
 export interface AlertsConfigView extends Omit<AlertsConfig, 'telegram'> {
   telegram: TelegramConfigView;
+  /**
+   * Main only: a bot in this process handles the alert buttons' callbacks. While false, 「允许手机远程操作」 attaches no
+   * buttons (the bot module registers its handler through `NotifyHub.setRemoteControlHandler`). Absent = false.
+   */
+  remoteControlAvailable?: boolean;
 }
 
 /** Fully masked (the app's safeStorage hardening: not even the last four characters leave the main process). */
@@ -1109,7 +1114,10 @@ export function deliveryText(record: Pick<AlertRecord, 'results' | 'suppressed'>
 // 8. Daily ledger kinds (statistics)
 // ══════════════════════════════════════════════════════════════════════════
 
-/** Kinds written by the earlier monitoring / insights code; still readable in old day files, never produced again. */
+/**
+ * Kinds written by the earlier monitoring / insights code; still readable in old day files, never produced again
+ * (`runFailed` was a per-run row: a failed run is now only a cycle fact, counted as `failed` in the day).
+ */
 export const LEGACY_LEDGER_KINDS = ['runFailed', 'circuitBroken', 'recoveryExhausted', 'maintenanceRequired', 'updateRequired'] as const;
 export type LegacyLedgerKind = (typeof LEGACY_LEDGER_KINDS)[number];
 

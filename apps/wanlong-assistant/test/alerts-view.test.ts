@@ -8,8 +8,8 @@ import {
   type AlertRecord,
 } from '../src/shared/alerts';
 import {
-  defaultsKeepingContacts, draftFromView, durationText, isDirty, numberProblems, patchFromDraft, remotePreflight, saveProblems,
-  telegramPreflight,
+  defaultsKeepingContacts, draftFromView, durationText, formDirty, isDirty, numberProblems, patchFromDraft, refillOnView, remotePreflight,
+  saveProblems, telegramPreflight, type AlertsFormState,
 } from '../src/renderer/views/alerts/alert-form';
 import { pauseMeta, pauseTone } from '../src/renderer/views/alerts/PauseBanner';
 import { pauseOf, pausedIndexes, placeholderConfigView, prependRecord, upsertPause } from '../src/renderer/state/alerts';
@@ -29,6 +29,34 @@ describe('settings form helpers', () => {
     expect('botTokenMasked' in draft.telegram || 'botTokenSet' in draft.telegram).toBe(false);
     expect(isDirty(draft, savedView(), '')).toBe(false);
     expect(isDirty(draft, savedView(), ' x ')).toBe(true);
+  });
+
+  it('★ an untouched form takes the config that arrives from main; an edited one is never overwritten', () => {
+    // The card mounted while main was still decrypting (page memory reopened 设置): placeholder defaults on screen.
+    const placeholder = placeholderConfigView();
+    const saved = toAlertsConfigView(mergeAlertsConfig(defaultAlertsConfig(), {
+      telegram: { botToken: TOKEN, chatId: '123456789', enabled: true, subscribedTypes: ['deviceOffline'] },
+      detect: { cycleFailThreshold: 5, freezeRestartEnabled: true },
+    }));
+    let form: AlertsFormState = { draft: draftFromView(placeholder), touched: false };
+    // Differs from the new view, yet not dirty: nothing the user did.
+    expect(isDirty(form.draft, saved, '')).toBe(true);
+    expect(formDirty(form, saved, '')).toBe(false);
+    form = refillOnView(form, placeholder, saved, '') ?? form;
+    expect(form).toEqual({ draft: draftFromView(saved), touched: false });
+    // So a save / the test push's auto-save would send the saved values, never the defaults.
+    expect(patchFromDraft(form.draft, '').telegram).toMatchObject({ enabled: true, chatId: '123456789', subscribedTypes: ['deviceOffline'] });
+    expect(patchFromDraft(form.draft, '').detect).toMatchObject({ cycleFailThreshold: 5, freezeRestartEnabled: true });
+
+    // The user edits; a push from main (e.g. another save) keeps the edits.
+    const edited: AlertsFormState = { draft: { ...form.draft, telegram: { ...form.draft.telegram, chatId: '42' } }, touched: true };
+    expect(formDirty(edited, saved, '')).toBe(true);
+    const pushed = toAlertsConfigView(mergeAlertsConfig(defaultAlertsConfig(), { telegram: { botToken: TOKEN, chatId: '999' } }));
+    expect(refillOnView(edited, saved, pushed, '')).toBeNull();
+    // A typed token is an edit too.
+    expect(refillOnView({ ...form, touched: true }, saved, pushed, TOKEN)).toBeNull();
+    // Edited back to exactly what it was filled from: untouched again, the push applies.
+    expect(refillOnView({ ...form, touched: true }, saved, pushed, '')).toEqual({ draft: draftFromView(pushed), touched: false });
   });
 
   it('sends the token only when typed (absent = keep), trimmed with the contact fields', () => {

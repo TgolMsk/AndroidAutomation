@@ -91,12 +91,13 @@ function sampleEvent(): AlertEvent {
 const tg = new FakeTelegram();
 let waits: number[] = [];
 
-function notifier(logs: string[], p: Partial<TelegramConfig> = {}, fetch: FetchLike = tg.impl): TelegramNotifier {
+function notifier(logs: string[], p: Partial<TelegramConfig> = {}, fetch: FetchLike = tg.impl, controlHandled = false): TelegramNotifier {
   return new TelegramNotifier({
     config: () => telegramConfig(p),
     fetch,
     sleep: async (ms) => { waits.push(ms); },
     log: (level, message) => logs.push(`[${level}] ${message}`),
+    controlHandled: () => controlHandled,
   });
 }
 
@@ -124,10 +125,15 @@ describe('Telegram channel (original section 三)', () => {
     }
   });
 
-  it('adds the remote-control buttons only when remote control is on', async () => {
-    await notifier([], { remoteControlEnabled: true }).send(sampleEvent());
+  it('adds the remote-control buttons only when remote control is on AND a bot handles their callbacks', async () => {
+    await notifier([], { remoteControlEnabled: true }, tg.impl, true).send(sampleEvent());
     const body = JSON.parse(tg.calls[0]!.body) as { reply_markup?: { inline_keyboard: Array<Array<{ callback_data: string }>> } };
     expect(body.reply_markup?.inline_keyboard.flat().map((button) => button.callback_data)).toEqual(['resume:3', 'relaunch:3', 'status:3']);
+    // ★ No handler yet (the bot module is not wired): a button nobody answers would spin forever on the phone.
+    await notifier([], { remoteControlEnabled: true }, tg.impl, false).send(sampleEvent());
+    expect('reply_markup' in (JSON.parse(tg.calls[1]!.body) as Record<string, unknown>)).toBe(false);
+    await notifier([], { remoteControlEnabled: false }, tg.impl, true).send(sampleEvent());
+    expect('reply_markup' in (JSON.parse(tg.calls[2]!.body) as Record<string, unknown>)).toBe(false);
   });
 
   it.each([401, 404])('HTTP %i is a bad token: guidance names @BotFather, one request only, attempts = 1', async (status) => {
@@ -375,6 +381,9 @@ describe('NotifyHub gates and cooldown (original section 五)', () => {
     const unsubscribed = await hub.dispatch(makeAlertEvent({ type: 'needsAttention', instanceIndex: 7, reason: '没订阅' }));
     expect(tg.calls).toHaveLength(0);
     expect(unsubscribed.results[0]?.failure).toBe('unsubscribed');
+    // Chinese for the banner and the history: the type's title, never its id.
+    expect(unsubscribed.results[0]?.message).toContain('「需要人工介入」');
+    expect(unsubscribed.results[0]?.message).not.toContain('needsAttention');
 
     // Gate 3: the cooldown.
     await hub.saveConfig({ telegram: { subscribedTypes: [...defaultAlertsConfig().telegram.subscribedTypes], cooldownSeconds: 600 } });
@@ -440,6 +449,19 @@ describe('NotifyHub gates and cooldown (original section 五)', () => {
     const view = await hub.saveConfig({ telegram: { remoteReadOnlyEnabled: true, authorizedUserId: '987654321' } });
     expect(view.telegram).toMatchObject({ remoteReadOnlyEnabled: true, authorizedUserId: '987654321' });
     expect(await hub.readOnlyBotConfig()).toEqual({ enabled: true, botToken: FAKE_TOKEN, chatId: FAKE_CHAT_ID, userId: '987654321' });
+    // ★ Each bot switch means only what it says: remote control alone never starts the read-only /status + /shot bot.
+    await hub.saveConfig({ telegram: { remoteReadOnlyEnabled: false, remoteControlEnabled: true } });
+    expect(await hub.readOnlyBotConfig()).toMatchObject({ enabled: false, botToken: '' });
+    expect(await hub.remoteBotConfig()).toMatchObject({ enabled: false });
+    // Buttons follow the handler the bot module registers; the view tells the settings card.
+    expect(hub.getConfigView().remoteControlAvailable).toBe(false);
+    const pushedViews: boolean[] = [];
+    hub.onConfigChanged((changed) => pushedViews.push(changed.remoteControlAvailable === true));
+    hub.setRemoteControlHandler(true);
+    hub.setRemoteControlHandler(true);
+    expect(pushedViews).toEqual([true]);
+    expect(hub.getConfigView().remoteControlAvailable).toBe(true);
+    hub.setRemoteControlHandler(false);
     // Clearing the token switches every Telegram function off.
     const cleared = await hub.saveConfig({ telegram: { botToken: '' } });
     expect(cleared.telegram).toMatchObject({ botTokenSet: false, enabled: false, remoteReadOnlyEnabled: false, remoteControlEnabled: false });

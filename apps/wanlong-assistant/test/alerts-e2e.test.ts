@@ -19,6 +19,7 @@ import { SchedulerError } from '../src/main/scheduler/errors';
 import { InstanceLocks } from '../src/main/scheduler/instance-lock';
 import { EtaScheduler } from '../src/main/scheduler/service';
 import type { EtaSchedulerPorts, SampleRequest } from '../src/main/scheduler/types';
+import type { SchedulerQueueState } from '../src/shared/ipc/scheduler';
 
 const PACKAGE = wanlongPlugin.packageName;
 const START = Date.parse('2026-09-24T04:00:00.000Z');
@@ -71,6 +72,11 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
   let pauseEvents: InstancePauseState[];
   let raised: AlertRecord[];
   let ledger: AlertRecord[];
+  /** Every `scheduler-changed` payload the scheduler published. */
+  let published: SchedulerQueueState[];
+  const lastPublished = (index: number) => published.filter((state) => state.instanceIndex === index).at(-1);
+  const pausesFile = () => path.join(home, 'automation', 'wanlong', 'alerts-pauses.json');
+  const historyFile = () => path.join(home, 'automation', 'wanlong', 'alerts-history.json');
 
   const fetch: FetchLike = async (url, init) => {
     calls.push({ url, text: typeof init.body === 'string' ? String((JSON.parse(init.body) as { text: string }).text) : '[FormData]' });
@@ -93,6 +99,7 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
     pauseEvents = [];
     raised = [];
     ledger = [];
+    published = [];
     ports = {
       sample: vi.fn(async (_index: number, req: SampleRequest) => (samples.shift() ?? (async () => panel(5, 5)))(req)),
       healthFrame: vi.fn(async () => ({ raw: frame(), foreground: running ? PACKAGE : 'com.android.launcher3', running })),
@@ -100,6 +107,7 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
     };
     scheduler = new EtaScheduler(home, ports, {
       ownerLease: false, locks: new InstanceLocks(home, { fileLock: async (_path, fn) => fn() }), random: () => 0, log: () => undefined,
+      publish: (state) => published.push(state),
     });
     await scheduler.restore();
     await scheduler.saveConfig({ healthProbeIntervalMin: 0 });
@@ -115,6 +123,7 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
       ledger: async (record) => { ledger.push(record); },
       log: (level, message) => logs.push(`[${level}] ${message}`),
       onPauseChanged: (pause) => pauseEvents.push(pause),
+      refreshSchedulerView: (index) => scheduler.refreshView(index),
       onRaised: (record) => raised.push(record),
       codec, fetch, sleep: async () => undefined, gamePackage: PACKAGE,
     });
@@ -141,6 +150,12 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
     }
     // ★ The pause is in force when the hook returns (before the push finished).
     expect(scheduler.getState(0)).toMatchObject({ auto: false, nextWakeAt: null });
+    // ★ The published queue view agrees with the pause record: the very publish that switched auto off already
+    //   carries the pause (the record is set first), and so does the last one.
+    const switchedOff = published.find((state) => state.instanceIndex === 0 && !state.auto);
+    expect(switchedOff?.pause).toMatchObject({ kind: 'consecutiveFailures' });
+    expect(switchedOff?.pause?.reason).toContain('连续 3 轮');
+    expect(lastPublished(0)).toMatchObject({ auto: false, pause: { kind: 'consecutiveFailures' } });
     expect(scheduler.listWakes().some((wake) => wake.instanceIndex === 0)).toBe(false);
     await alerts.center.whenIdle();
 
@@ -155,7 +170,7 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
     expect(alerts.center.pauseInfo(0)).toMatchObject({ reason: pause.reason, kind: 'consecutiveFailures' });
 
     // Persisted: the pause record and the scheduler's auto flag (a restart does not run on by itself).
-    const stored = JSON.parse(await readFile(path.join(home, 'automation', 'alerts', 'pauses.json'), 'utf8')) as { pauses: Array<Record<string, unknown>> };
+    const stored = JSON.parse(await readFile(pausesFile(), 'utf8')) as { pauses: Array<Record<string, unknown>> };
     expect(stored.pauses.find((item) => item.instanceIndex === 0)).toMatchObject({ paused: true, reason: pause.reason, pausedAt: START, instanceIdentity: CREATED_AT });
     const schedulerFile = JSON.parse(await readFile(path.join(home, 'automation', 'games', 'wanlong', 'scheduler', 'instances', '0.json'), 'utf8')) as { auto: boolean };
     expect(schedulerFile.auto).toBe(false);
@@ -193,11 +208,12 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
     expect(alerts.failures.peek(0)?.cycleFail).toBe(1);
     const after = await alerts.resume(0);
     expect(after.paused).toBe(false);
+    expect(lastPublished(0)).toMatchObject({ auto: true, pause: null });
     expect(alerts.failures.peek(0)).toBeNull();
     expect(scheduler.getState(0).auto).toBe(true);
     expect(scheduler.listWakes().some((wake) => wake.instanceIndex === 0)).toBe(true);
     expect(autoChanges.at(-1)).toEqual([0, true]);
-    const storedAfter = JSON.parse(await readFile(path.join(home, 'automation', 'alerts', 'pauses.json'), 'utf8')) as { pauses: Array<Record<string, unknown>> };
+    const storedAfter = JSON.parse(await readFile(pausesFile(), 'utf8')) as { pauses: Array<Record<string, unknown>> };
     expect(storedAfter.pauses.find((item) => item.instanceIndex === 0)?.paused).toBe(false);
     await alerts.center.whenIdle();
     expect(pushed().some((text) => text.includes('实例已恢复') && text.includes('连续 3 轮'))).toBe(true);
@@ -213,21 +229,58 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
     expect(ledgerAlertOf(ledger[0]!, 'wanlong')).toMatchObject({ gameId: 'wanlong', index: 0, kind: 'consecutiveFailures', severity: 'critical' });
     expect(ledgerAlertOf(raised.find((record) => record.event.type === 'instanceResumed')!, 'wanlong')).toBeNull();
     expect(pauseEvents.some((item) => item.instanceIndex === 0 && item.paused && item.notified === true)).toBe(true);
-    const history = JSON.parse(await readFile(path.join(home, 'automation', 'alerts', 'history.json'), 'utf8')) as { records: unknown[] };
+    const history = JSON.parse(await readFile(historyFile(), 'utf8')) as { records: unknown[] };
     expect(history.records.length).toBeGreaterThanOrEqual(7);
     expect(logs.filter(leaks)).toEqual([]);
     // ★ No file of the alerts module (config ciphertext, cooldown, pauses, history) holds the token.
     for (const name of await readdir(path.join(home, 'automation', 'alerts'))) {
       expect(leaks(await readFile(path.join(home, 'automation', 'alerts', name), 'utf8')), name).toBe(false);
     }
+    for (const file of [pausesFile(), historyFile()]) expect(leaks(await readFile(file, 'utf8')), file).toBe(false);
   });
 
   it('resume fails loudly in Chinese when the scheduler refuses, with the pause already cleared', async () => {
     await alerts.center.raise(makeAlertEvent({ type: 'deviceOffline', instanceIndex: 3, reason: '掉线' }));
-    identity = null;
+    expect(lastPublished(3)?.pause).toMatchObject({ reason: '掉线', kind: 'deviceOffline' });
+    vi.mocked(ports.instance).mockImplementation(async () => ({ status: 'booting', createdAt: CREATED_AT }));
     await expect(alerts.resume(3)).rejects.toThrow('恢复实例 #3 的自动调度失败');
-    // The record was cleared for a new instance identity (null): nothing stays red for a vanished AVD.
+    // Cleared first (a failing first sample must be able to pause again cleanly), and the scheduler view says so.
     expect(alerts.center.getPause(3).paused).toBe(false);
+    expect(lastPublished(3)?.pause).toBeNull();
+  });
+
+  it('resume only re-enables what an alert switched off (never bypasses the first-enable gate)', async () => {
+    // Never paused: refused in Chinese, auto stays off, no 「实例已恢复」 push.
+    await expect(alerts.resume(2)).rejects.toThrow('当前没有因异常被暂停');
+    expect(scheduler.getState(2).auto).toBe(false);
+    await alerts.center.whenIdle();
+    expect(raised.some((record) => record.event.type === 'instanceResumed')).toBe(false);
+    // Paused, then the AVD was recreated: the old pause is void and does not switch the new instance on.
+    await alerts.center.raise(makeAlertEvent({ type: 'deviceOffline', instanceIndex: 2, reason: '掉线' }));
+    identity = '2026-09-20T00:00:00.000Z';
+    await expect(alerts.resume(2)).rejects.toThrow('当前没有因异常被暂停');
+    expect(scheduler.getState(2).auto).toBe(false);
+    expect(lastPublished(2)?.pause).toBeNull();
+  });
+
+  it('a pause that cannot switch auto off is rolled back (the published view never claims it)', async () => {
+    const failing = new AlertsService(home, {
+      setAuto: async () => { throw new Error('调度器没有响应'); },
+      exclusive: async (_i, _w, fn) => fn({ signal: new AbortController().signal }),
+      accountOf: async () => null, identityOf: async () => identity, instanceAlive: async () => ({ alive: true, status: 'running' }),
+      recoveryIo: () => { throw new Error('no'); }, matchTemplates: async (_i, _r, ids) => missing(ids), saveShot: async () => null,
+      refreshSchedulerView: (index) => scheduler.refreshView(index),
+      log: () => undefined, codec, fetch, gamePackage: PACKAGE,
+    });
+    try {
+      scheduler.setHooks({ pauseOf: (index) => failing.center.pauseInfo(index) });
+      const record = await failing.center.raise(makeAlertEvent({ type: 'deviceOffline', instanceIndex: 6, reason: '掉线' }));
+      expect(record.pausedNow).toBe(false);
+      expect(failing.center.isPaused(6)).toBe(false);
+      expect(lastPublished(6)?.pause).toBeNull();
+    } finally {
+      await failing.dispose();
+    }
   });
 
   it('counts failed samples in the lock and pauses as offline (freeze restart off, no freeze evidence)', async () => {

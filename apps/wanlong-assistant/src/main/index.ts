@@ -228,6 +228,8 @@ bootstrapApp({
       },
       log: (level, message, index) => alertLog[level](message, undefined, index),
       onPauseChanged: (pause) => broadcast('alert-pause-changed', pause),
+      // The scheduler's queue view carries the pause (pauseOf): republish it whenever the record changes.
+      refreshSchedulerView: (index) => automation.eta.refreshView(index),
       onRaised: (record) => broadcast('alert-raised', record),
       onConfigChanged: (view) => {
         broadcast('alert-config-changed', view);

@@ -54,6 +54,8 @@ export interface AlertsServicePorts extends Omit<NotifyHubPorts, 'log' | 'onConf
   ledger?(record: AlertRecord): Promise<void>;
   log(level: AlertLogLevel, message: string, index?: number): void;
   onPauseChanged?(pause: InstancePauseState): void;
+  /** `EtaScheduler.refreshView`: republish the queue view after a pause record changed (its `pause` field). */
+  refreshSchedulerView?(index: number): void;
   onRaised?(record: AlertRecord): void;
   onConfigChanged?(view: AlertsConfigView): void;
   gamePackage: string;
@@ -92,6 +94,7 @@ export class AlertsService {
       },
       log,
       ...(ports.onPauseChanged ? { onPauseChanged: ports.onPauseChanged } : {}),
+      ...(ports.refreshSchedulerView ? { refreshScheduler: ports.refreshSchedulerView } : {}),
       ...(ports.onRaised ? { onRaised: ports.onRaised } : {}),
       ...(ports.ledger ? { ledger: ports.ledger } : {}),
     }, ports.now ?? Date.now);
@@ -202,7 +205,7 @@ export class AlertsService {
     else this.center.raiseQuietly(event);
   }
 
-  /** IPC `resumeAlertPause` / the bot. ★ Never from inside the instance lock. */
+  /** IPC `resumeAlertPause` / the bot. ★ Never from inside the instance lock. @throws Chinese when not paused. */
   resume(index: number): Promise<InstancePauseState> {
     return this.center.resume(index);
   }

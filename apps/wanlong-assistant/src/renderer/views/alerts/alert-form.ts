@@ -56,6 +56,30 @@ export function isDirty(draft: AlertsDraft, view: AlertsConfigView, tokenInput: 
   return tokenInput.trim() !== '' || JSON.stringify(draft) !== JSON.stringify(draftFromView(view));
 }
 
+/** The form as the card keeps it: the draft plus whether the user edited it since it was last filled. */
+export interface AlertsFormState {
+  draft: AlertsDraft;
+  touched: boolean;
+}
+
+/**
+ * A config arrived from main (the first real load after the placeholder defaults, a save, an `alert-config-changed`
+ * push). Returns the refilled form, or null to keep the user's edits.
+ * ★ Decided by the user having touched the form (the original's `setDirty` from form edits), never by 「draft ≠ view」:
+ *   an untouched draft always differs from a newly arrived view, so a diff test would keep the placeholder defaults on
+ *   screen and the next save (or the auto-save of 「测试推送」) would overwrite the saved config with them. A form
+ *   edited back to exactly the view it was filled from counts as untouched.
+ */
+export function refillOnView(form: AlertsFormState, previous: AlertsConfigView, next: AlertsConfigView, tokenInput: string): AlertsFormState | null {
+  if (form.touched && isDirty(form.draft, previous, tokenInput)) return null;
+  return { draft: draftFromView(next), touched: false };
+}
+
+/** 「有未保存的改动」: only edits the user made count (a config that arrived meanwhile is not one). */
+export function formDirty(form: AlertsFormState, view: AlertsConfigView, tokenInput: string): boolean {
+  return form.touched && isDirty(form.draft, view, tokenInput);
+}
+
 type RangedKey = keyof typeof ALERT_RANGE;
 
 /** Range problems of the numeric fields (Chinese, one per field) — shown before saving instead of silent clamping. */

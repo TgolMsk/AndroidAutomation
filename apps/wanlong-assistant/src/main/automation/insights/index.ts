@@ -4,11 +4,6 @@ import type { InsightAlert, InsightDay } from './contracts';
 import type { InsightCycleFact } from './stats';
 import { InsightStore } from './store';
 
-function safeMessage(value: unknown): string {
-  const text = value instanceof Error ? value.message : String(value);
-  return text.trim().slice(0, 900) || '自动化运行失败';
-}
-
 function terminalAt(run: AutomationRun): number {
   return run.endedAt !== null && Number.isFinite(run.endedAt) ? run.endedAt : Date.now();
 }
@@ -17,6 +12,9 @@ function terminalAt(run: AutomationRun): number {
  * Durable daily insights (cycles, dispatches, alert counts). Notifications, pauses and alert conclusions belong to
  * the alerts module (`src/main/alerts`), which writes its alerts into this ledger through `recordAlert`. This service
  * never sends ADB input or owns a device.
+ * ★ A failed run is a cycle fact (`failed` in the day), never a ledger alert: the original alerts only on thresholds
+ *   (FailureTracker), so 「告警记录」 and the daily alert count hold real alert conclusions only. The earlier per-run
+ *   `runFailed` rows of old day files stay readable (`LEGACY_LEDGER_KINDS`).
  */
 export class InsightsService {
   private readonly store: InsightStore;
@@ -50,25 +48,14 @@ export class InsightsService {
       })),
     };
     await this.store.addCycle(fact);
-    if (status !== 'failed') return;
-    await this.raise({
-      id: `${run.gameId}:${run.index}:runFailed:${run.runId}`,
-      gameId: run.gameId, index: run.index, kind: 'runFailed', severity: 'warning',
-      at: endedAt, message: safeMessage(result.message), runId: run.runId,
-    });
   }
 
   /** Runner exceptions have no GatherCycleResult but must still appear in daily failure totals. */
-  async recordFailure(run: AutomationRun, error: unknown, source: 'manual' | 'scheduled'): Promise<void> {
+  async recordFailure(run: AutomationRun, _error: unknown, source: 'manual' | 'scheduled'): Promise<void> {
     const endedAt = terminalAt(run);
     await this.store.addCycle({
       runId: run.runId, gameId: run.gameId, index: run.index, source,
       startedAt: run.startedAt, endedAt, outcome: 'error', status: 'failed', dispatches: [],
-    });
-    await this.raise({
-      id: `${run.gameId}:${run.index}:runFailed:${run.runId}`,
-      gameId: run.gameId, index: run.index, kind: 'runFailed', severity: 'warning',
-      at: endedAt, message: safeMessage(error), runId: run.runId,
     });
   }
 
@@ -78,10 +65,6 @@ export class InsightsService {
    */
   async recordAlert(alert: InsightAlert): Promise<boolean> {
     return this.store.addAlert(alert);
-  }
-
-  private async raise(alert: InsightAlert): Promise<void> {
-    await this.store.addAlert(alert);
   }
 
   async dispose(): Promise<void> { /* Every write is awaited by its caller. */ }

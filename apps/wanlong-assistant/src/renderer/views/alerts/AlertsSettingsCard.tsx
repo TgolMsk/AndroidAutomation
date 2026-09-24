@@ -5,12 +5,14 @@
  * ★★ Credentials: main sends a masked view with no `botToken` key. A newly typed token lives only in `tokenInput`
  *    until the save patch carries it (empty input = keep the saved token); it is never stored or logged here.
  * ★ Defaults come from `defaultAlertsConfig()` and ranges from `ALERT_RANGE` — no literal defaults in this file.
- * ★ A dirty form is never overwritten by pushes from main; 「测试推送」 saves a dirty form first (it tests what main has).
+ * ★ A form the user edited is never overwritten by pushes from main; an untouched one always takes the config that
+ *   arrives (the first real load after the placeholder defaults included — `refillOnView`). 「测试推送」 saves a dirty
+ *   form first (it tests what main has). The controls stay disabled until the first load answered.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ALERT_RANGE, ALERT_SPECS, FIELD_LABEL, NOTIFIER_LABEL, SUBSCRIBABLE_ALERT_TYPES, deliveryText, pausesInstance,
-  type AlertDetectConfig, type NotifierId, type NotifyResult,
+  type AlertDetectConfig, type AlertsConfigView, type NotifierId, type NotifyResult,
 } from '../../../shared/alerts';
 import type { FreezeInstanceStatus } from '../../../shared/ipc';
 import { avdm, errMsg } from '../../api';
@@ -23,8 +25,8 @@ import { beijingTime } from '../../format';
 import { saveAlertsConfig, testAlertPush, useAlerts } from '../../state/alerts';
 import type { SettingsCardProps } from '../settings/cards';
 import {
-  defaultsKeepingContacts, draftFromView, durationText, isDirty, patchFromDraft, remotePreflight, saveProblems,
-  telegramPreflight, type AlertsDraft,
+  defaultsKeepingContacts, draftFromView, durationText, formDirty, patchFromDraft, refillOnView, remotePreflight, saveProblems,
+  telegramPreflight, type AlertsDraft, type AlertsFormState,
 } from './alert-form';
 import './alerts.css';
 
@@ -73,19 +75,27 @@ function TestResult({ result }: { result: NotifyResult }) {
 export function AlertsSettingsCard({ visible }: SettingsCardProps) {
   const { config: view, configFromMain, loaded, error, history } = useAlerts();
   const toast = useToast();
-  const [draft, setDraft] = useState<AlertsDraft>(() => draftFromView(view));
+  const [form, setForm] = useState<AlertsFormState>(() => ({ draft: draftFromView(view), touched: false }));
+  const draft = form.draft;
   const [tokenInput, setTokenInput] = useState('');
   const [busy, setBusy] = useState<'save' | 'clear' | NotifierId | 'bot' | null>(null);
   const [testResult, setTestResult] = useState<NotifyResult | null>(null);
   const [problems, setProblems] = useState<string[]>([]);
   const [confirmClear, setConfirmClear] = useState(false);
   const [freeze, setFreeze] = useState<FreezeInstanceStatus[]>([]);
-  const dirty = isDirty(draft, view, tokenInput);
+  const dirty = formDirty(form, view, tokenInput);
 
-  const dirtyRef = useRef(dirty);
-  dirtyRef.current = dirty;
-  // A config pushed from main refills the form unless the user is editing it.
-  useEffect(() => { if (!dirtyRef.current) setDraft(draftFromView(view)); }, [view]);
+  const latest = useRef({ form, tokenInput });
+  latest.current = { form, tokenInput };
+  const shownView = useRef(view);
+  // A config from main (the first real load, a save, a push) refills the form unless the user edited it.
+  useEffect(() => {
+    const previous = shownView.current;
+    shownView.current = view;
+    if (previous === view) return;
+    const refilled = refillOnView(latest.current.form, previous, view, latest.current.tokenInput);
+    if (refilled) setForm(refilled);
+  }, [view]);
 
   // The watchdog's evidence, while the page is shown.
   useEffect(() => {
@@ -97,9 +107,13 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
     return () => { active = false; window.clearInterval(timer); };
   }, [visible]);
 
-  const change = (patch: Partial<AlertsDraft['telegram']>) => setDraft((current) => ({ ...current, telegram: { ...current.telegram, ...patch } }));
-  const changeDetect = (patch: Partial<AlertDetectConfig>) => setDraft((current) => ({ ...current, detect: { ...current.detect, ...patch } }));
-  const disabled = busy !== null;
+  /** Every user edit goes through here: it marks the form as touched. */
+  const edit = (update: (current: AlertsDraft) => AlertsDraft) => setForm((current) => ({ draft: update(current.draft), touched: true }));
+  const change = (patch: Partial<AlertsDraft['telegram']>) => edit((current) => ({ ...current, telegram: { ...current.telegram, ...patch } }));
+  const changeDetect = (patch: Partial<AlertDetectConfig>) => edit((current) => ({ ...current, detect: { ...current.detect, ...patch } }));
+  const filled = (saved: AlertsConfigView) => setForm({ draft: draftFromView(saved), touched: false });
+  // Until main answered, the form shows placeholder defaults: nothing may be saved from them.
+  const disabled = busy !== null || !loaded;
 
   async function save(): Promise<boolean> {
     const blocking = saveProblems(draft, view, tokenInput);
@@ -108,7 +122,7 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
     setBusy('save');
     try {
       const saved = await saveAlertsConfig(patchFromDraft(draft, tokenInput));
-      setDraft(draftFromView(saved));
+      filled(saved);
       // The token reached main; there is no reason to keep it on screen.
       setTokenInput('');
       toast.push({ kind: 'success', title: '通知与推送设置已保存' });
@@ -147,7 +161,7 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
     setBusy('clear');
     try {
       const saved = await saveAlertsConfig({ telegram: { botToken: '' } });
-      setDraft(draftFromView(saved));
+      filled(saved);
       setTokenInput('');
       toast.push({ kind: 'success', title: '已清除保存的 Bot Token，Telegram 推送与机器人都已关闭' });
     } catch (cause) {
@@ -179,7 +193,7 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
     <Card
       title="通知与推送" icon="alert"
       extra={<>
-        <button type="button" className="btn sm" disabled={disabled} onClick={() => { setDraft(defaultsKeepingContacts(draft)); toast.push({ kind: 'info', title: '已填入默认值，点「保存」才会生效（Token、Chat ID 与授权用户 ID 保持不变）' }); }}>恢复默认值</button>
+        <button type="button" className="btn sm" disabled={disabled} onClick={() => { edit(defaultsKeepingContacts); toast.push({ kind: 'info', title: '已填入默认值，点「保存」才会生效（Token、Chat ID 与授权用户 ID 保持不变）' }); }}>恢复默认值</button>
         <button type="button" className="btn sm primary" disabled={disabled || !dirty} onClick={() => void save()}>{busy === 'save' ? <Spinner size={12} /> : <Icon name="check" size={14} />}保存</button>
       </>}
     >
@@ -199,7 +213,7 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
           <div className="alerts-fields is-wide">
             <label className="alerts-field">
               <span>Bot Token {view.telegram.botTokenSet ? `（已配置 ${view.telegram.botTokenMasked}）` : '（未配置）'}</span>
-              <input type="password" autoComplete="off" value={tokenInput} placeholder={tokenPlaceholder} disabled={disabled} onChange={(event) => setTokenInput(event.target.value)} />
+              <input type="password" autoComplete="off" value={tokenInput} placeholder={tokenPlaceholder} disabled={disabled} onChange={(event) => { setTokenInput(event.target.value); setForm((current) => (current.touched ? current : { ...current, touched: true })); }} />
               <small className="alerts-help">
                 在 Telegram 里搜 <strong>@BotFather</strong> → 发 <code>/newbot</code> → 按提示起名字，它会回一行 <code>123456789:AAE…</code>，
                 只复制冒号连着的那一整串（别把前面的「HTTP API:」一起粘进来）。Token 等同于密码：用系统钥匙串加密保存，界面上不显示任何一位，
@@ -227,7 +241,7 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
               help="国内直连 api.telegram.org 经常连不上，需要代理时把这个调大一点。" onChange={(timeoutMs) => change({ timeoutMs })} />
           </div>
           <SwitchRow title="本机通知" help="在 macOS 通知中心也提醒一次（与 Telegram 共用下面的订阅与冷却）。" checked={draft.local.enabled} disabled={disabled}
-            onChange={(enabled) => setDraft((current) => ({ ...current, local: { enabled } }))} />
+            onChange={(enabled) => edit((current) => ({ ...current, local: { enabled } }))} />
           <div className="alerts-field">
             <span>推送哪些事件（不勾的事件照样检测、该暂停照样暂停，只是不推送）</span>
             <div className="alerts-events">
@@ -258,8 +272,13 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
           <h3 className="alerts-section-title">手机机器人<small>只响应上面的 Chat ID 与下面的授权用户</small></h3>
           <SwitchRow title="允许手机查看状态与截图" help="在授权会话里用 /status 查看实例状态，/shot 1 取实例 #1 的当前游戏画面。默认关闭。"
             checked={draft.telegram.remoteReadOnlyEnabled} disabled={disabled} onChange={(remoteReadOnlyEnabled) => change({ remoteReadOnlyEnabled })} />
-          <SwitchRow title="允许手机远程操作" help="打开后，会暂停任务的告警消息下面带「恢复自动调度」「重启游戏并恢复」「查看状态」按钮。默认关闭；按钮由机器人执行，只认授权用户。"
-            checked={draft.telegram.remoteControlEnabled} disabled={disabled} onChange={(remoteControlEnabled) => change({ remoteControlEnabled })} />
+          <SwitchRow
+            title={view.remoteControlAvailable ? '允许手机远程操作' : '允许手机远程操作（机器人模块接入后生效）'}
+            help={view.remoteControlAvailable
+              ? '打开后，会暂停任务的告警消息下面带「恢复自动调度」「重启游戏并恢复」「查看状态」按钮，由机器人执行、只认授权用户。默认关闭；它不会顺带打开上面的查看状态与截图。'
+              : '这一版还没有处理这些按钮的机器人：打开也不会在告警消息下面附加任何按钮，也不会顺带打开上面的查看状态与截图。默认关闭。'}
+            checked={draft.telegram.remoteControlEnabled} disabled={disabled} onChange={(remoteControlEnabled) => change({ remoteControlEnabled })}
+          />
           <label className="alerts-field">
             <span>授权用户 ID</span>
             <input type="text" inputMode="numeric" autoComplete="off" value={draft.telegram.authorizedUserId} placeholder="发命令的 Telegram 用户数字 ID" disabled={disabled}

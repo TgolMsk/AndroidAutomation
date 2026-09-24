@@ -10,7 +10,7 @@
  *    only the bot module (main process) may call `currentTelegramConfig()`.
  */
 import {
-  AlertThrottle, TOKEN_SHAPE, alertsPatchProblems, defaultAlertsConfig, isSubscribed, mergeAlertsConfig,
+  ALERT_SPECS, AlertThrottle, TOKEN_SHAPE, alertsPatchProblems, defaultAlertsConfig, isSubscribed, mergeAlertsConfig,
   normalizeSubscriptions, redactAlertsConfig, renderAlertSummary, renderSuppressedNote, scrubSecret, skippedNotifyResult,
   toAlertsConfigView, validateRemoteBotConfig, validateTelegramConfig, type AlertDetectConfig, type AlertEvent, type AlertType,
   type AlertsConfig, type AlertsConfigPatch, type AlertsConfigView, type NotifierId, type NotifyResult, type TelegramConfig,
@@ -71,6 +71,8 @@ export class NotifyHub {
   /** Serializes config saves and throttle writes inside this process. */
   private chain: Promise<unknown> = Promise.resolve();
   private loaded = false;
+  /** A bot in this process answers the alert buttons' callbacks (`setRemoteControlHandler`). */
+  private remoteControlHandled = false;
   readonly ready: Promise<void>;
 
   constructor(home: string, private readonly ports: NotifyHubPorts = {}) {
@@ -81,6 +83,7 @@ export class NotifyHub {
       ...(ports.sleep ? { sleep: ports.sleep } : {}),
       ...(ports.now ? { now: ports.now } : {}),
       log: (level, message) => this.log(level, message),
+      controlHandled: () => this.remoteControlHandled,
     });
     this.local = new LocalNotifier({ config: () => this.cfg.local, ...(ports.showLocal ? { show: ports.showLocal } : {}), ...(ports.now ? { now: ports.now } : {}) });
     this.channels = [
@@ -146,7 +149,22 @@ export class NotifyHub {
     const view = toAlertsConfigView(this.cfg);
     // A saved but unreadable token still counts as「已配置」so the form keeps saying where it went.
     if (!view.telegram.botTokenSet && this.tokenCiphertext) view.telegram = { ...view.telegram, botTokenSet: true, botTokenMasked: '••••••••' };
-    return view;
+    return { ...view, remoteControlAvailable: this.remoteControlHandled };
+  }
+
+  /**
+   * The bot module says whether it answers the alert buttons' callbacks (`resume:` / `relaunch:` / `status:`, see
+   * `parseAlertCallbackData`). ★ Until one does, 「允许手机远程操作」 attaches no buttons: a button nobody handles
+   * spins forever on the phone. Publishes the view so the settings card can say so.
+   */
+  setRemoteControlHandler(active: boolean): void {
+    if (this.remoteControlHandled === active) return;
+    this.remoteControlHandled = active;
+    const view = this.getConfigView();
+    for (const listener of [...this.listeners]) {
+      try { listener(view); } catch (error) { this.log('warn', `告警配置变更回调抛异常，已忽略：${this.safe(error)}`); }
+    }
+    try { this.ports.onConfigChanged?.(view); } catch { /* A UI push never breaks this. */ }
   }
 
   /** Thresholds for the detectors; ★ never the Telegram half. */
@@ -251,7 +269,7 @@ export class NotifyHub {
         if (!channel.enabled()) {
           result = skippedNotifyResult(channel.id, 'disabled', `${channel.label}开关没有打开，本条只记录在助手里，没有发出去。`, this.now());
         } else if (!isSubscribed(this.cfg.telegram, event.type)) {
-          result = skippedNotifyResult(channel.id, 'unsubscribed', `「${event.type}」这类事件没有被订阅推送（可在设置页勾上）。`, this.now());
+          result = skippedNotifyResult(channel.id, 'unsubscribed', `「${ALERT_SPECS[event.type].title}」这类事件没有被订阅推送（可在设置页勾上）。`, this.now());
         } else {
           const key = `${channel.id}|${event.dedupeKey}`;
           const decision = this.throttle.check(key, this.now());
@@ -362,14 +380,17 @@ export class NotifyHub {
     return this.remoteBotConfig(running);
   }
 
-  /** ★ Main process only: the read-only bot's runtime config (plaintext token). */
+  /**
+   * ★ Main process only: the read-only bot's runtime config (plaintext token). Only 「允许手机查看状态与截图」
+   *   (`remoteReadOnlyEnabled`) starts it: remote control is a separate switch and never turns on /status or /shot
+   *   (DECISIONS A.3: each switch means only what it says).
+   */
   async readOnlyBotConfig(): Promise<ReadOnlyBotConfig> {
     await this.ready;
     const t = this.cfg.telegram;
-    const enabled = t.remoteReadOnlyEnabled || t.remoteControlEnabled;
-    if (!enabled) return { enabled: false, botToken: '', chatId: t.chatId, userId: t.authorizedUserId };
+    if (!t.remoteReadOnlyEnabled) return { enabled: false, botToken: '', chatId: t.chatId, userId: t.authorizedUserId };
     if (validateRemoteBotConfig(t).length > 0) throw new Error('只读机器人配置不完整');
-    return { enabled, botToken: t.botToken, chatId: t.chatId, userId: t.authorizedUserId };
+    return { enabled: true, botToken: t.botToken, chatId: t.chatId, userId: t.authorizedUserId };
   }
 
   /** The loaded flag (tests). */

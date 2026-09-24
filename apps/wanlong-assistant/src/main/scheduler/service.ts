@@ -383,6 +383,16 @@ export class EtaScheduler {
     return this.view(rt ?? newRuntime(index));
   }
 
+  /**
+   * Republish one instance's queue view unchanged (`scheduler-changed`). For state the view derives from a hook: the
+   * alerts module calls it whenever it records or clears a pause (`pauseOf`), so the published `pause` never lags.
+   * Never registers the instance; an invalid index is ignored.
+   */
+  refreshView(index: number): void {
+    if (!Number.isInteger(index) || index < 0 || index > 63) return;
+    this.publish(this.runtimes.get(index) ?? newRuntime(index));
+  }
+
   /** Whether auto scheduling is on for the instance (never creates a runtime). */
   isAuto(index: number): boolean {
     return this.runtimes.get(index)?.state.auto === true;

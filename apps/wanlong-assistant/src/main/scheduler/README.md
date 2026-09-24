@@ -109,7 +109,7 @@ automation.eta.setHooks({
   onAutoChanged: (index, enabled, at, reason) => stats.record(...),        // ★ 暂停 / 恢复事件的唯一来源（只在真的翻转时）
   onNeedsAttention: (index, { code, message }) => alerts.raise(...),       // GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED，已暂停
                                                                             // （没人接时走 AutomationHostHooks.onNeedsAttention → insights 兜底告警）
-  pauseOf: (index) => alerts.pauseInfo(index),                             // 队列视图里的暂停原因
+  pauseOf: (index) => alerts.pauseInfo(index),                             // 队列视图里的暂停原因（记录一变告警模块就调 refreshView(i) 重发）
   log: (level, message) => { ... },
 });
 // ── accounts / AI / kicked ──（账号部分已在组合根接好）
@@ -155,6 +155,7 @@ automation.setHooks({
 | `forget(i)` / `cancelWake(i)` / `listWakes()` | 清空记账 / 只取消本次唤醒 / 所有待唤醒 |
 | `getConfig()` / `saveConfig(patch)` | 全局 `SchedulerConfig`（原版字段与默认值，`SCHEDULER_CONFIG_RANGE` 夹值） |
 | `list()` / `getState(i)` / `isAuto(i)` / `isOperating(i)` | 队列视图 `SchedulerQueueState`（读，不登记实例） |
+| `refreshView(i)` | 原样重发一次队列视图（`scheduler-changed`），给由钩子派生的字段用：告警模块写入 / 清除暂停记录后调它，`pause` 不滞后。不登记实例 |
 | `setHooks(partial)` / `setQueueFreeHook(fn)` | 合并钩子（传 `undefined` 移除一个）；采集交接 |
 | `status()` | `{ owner, message, since }`：本进程是否在管调度（只读时附中文原因）；变化时推 `scheduler-status` |
 

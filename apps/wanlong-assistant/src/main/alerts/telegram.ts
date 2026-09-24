@@ -117,6 +117,12 @@ export interface TelegramNotifierDeps {
   now?(): number;
   /** ★ Every line is scrubbed before it gets here. */
   log?(level: 'debug' | 'info' | 'warn' | 'error', message: string): void;
+  /**
+   * Whether a bot in this process answers the alert buttons' callbacks (`resume:` / `relaunch:` / `status:`).
+   * ★ Buttons are attached only when this says so AND `remoteControlEnabled` is on: a button nobody handles spins
+   *   forever on the phone. Absent = no handler.
+   */
+  controlHandled?(): boolean;
 }
 
 export class TelegramNotifier {
@@ -145,7 +151,8 @@ export class TelegramNotifier {
     const problems = validateTelegramConfig(cfg);
     if (problems.length > 0) return skippedNotifyResult('telegram', 'notConfigured', problems.join('；'), this.now());
     const body = note ? `${renderAlertText(event)}\n${note}` : renderAlertText(event);
-    return this.postWithRetry('sendMessage', () => textPayload(cfg.chatId.trim(), body, buildAlertKeyboard(event, cfg)), cfg);
+    const keyboard = buildAlertKeyboard(event, { remoteControlEnabled: cfg.remoteControlEnabled && (this.deps.controlHandled?.() ?? false) });
+    return this.postWithRetry('sendMessage', () => textPayload(cfg.chatId.trim(), body, keyboard), cfg);
   }
 
   /** A plain text message (the bot module's replies). Never throws. */

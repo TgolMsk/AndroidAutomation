@@ -16,7 +16,7 @@ src/main/alerts/
   kicked.ts           第二层：预留模板（tpl_dlg_kicked / tpl_login_screen / tpl_dlg_maintenance / tpl_dlg_update）单帧匹配；
                       模板缺失 → null，静默降级，绝不抛
   center.ts           AlertCenter：只做动作 —— 先暂停（setAuto(false)）→ 落盘 → 推界面 → 交给推送 → 回填推送结果 / 历史 / 日账
-  records.ts          automation/alerts/{pauses.json, history.json}（容错读、串行原子写）
+  records.ts          automation/wanlong/{alerts-pauses.json, alerts-history.json}（容错读、文件锁 + 串行原子写）
   notifier.ts         NotifyHub：配置 + 三道闸（开关 → 订阅 → 冷却）+ 冷却去重与「期间还发生过 N 次」；不认识「暂停」
   telegram.ts         一条通道：sendMessage / sendPhoto（FormData）、重试分类、429 retry_after、Token 清洗
   local.ts            本机通知（macOS 通知中心；本仓库新增的第二通道）
@@ -35,10 +35,15 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
    挂机稳态下也会涨，拿它判故障必然误报，所以 `detect.ts` 另有一套只数真失败的计数器。
 2. **暂停 = `EtaScheduler.setAuto(i, false)`**：它中止在飞的采样 / 采集、取消唤醒、清 `nextWakeAt`、落盘、推 `scheduler-changed`，
    而且不抢实例锁，可以在锁内的钩子里调。暂停之后没有任何路径会再 rearm。
+   ★ 调度器的队列视图经 `pauseOf` → `AlertCenter.pauseInfo()` 带出暂停原因：暂停记录**先**写进内存再 `setAuto(false)`（它会发布视图），
+   失败就回滚；此后每次暂停记录变化（推送结果回填、恢复、实例被替换作废）都调 `EtaScheduler.refreshView(i)` 重发一次，
+   发布出去的 `pause` 永远与暂停记录一致。
 3. **先暂停，再推送。** 锁内的钩子用 `raiseInLock()`：只 await 暂停这一步，推送在后台跑（最长一分钟的网络请求不占设备锁）。
    推送的一切异常都吞掉，**推送失败绝不影响暂停**；失败原因（已清洗）写进暂停态，横幅上看得到。
 4. **`resume()` 只能从 IPC / 机器人调，绝不能在锁内调**：`setAuto(true)` 会采样、要抢锁。恢复先清暂停态、清失败计数与卡死证据、
    清该实例在各通道的推送冷却，再 `setAuto(true)`，最后补一条 `instanceResumed` 闭环通知。
+   ★ 只恢复告警关掉的：实例没有生效中的暂停（或暂停属于已被删除 / 重建的 AVD）就用中文拒绝 —— 这条路绕过了宿主「首次开启要先过
+   只读探针并确认」的门槛，只能把告警关掉的再打开（与原版的差异，见下表）。
 5. **`onCycleResult` 在失败轮往上抛之前调用**（宿主钩子，锁内），`step === 'G0'` 就是「恢复阶梯用尽」。只数调度轮；手动轮由用户看着。
 6. **默认值只有一份权威：`defaultAlertsConfig()`。** 主进程、渲染进程、测试都 import 它；设置页的上下限来自 `ALERT_RANGE`。
 7. **卡死 ≠ 掉线**：画面纹丝不动 / 截图一直失败、但实例进程还在 → 判卡死。两个触发点都在调度器的实例锁内：健康探针
@@ -51,6 +56,7 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
 - 过 IPC 只送 `toAlertsConfigView()`（类型上就没有 `botToken` 键，打码为全遮 `••••••••`，连后 4 位都不给）。
 - 写日志只写 `redactAlertsConfig()`；每一处 `catch` 先 `scrubSecret(describeThrown(e), token)`；抓异常只取 message + cause，不取 stack。
 - 明文 Token 只有 `NotifyHub.currentTelegramConfig()` / `readOnlyBotConfig()` 两个出口，仅限主进程的机器人模块使用。
+  `readOnlyBotConfig()` 只看「允许手机查看状态与截图」（`remoteReadOnlyEnabled`）：远程操作开关绝不顺带打开 /status、/shot。
 - 改完推送相关代码必须跑 `test/alerts-telegram.test.ts`（含泄露实测：URL 塞进 message / cause / stack / 响应体 / 断流，扫结果、日志、视图、磁盘上每个文件）。
 
 ## 与原版的差异（及原因）
@@ -58,12 +64,14 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
 | 项 | 原版 | 这里 | 原因 |
 |---|---|---|---|
 | 卡死自动重启 | 默认开 | `freezeRestartEnabled` 默认**关**，关着时只推「疑似模拟器卡死」（每段卡死一次），采样连续失败仍按掉线暂停 | DECISIONS A.3：动模拟器的自动化必须显式开启 |
-| 远程控制按钮 | 默认开 | `remoteControlEnabled` / `remoteReadOnlyEnabled` 默认关，需授权用户 ID | DECISIONS A.3 |
+| 远程控制按钮 | 默认开 | `remoteControlEnabled` / `remoteReadOnlyEnabled` 默认关，需授权用户 ID；各管各的（控制开关不会打开只读机器人）；按钮只在有机器人处理回调时才附加（`hub.setRemoteControlHandler(true)`，由机器人模块接入时调用；之前设置页标注「机器人模块接入后生效」） | DECISIONS A.3；没人处理的按钮在手机上会一直转圈 |
+| 恢复 | 任何实例都能 `resume` | 只恢复生效中的暂停，其余用中文拒绝 | 首次开启自动调度要走宿主的只读探针 + 确认门槛（DECISIONS C） |
 | 重启方式 | MuMu `control restart` / 雷电 `quit+launch` | `stop({ force: true })` + `start()`（SIGKILL 保留快照失效标记 → 冷启动） | DECISIONS C：Android Emulator 的 Quick Boot 会把卡住的现场存进快照 |
 | Token 存储 / 打码 | 明文 alerts.json / 显示后 4 位 | safeStorage 密文 / 全遮 | 本仓库原有的钥匙串加固，不回退 |
 | 顶号探针 | 失败现场 + 可能再截一帧 | 只用已经截到的那一帧（失败现场、采样认不出的帧、健康探针帧），分数下限 `max(0.92, 模板阈值)` | 零额外截图；沿用本仓库原监控的安全下限 |
 | 通道 | 只有 Telegram | Telegram + 本机通知（两通道各自冷却键 `channel|实例:类型`） | 本仓库原有本机通知；本机成功不能吞掉 Telegram 的重试 |
-| 历史 | 内存 | `history.json`（≤100 条），并写入统计日账 | 重启后仍能看最近告警 |
+| 历史 | 内存 | `automation/wanlong/alerts-history.json`（≤100 条），并写入统计日账 | 重启后仍能看最近告警 |
+| 日账里的运行失败 | 只在达到阈值时告警 | 同原版：失败的运行只记成当天的 `failed` 周期，不再写 `runFailed` 告警行（旧日文件里的仍可读） | 「告警记录」与每日告警数只含真正的告警结论 |
 | 暂停类型 | — | 新增 `schedulePaused`（就绪门槛拒绝）、调度器 8 次真失败安全阀映射为 `consecutiveFailures` | 本仓库原有的两个暂停来源，统一进暂停横幅 |
 | 开关 | 可无凭据打开 | 开 Telegram / 机器人前必须凭据齐全，清除 Token 同时关掉所有依赖它的开关 | 本仓库原有规则 |
 | 暂停时的开关 | — | 暂停中的实例拒绝手动开启自动调度（提示去横幅点「恢复」） | 恢复要同时清计数与冷却，只有一条路 |
@@ -79,8 +87,11 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
   事件 `alert-pause-changed` / `alert-raised` / `alert-config-changed`。
 - 渲染进程：`useAlerts()` / `usePause(index)` / `resumePause(index)`（`state/alerts.ts`），组件 `PauseBanner` / `PausedInstancesStrip`
   （`views/alerts/PauseBanner.tsx`），外壳徽标 `PausedInstancesBadge`。红色状态只看 `pause.paused === true`，绝不看 `!auto`。
-- 机器人模块：`AlertsService.resume(i)`（锁外）、`hub.currentTelegramConfig()`、`hub.telegramChannel().sendPhoto/sendText`、
-  回调数据 `alertCallbackData` / `parseAlertCallbackData`（`resume:0` / `relaunch:0` / `status:0`，与原版 `bot.ts` 相同）。
+- 机器人模块：`AlertsService.resume(i)`（锁外；没有生效中的暂停会抛中文错误）、`hub.currentTelegramConfig()`、
+  `hub.telegramChannel().sendPhoto/sendText`、回调数据 `alertCallbackData` / `parseAlertCallbackData`（`resume:0` / `relaunch:0` /
+  `status:0`，与原版 `bot.ts` 相同）。★ 开始处理 `callback_query` 时调 `hub.setRemoteControlHandler(true)`（停止时 false），
+  告警消息才会附加按钮，设置页的「机器人模块接入后生效」标注也随之去掉（配置视图的 `remoteControlAvailable`）。
+- 调度器 / 采集界面：队列视图的 `pause`（`SchedulerQueueState.pause`）与暂停记录同步（见铁律 2），也可以用 `usePause(i)`。
 - 统计模块：暂停 / 恢复事件仍只从 `SchedulerHooks.onAutoChanged` 来；告警写进日账走 `ledgerAlertOf()` → `InsightsService.recordAlert()`。
 
 ## 验证

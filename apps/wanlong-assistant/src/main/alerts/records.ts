@@ -1,5 +1,6 @@
 import { readFile, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { withFileLock } from '@avdm/core';
 import {
   ALERT_HISTORY_LIMIT, emptyPauseState, isAlertType, type AlertDetail, type AlertEvent, type AlertRecord, type AlertSeverity,
   type InstancePauseState, type NotifyResult,
@@ -107,10 +108,11 @@ export function sanitizeRecord(raw: unknown): AlertRecord | null {
 }
 
 /**
- * Pause records and alert history: `~/.avdm/automation/alerts/{pauses.json, history.json}` (original
- * `<dataDir>/alerts-pauses.json` and the in-memory history, kept here across restarts). Atomic 0600 writes,
- * serialized; tolerant reads (a corrupt file is moved aside and startup continues with empty state — losing a pause
- * reason is bad, a panel that cannot start is worse).
+ * Pause records and alert history of the game's instances: `~/.avdm/automation/wanlong/alerts-pauses.json` (original
+ * `<dataDir>/alerts-pauses.json`) and `alerts-history.json` (the original kept the history in memory; kept here across
+ * restarts). The global alerts settings stay in `automation/alerts/` (store.ts). Atomic 0600 writes under the file lock
+ * (same convention as config.json / throttle.json), serialized in process; tolerant reads (a corrupt file is moved
+ * aside and startup continues with empty state — losing a pause reason is bad, a panel that cannot start is worse).
  */
 export class AlertRecordsStore {
   readonly pausesFile: string;
@@ -119,8 +121,8 @@ export class AlertRecordsStore {
 
   constructor(home: string, private readonly now: () => number = Date.now) {
     if (!path.isAbsolute(home)) throw new Error('告警数据目录必须是绝对路径');
-    this.pausesFile = path.join(home, 'automation', 'alerts', 'pauses.json');
-    this.historyFile = path.join(home, 'automation', 'alerts', 'history.json');
+    this.pausesFile = path.join(home, 'automation', 'wanlong', 'alerts-pauses.json');
+    this.historyFile = path.join(home, 'automation', 'wanlong', 'alerts-history.json');
   }
 
   async loadPauses(): Promise<{ pauses: StoredPause[]; warnings: string[] }> {
@@ -135,7 +137,7 @@ export class AlertRecordsStore {
   savePauses(pauses: StoredPause[]): Promise<void> {
     const json = `${JSON.stringify({ version: VERSION, pauses }, null, 2)}\n`;
     if (Buffer.byteLength(json) > MAX_PAUSES_BYTES) return Promise.reject(new Error(`暂停状态超过大小上限：${this.pausesFile}`));
-    return this.serialize(() => writePrivateFile(this.pausesFile, json));
+    return this.serialize(() => withFileLock(`${this.pausesFile}.lock`, () => writePrivateFile(this.pausesFile, json)));
   }
 
   async loadHistory(): Promise<{ records: AlertRecord[]; warnings: string[] }> {
@@ -154,7 +156,7 @@ export class AlertRecordsStore {
       kept = kept.slice(0, Math.floor(kept.length / 2));
       json = `${JSON.stringify({ version: VERSION, records: kept })}\n`;
     }
-    return this.serialize(() => writePrivateFile(this.historyFile, json));
+    return this.serialize(() => withFileLock(`${this.historyFile}.lock`, () => writePrivateFile(this.historyFile, json)));
   }
 
   flush(): Promise<void> {
