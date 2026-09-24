@@ -8,8 +8,9 @@
  * ★ 模板来自用户自己的模板集（不进仓库、不进安装包），id 与旧版面板一致：
  *     game-update-message / game-update-confirm / game-update-downloading / game-update-checking
  *   缺哪张就静默停用哪部分判据（detect 返回 null / progress 返回 false），绝不抛。
- *   阈值默认沿用原版校准值（确认按钮 0.96、其余 0.94）；模板集里写了 threshold 就以模板集为准
- *   （不同分辨率的 AVD 可能需要调），但不会低于 GAME_UPDATE_MIN_THRESHOLD —— 双模板 + 相对位置这道闸始终保留。
+ *   阈值以原版校准值为**下限**（确认按钮 0.96、其余 0.94）：模板集里写的 threshold 只有更严时才生效，
+ *   放宽（包括模板库默认写的 0.85）一律按校准值算 —— 双模板 + 相对位置 + 校准阈值这道闸始终保留。
+ *   低分辨率 AVD 的做法是在当前分辨率重裁（同分辨率约 0.99），而不是放宽阈值。
  *
  * ★ 运行位置：采集 worker / 采样 worker（重活不上主线程）。设备操作只用 UpdateContext.io 给的三个能力。
  *
@@ -29,7 +30,6 @@ import {
   GAME_UPDATE_DEFAULT_THRESHOLD,
   GAME_UPDATE_GEOMETRY,
   GAME_UPDATE_LEGACY_ORIGIN,
-  GAME_UPDATE_MIN_THRESHOLD,
   GAME_UPDATE_REQUIRED,
   GAME_UPDATE_ROI,
   GAME_UPDATE_TPL,
@@ -159,7 +159,8 @@ export class GameUpdateRecovery {
         continue
       }
       try {
-        const threshold = Math.max(GAME_UPDATE_MIN_THRESHOLD, def.threshold ?? GAME_UPDATE_DEFAULT_THRESHOLD[k])
+        // 校准值是下限：模板集只能收紧，不能放宽（模板库没填阈值时默认写 0.85，不能让它生效）。
+        const threshold = Math.max(GAME_UPDATE_DEFAULT_THRESHOLD[k], def.threshold ?? 0)
         out[k] = await prepareTemplate(await readTemplatePng(set, id), { ...def, threshold }, ref, 2)
       } catch {
         missing.push(id)

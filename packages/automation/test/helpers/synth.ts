@@ -3,7 +3,7 @@
  * Real game screenshots and templates never enter the repository, so every picture here is generated.
  * All pixels are neutral gray (R = G = B) so every grayscale formula agrees.
  */
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -12,6 +12,20 @@ import type { RawFrame, Rect } from '../../src/index.js';
 export const REF_W = 2560;
 export const REF_H = 1440;
 export const GAME = 'com.lilithgames.samo.android.cn';
+
+const tempDirs: string[] = [];
+
+/** A fresh directory under os.tmpdir(); every test file that creates one registers `afterAll(removeTempDirs)`. */
+export async function tempDir(prefix = 'avdm-wanlong-'): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
+/** Delete every directory created through tempDir()/writeTemplateSet() in this test file. */
+export async function removeTempDirs(): Promise<void> {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+}
 
 /** Deterministic LCG in [0, 1). */
 export function rng(seed: number): () => number {
@@ -143,7 +157,7 @@ export async function writeTemplateSet(
   entries: SynthTemplate[],
   options: { dir?: string; id?: string; packageName?: string | null; refWidth?: number; refHeight?: number } = {},
 ): Promise<string> {
-  const dir = options.dir ?? await mkdtemp(join(tmpdir(), 'avdm-wanlong-synth-'));
+  const dir = options.dir ?? await tempDir('avdm-wanlong-synth-');
   await mkdir(dir, { recursive: true });
   const templates = [];
   for (const entry of entries) {

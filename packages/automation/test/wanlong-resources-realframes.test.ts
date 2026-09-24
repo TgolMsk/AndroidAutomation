@@ -6,18 +6,17 @@
  *                          into a temporary copy from the shots
  * are both set. Otherwise it is skipped.
  */
-import { cp, mkdtemp, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { cp, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TemplateLibrary, matchTemplate, prepareFrame, type AndroidKey, type RawFrame } from '../src/index.js';
 import {
   RESOURCE_SEED_FRAMES, RESOURCE_SEED_LEGACY_FILES, RES_GLYPH, RES_TPL, loadGatherTemplates, readResourceStatsFromFrame,
   readResourceStatsPanel, seedResourceTemplates, type GatherIo, type GatherTemplates, type ResourceSeedFrame,
 } from '../src/wanlong/index.js';
 import { TRUTH } from './helpers/resource-fixture.js';
-import { GAME } from './helpers/synth.js';
+import { GAME, removeTempDirs, tempDir } from './helpers/synth.js';
 
 const SHOTS = process.env.WANLONG_RES_SHOTS;
 const TEMPLATE_DIR = process.env.WANLONG_TEMPLATE_DIR;
@@ -53,17 +52,18 @@ describe.skipIf(!enabled)('resource statistics on real frames (private fixtures)
   let templates: GatherTemplates;
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'avdm-res-real-'));
+    dir = await tempDir('avdm-res-real-');
     await cp(TEMPLATE_DIR!, dir, { recursive: true });
     templates = await loadGatherTemplates({ templateDir: dir });
     if (!templates.hasGlyphs(RES_GLYPH) || !templates.has(RES_TPL.titleResStats)) {
       const frames: Partial<Record<ResourceSeedFrame, Uint8Array>> = {};
       for (const role of RESOURCE_SEED_FRAMES) frames[role] = await readFile(join(SHOTS!, RESOURCE_SEED_LEGACY_FILES[role]));
-      const seeded = await seedResourceTemplates({ library: new TemplateLibrary(await mkdtemp(join(tmpdir(), 'avdm-home-'))), templateDir: dir, frames });
+      const seeded = await seedResourceTemplates({ library: new TemplateLibrary(await tempDir('avdm-home-')), templateDir: dir, frames });
       expect(seeded.failed).toEqual([]);
       templates = await loadGatherTemplates({ templateDir: dir });
     }
   }, 120_000);
+  afterAll(removeTempDirs);
 
   it('UI templates: positive ≥ 0.9 on their own frame, negative < 0.6 elsewhere', async () => {
     const f2 = async (name: string) => prepareFrame(await frame(name), { refWidth: 2560, refHeight: 1440, shrink: 2 });

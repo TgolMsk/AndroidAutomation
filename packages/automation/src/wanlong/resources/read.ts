@@ -87,6 +87,8 @@ export interface ReadFromFrameOptions {
   units?: ResourceUnitTemplates
   /** 模板集目录（与 loadGatherTemplates 同一个）；没传 units 时必填。 */
   templateDir?: string
+  /** 单位字编译失败时的中文提示（原版打 console.warn；流程里接到会话日志）。 */
+  onWarn?: (message: string) => void
 }
 
 /**
@@ -102,7 +104,7 @@ export async function readResourceStatsFromFrame(
   opts: ReadFromFrameOptions = {}
 ): Promise<ResourceSnapshot> {
   const glyphs = templates.requireGlyphs(RES_GLYPH)
-  const units = opts.units ?? (await loadUnits(opts.templateDir))
+  const units = opts.units ?? (await loadUnits(opts.templateDir, opts.onWarn))
   const refW = templates.refWidth
   const refH = templates.refHeight
   const f1 = await prepareFrame(raw, { refW, refH, shrink: 1 })
@@ -145,14 +147,15 @@ export async function readResourceStatsFromFrame(
   return snap
 }
 
-async function loadUnits(templateDir: string | undefined): Promise<ResourceUnitTemplates> {
+/** @throws AppError('TEMPLATE_NOT_FOUND') 没给目录 / 模板集读不出来（中文说明，见 loadResourceUnitTemplates）。 */
+async function loadUnits(templateDir: string | undefined, onWarn?: (message: string) => void): Promise<ResourceUnitTemplates> {
   if (!templateDir) {
     throw new AppError(
       'TEMPLATE_NOT_FOUND',
       '读资源统计需要模板集目录来加载单位字模板（亿/万），请先在「模板」页选择模板集。'
     )
   }
-  return loadResourceUnitTemplates(templateDir)
+  return loadResourceUnitTemplates(templateDir, onWarn)
 }
 
 async function readCell(
@@ -290,7 +293,7 @@ export interface ReadResourceStatsOptions {
  * 读一次「资源统计」表并把游戏还原到主界面。
  *
  * @throws AppError('STEP_FAILED') 预检不过 / 没打开道具页 / 弹窗没出现 / 还原失败（message 都是中文）
- * @throws AppError('TEMPLATE_NOT_FOUND') 必需模板或字形集还没入库（此时一个动作都不发）
+ * @throws AppError('TEMPLATE_NOT_FOUND') 必需模板或字形集还没入库、或模板集目录读不出来（此时一个动作都不发）
  */
 export async function readResourceStatsPanel(opts: ReadResourceStatsOptions): Promise<ResourceSnapshot> {
   const config: GatherConfig = opts.config ?? {
@@ -324,7 +327,7 @@ export async function readResourceStatsPanel(opts: ReadResourceStatsOptions): Pr
       { glyphSet: RES_GLYPH }
     )
   }
-  const units = opts.units ?? (await loadUnits(opts.templateDir))
+  const units = opts.units ?? (await loadUnits(opts.templateDir, (m) => opts.log('warn', m)))
 
   // ① 预检：不在主界面就一次都不点。
   await precheckMainScreen(s)

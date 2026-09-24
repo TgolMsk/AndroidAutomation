@@ -3,10 +3,9 @@
  * the glyph set builds from dig_resstat_*, the 亿 unit compiles separately at shrink=1,
  * seeding crops frames through TemplateLibrary.save (std guard), and missing material is skipped.
  */
-import { mkdtemp, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import { TemplateLibrary, loadTemplateSet, readTemplatePng } from '../src/index.js';
 import {
@@ -14,7 +13,9 @@ import {
   resourceSeedPlan, seedResourceTemplates, type ResourceSeedFrame,
 } from '../src/wanlong/index.js';
 import { writeResourceTemplateSet } from './helpers/resource-fixture.js';
-import { Screen, blockPatch, glyphPatch, writeTemplateSet, type Gray } from './helpers/synth.js';
+import { Screen, blockPatch, glyphPatch, removeTempDirs, tempDir, writeTemplateSet, type Gray } from './helpers/synth.js';
+
+afterAll(removeTempDirs);
 
 describe('resource templates in a gather template set', () => {
   it('builds dig_resstat from the digit-tagged glyphs and keeps units out of it', async () => {
@@ -63,7 +64,7 @@ describe('resource templates in a gather template set', () => {
 
 describe('seedResourceTemplates', () => {
   it('crops the spec bounds out of role-named frames through TemplateLibrary.save, byte-exact', async () => {
-    const home = await mkdtemp(join(tmpdir(), 'avdm-res-seed-'));
+    const home = await tempDir('avdm-res-seed-');
     const library = new TemplateLibrary(home);
     const set = await library.createSet('wanlong', '万龙觉醒', 'com.lilithgames.samo.android.cn', 2560, 1440);
     // One frame per role with a distinct texture painted exactly inside every planned crop.
@@ -102,7 +103,7 @@ describe('seedResourceTemplates', () => {
   });
 
   it('scales the spec crops to smaller 16:9 frames (AVD resolution) and keeps bounds in reference space', async () => {
-    const home = await mkdtemp(join(tmpdir(), 'avdm-res-seed-'));
+    const home = await tempDir('avdm-res-seed-');
     const library = new TemplateLibrary(home);
     const set = await library.createSet('wanlong', '万龙觉醒', 'com.lilithgames.samo.android.cn', 2560, 1440);
     const items = new Screen(2560, 1440, 5);
@@ -117,7 +118,7 @@ describe('seedResourceTemplates', () => {
   });
 
   it('skips entries whose frame was not provided and reports low-variance crops as failures', async () => {
-    const home = await mkdtemp(join(tmpdir(), 'avdm-res-seed-'));
+    const home = await tempDir('avdm-res-seed-');
     const library = new TemplateLibrary(home);
     const set = await library.createSet('wanlong', '万龙觉醒', 'com.lilithgames.samo.android.cn', 2560, 1440);
     const flat = new Screen(2560, 1440, 1);
@@ -132,7 +133,7 @@ describe('seedResourceTemplates', () => {
 
   it('rejects frames that are not 16:9 screenshots', async () => {
     const dir = await writeTemplateSet([]);
-    const library = new TemplateLibrary(await mkdtemp(join(tmpdir(), 'avdm-res-seed-')));
+    const library = new TemplateLibrary(await tempDir('avdm-res-seed-'));
     const odd = new Screen(800, 800, 3);
     const result = await seedResourceTemplates({ library, templateDir: dir, frames: { stats: await odd.png() } });
     expect(result.saved).toEqual([]);

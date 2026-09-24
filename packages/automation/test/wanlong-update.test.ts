@@ -3,11 +3,11 @@
  * so synthetic high-texture stand-ins are placed at the original geometry. With WANLONG_UPDATE_TEMPLATES pointing to
  * the old panel's resources/game-update folder, the same detection cases also run on the real crops.
  */
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TemplateLibrary, loadTemplateSet, type AndroidKey, type RawFrame } from '../src/index.js';
 import {
   AI_RISK_BLOCKED, GAME_UPDATE_DEFAULT_THRESHOLD, GAME_UPDATE_LEGACY_FILES, GAME_UPDATE_REQUIRED, GAME_UPDATE_ROI,
@@ -18,7 +18,9 @@ import {
 import { AppError } from '../src/wanlong/errors.js';
 import { ensureWorldMap } from '../src/wanlong/gather/navigation.js';
 import { GatherSession } from '../src/wanlong/gather/session.js';
-import { GAME, Screen, blockPatch, criticalTemplates, toPng, writeTemplateSet, type Gray, type SynthTemplate } from './helpers/synth.js';
+import {
+  GAME, Screen, blockPatch, criticalTemplates, removeTempDirs, tempDir, toPng, writeTemplateSet, type Gray, type SynthTemplate,
+} from './helpers/synth.js';
 
 // Original crop sizes and positions (message 870×52 @ 844,570; confirm 450×155 @ 1320,827; progress text @ 1010,1207).
 const MESSAGE = blockPatch(870, 52, 301, 32);
@@ -58,6 +60,7 @@ const checking = screen({ text: false, button: false, progress: CHECKING, seed: 
 
 let dir: string;
 beforeAll(async () => { dir = await writeTemplateSet(updateTemplates()); });
+afterAll(removeTempDirs);
 
 function scenario(options: {
   maxWait?: number; frame?: (n: number) => RawFrame; abortAt?: number; foreground?: () => string;
@@ -130,14 +133,40 @@ describe('GameUpdateRecovery.detect / progress', () => {
     expect(await matcher.progress(prompt, true)).toBe(false);
   });
 
-  it('uses the original thresholds unless the manifest overrides them, never below the floor', async () => {
+  it('treats the original thresholds as a floor: the manifest can only tighten them', async () => {
     const defaults = new GameUpdateRecovery({ templateDir: () => dir });
     expect((await defaults.status()).thresholds).toEqual(GAME_UPDATE_DEFAULT_THRESHOLD);
-    const custom = await writeTemplateSet(updateTemplates({ message: { threshold: 0.9 }, confirm: { threshold: 0.5 } }));
-    const tuned = new GameUpdateRecovery({ templateDir: () => custom });
-    expect((await tuned.status()).thresholds).toMatchObject({ message: 0.9, confirm: 0.85, downloading: 0.94 });
+    // TemplateLibrary.save / the template page write 0.85 when no threshold is given: it must not loosen the gate.
+    const loose = await writeTemplateSet(updateTemplates({
+      message: { threshold: 0.85 }, confirm: { threshold: 0.85 }, downloading: { threshold: 0.5 }, checking: { threshold: 0.9 },
+    }));
+    expect((await new GameUpdateRecovery({ templateDir: () => loose }).status()).thresholds).toEqual(GAME_UPDATE_DEFAULT_THRESHOLD);
+    const tighter = await writeTemplateSet(updateTemplates({ message: { threshold: 0.97 }, confirm: { threshold: 0.99 } }));
+    expect((await new GameUpdateRecovery({ templateDir: () => tighter }).status()).thresholds)
+      .toEqual({ message: 0.97, confirm: 0.99, downloading: 0.94, checking: 0.94 });
     const strict = await writeTemplateSet(updateTemplates({ message: { threshold: 1 } }));
     expect(await new GameUpdateRecovery({ templateDir: () => strict }).detect(await promptScreen.rawResized(960, 540))).toBeNull();
+  });
+
+  it('keeps the calibrated confirm gate for templates captured in the app with the default 0.85 threshold', async () => {
+    // A slightly different button (a few blocks inverted, confirm score ≈ 0.91) passes 0.85 but must never authorize the tap.
+    const similar: Gray = { ...CONFIRM, px: CONFIRM.px.slice() };
+    for (let y = 64; y < 96; y++) for (let x = 160; x < 240; x++) similar.px[y * CONFIRM.w + x] = 255 - similar.px[y * CONFIRM.w + x]!;
+    const home = await tempDir('avdm-update-capture-');
+    const library = new TemplateLibrary(home);
+    const set = await library.createSet('wanlong', '万龙觉醒', GAME, 2560, 1440);
+    for (const [key, at] of [['message', { x: 844, y: 570, w: 870, h: 52 }], ['confirm', { x: 1320, y: 827, w: 450, h: 155 }]] as const) {
+      await library.save(set.directory, {
+        id: GAME_UPDATE_TPL[key], name: key, image: await promptScreen.png(), authoredWidth: 2560, authoredHeight: 1440, crop: at,
+      });
+    }
+    const saved = await loadTemplateSet(set.directory);
+    expect(saved.templates.find((t) => t.id === GAME_UPDATE_TPL.confirm)!.threshold).toBe(0.85);
+    const updater = new GameUpdateRecovery({ templateDir: () => set.directory });
+    expect((await updater.status()).thresholds).toMatchObject({ message: 0.94, confirm: 0.96 });
+    expect(await updater.detect(prompt)).toBeTruthy();
+    const lookalike = new Screen(2560, 1440, 21).fill({ x: 600, y: 420, w: 1400, h: 700 }, 238).paste(MESSAGE, 844, 570).paste(similar, 1320, 827);
+    expect(await updater.detect(lookalike.raw())).toBeNull();
   });
 
   it('degrades silently when templates or the template set are missing', async () => {
@@ -404,7 +433,7 @@ describe('G0 integration: createUpdateAwareAdvisor inside ensureWorldMap', () =>
 
 describe('importGameUpdateTemplates', () => {
   it('re-anchors the legacy crops on a 2560×1440 canvas and saves them with the calibrated thresholds and ROIs', async () => {
-    const library = new TemplateLibrary(await mkdtemp(join(tmpdir(), 'avdm-update-import-')));
+    const library = new TemplateLibrary(await tempDir('avdm-update-import-'));
     const set = await library.createSet('wanlong', '万龙觉醒', GAME, 2560, 1440);
     const result = await importGameUpdateTemplates({
       library, templateDir: set.directory,
@@ -422,7 +451,7 @@ describe('importGameUpdateTemplates', () => {
   });
 
   it('rejects crops that do not fit the legacy geometry', async () => {
-    const library = new TemplateLibrary(await mkdtemp(join(tmpdir(), 'avdm-update-import-')));
+    const library = new TemplateLibrary(await tempDir('avdm-update-import-'));
     const set = await library.createSet('wanlong', '万龙觉醒', GAME, 2560, 1440);
     const result = await importGameUpdateTemplates({ library, templateDir: set.directory, crops: { message: await toPng(blockPatch(2000, 52, 5)) } });
     expect(result.saved).toEqual([]);
@@ -435,7 +464,7 @@ describe.skipIf(!REAL)('real calibrated crops (private, WANLONG_UPDATE_TEMPLATES
   it('imports the legacy folder and detects the composited prompt at 2560 / 1280 / 960 widths', async () => {
     const crops = Object.fromEntries(await Promise.all(Object.entries(GAME_UPDATE_LEGACY_FILES)
       .map(async ([k, f]) => [k, await readFile(join(REAL!, f))])));
-    const library = new TemplateLibrary(await mkdtemp(join(tmpdir(), 'avdm-update-real-')));
+    const library = new TemplateLibrary(await tempDir('avdm-update-real-'));
     const set = await library.createSet('wanlong', '万龙觉醒', GAME, 2560, 1440);
     const result = await importGameUpdateTemplates({ library, templateDir: set.directory, crops });
     expect(result.failed).toEqual([]);

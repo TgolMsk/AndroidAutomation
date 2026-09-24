@@ -44,9 +44,12 @@ export interface GatherIo {
   launchApp(packageName: string, cold?: boolean): Promise<void>
   foregroundPackage(): Promise<string | null>
   /**
-   * 冷启动恢复：确认游戏在前台，不在就拉起来（实现见 `src/main/game/launch.ts`，内部用 monkey）。
-   * ★ 模拟器刚开机 / 游戏被系统杀掉时**必须**走它：`launchApp` 底下是 `am start`，
-   *   对《万龙觉醒》会返回成功但进程根本起不来。可选是为了让离线自检里的假 io 不必实现。
+   * 冷启动恢复：确认游戏在前台，不在就拉起来并等到它到前台
+   * （实现见 `packages/automation/src/wanlong/launch.ts` 的 ensureGameForeground；`io.ts` 的 createGatherIo 已接好）。
+   * ★ 《万龙觉醒》只能用 monkey 拉起（`am start -n` 会返回成功但进程根本起不来）：
+   *   目标里 `launchApp` 落到 `@avdm/core` 的 `AdbDevice.startApp(pkg)` **不带 activity** = monkey，与 DevicePort.launchApp 的约定一致。
+   *   模拟器刚开机 / 游戏被系统杀掉时仍优先走本方法 —— 它会等前台、带诊断措辞与中止检查，`launchApp` 只管发命令。
+   *   可选是为了让离线自检里的假 io 不必实现。
    */
   ensureGameForeground?(packageName: string): Promise<GamePresence>
 }

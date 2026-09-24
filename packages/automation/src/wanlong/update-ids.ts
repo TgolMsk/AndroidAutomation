@@ -28,15 +28,17 @@ export const GAME_UPDATE_TPL = {
 
 export type UpdateTemplateKey = keyof typeof GAME_UPDATE_TPL
 
-/** 原版校准阈值（MuMu 2560×1440 无损裁剪）。 */
+/**
+ * 原版校准阈值（MuMu 2560×1440 无损裁剪），同时是**下限**：模板集里的 threshold 只能比它更严，放宽一律不生效。
+ * ★ 模板页 / TemplateLibrary.save 没填阈值时会写默认 0.85 —— 若让它生效，唯一会自动点「确定」的这道闸就比原版松了。
+ *   在当前 AVD 分辨率上重裁的模板同分辨率匹配约 0.99，不需要放宽。
+ */
 export const GAME_UPDATE_DEFAULT_THRESHOLD: Readonly<Record<UpdateTemplateKey, number>> = {
   message: 0.94,
   confirm: 0.96,
   downloading: 0.94,
   checking: 0.94
 }
-/** 模板集可以放宽阈值，但不得低于这个值（与模板库默认阈值一致）。 */
-export const GAME_UPDATE_MIN_THRESHOLD = 0.85
 
 /** 搜索范围（2560×1440 参考坐标）。 */
 export const GAME_UPDATE_ROI: Readonly<Record<'message' | 'confirm' | 'progress', Rect>> = {

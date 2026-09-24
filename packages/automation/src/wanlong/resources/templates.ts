@@ -11,6 +11,7 @@
 import { realpath } from 'node:fs/promises'
 import sharp from 'sharp'
 import type { PreparedTemplate, Rect, TemplateSet } from '../../contracts.js'
+import { AppError } from '../errors.js'
 import type { TemplateLibrary } from '../../template-library.js'
 import { loadTemplateSet, readTemplatePng } from '../../templates.js'
 import { prepareTemplate } from '../../vision.js'
@@ -53,13 +54,24 @@ const unitCache = new Map<string, UnitCacheEntry>()
  *
  * @param templateDir 调用方选定的模板集目录（与 loadGatherTemplates 同一个）
  * @param onWarn 编译失败时的中文提示（可选；不传就静默，结果里照样有 missing）
+ * @throws AppError('TEMPLATE_NOT_FOUND') 模板集目录不存在 / 读不了 / 清单损坏（中文说明，不外泄原始 Node 错误）
  */
 export async function loadResourceUnitTemplates(
   templateDir: string,
   onWarn?: (message: string) => void
 ): Promise<ResourceUnitTemplates> {
-  const directory = await realpath(templateDir)
-  const set = await loadTemplateSet(directory)
+  let directory: string
+  let set: TemplateSet
+  try {
+    directory = await realpath(templateDir)
+    set = await loadTemplateSet(directory)
+  } catch (e) {
+    throw new AppError(
+      'TEMPLATE_NOT_FOUND',
+      `读取模板集「${templateDir}」失败（${describeSetError(e)}），加载不了单位字模板（亿/万）。请在「模板」页重新选择模板集。`,
+      { templateDir }
+    )
+  }
   const ids = [RES_TPL.unitYi, RES_TPL.unitWan]
   const defs = ids.map((id) => set.templates.find((t) => t.id === id) ?? null)
   const signature = JSON.stringify([set.id, set.refWidth, set.refHeight, defs])
@@ -204,4 +216,14 @@ function scaleRect(r: Rect, sx: number, sy: number, maxW: number, maxH: number):
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
+}
+
+/** 模板集读不出来的原因（常见的 Node 错误码翻成人话，其余原样给 message —— loadTemplateSet 自己的校验本来就是中文）。 */
+function describeSetError(e: unknown): string {
+  const code = (e as { code?: unknown } | null)?.code
+  if (code === 'ENOENT') return '目录不存在或缺少 manifest.json'
+  if (code === 'EACCES' || code === 'EPERM') return '没有读取权限'
+  if (code === 'ENOTDIR') return '路径不是目录'
+  if (e instanceof SyntaxError) return 'manifest.json 不是有效的 JSON'
+  return errMsg(e)
 }

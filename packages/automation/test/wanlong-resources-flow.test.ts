@@ -2,14 +2,18 @@
  * Port of scripts/resources-offline-check.ts 【六】: the full 道具 → 资源 → 资源统计 flow over a scripted GatherIo.
  * Screens advance only on input, like the original ScriptedIo. A virtual clock makes every wait instant.
  */
-import { beforeAll, describe, expect, it } from 'vitest';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AndroidKey, RawFrame, Rect } from '../src/index.js';
 import {
   loadGatherTemplates, readResourceStatsPanel, snapshotRow, type GatherIo, type GatherTemplates,
 } from '../src/wanlong/index.js';
 import type { AppError } from '../src/wanlong/errors.js';
 import { TRUTH, TRUTH_VALUES, buildScreens, writeResourceTemplateSet, type ResourceScreens } from './helpers/resource-fixture.js';
-import { GAME, blockPatch, type Screen } from './helpers/synth.js';
+import { GAME, blockPatch, removeTempDirs, tempDir, type Screen } from './helpers/synth.js';
+
+afterAll(removeTempDirs);
 
 class ScriptedIo implements GatherIo {
   cursor = 0;
@@ -202,6 +206,26 @@ describe('readResourceStatsPanel', () => {
     expect(r.error?.message).toContain('导入资源统计模板');
     expect(io.actions).toEqual([]);
     expect(io.captures).toBe(0);
+  });
+
+  it('refuses before any input with a Chinese hint when the template directory cannot be read', async () => {
+    const io = new ScriptedIo([screens.map]);
+    const r = await run(io, { templateDir: join(await tempDir('avdm-res-gone-'), 'no-such-set') });
+    expect(r.error?.code).toBe('TEMPLATE_NOT_FOUND');
+    expect(r.error?.message).toContain('请在「模板」页重新选择模板集');
+    expect(r.error?.message).not.toContain('ENOENT');
+    expect(io.actions).toEqual([]);
+    expect(io.captures).toBe(0);
+  });
+
+  it('logs a unit template that fails to compile as a warning in the flow log', async () => {
+    const broken = await writeResourceTemplateSet({
+      extra: [{ id: 'tpl_btn_close_popup', image: blockPatch(64, 64, 4242), bounds: { x: 1960, y: 300, w: 64, h: 64 }, threshold: 0.8 }],
+    });
+    await writeFile(join(broken, 'tpl_resstat_unit_yi.png'), Buffer.from('definitely not a png'));
+    const io = new ScriptedIo([screens.map, screens.items, screens.dialog, screens.items, screens.map]);
+    const r = await run(io, { templateDir: broken });
+    expect(r.logs.some((l) => l.startsWith('warn:单位字模板「tpl_resstat_unit_yi」编译失败'))).toBe(true);
   });
 
   it('stops without input when the run is already cancelled', async () => {

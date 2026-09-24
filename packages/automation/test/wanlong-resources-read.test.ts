@@ -2,15 +2,20 @@
  * Port of scripts/resources-offline-check.ts 【五】 on synthetic frames: the 8-cell table reads exactly,
  * a non-table frame yields 8 explained nulls without throwing, and a missing glyph never becomes a wrong value.
  */
-import { beforeAll, describe, expect, it } from 'vitest';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   emptyResourceSnapshot, loadGatherTemplates, loadResourceUnitTemplates, mergeSnapshots, readResourceStatsFromFrame,
   snapshotRow, type GatherTemplates, type ResourceSnapshot,
 } from '../src/wanlong/index.js';
 import { TRUTH, TRUTH_VALUES, buildScreens, writeResourceTemplateSet, type TableValues } from './helpers/resource-fixture.js';
+import { removeTempDirs, tempDir } from './helpers/synth.js';
 
 let dir: string;
 let templates: GatherTemplates;
+
+afterAll(removeTempDirs);
 
 beforeAll(async () => {
   dir = await writeResourceTemplateSet();
@@ -104,6 +109,29 @@ describe('readResourceStatsFromFrame', () => {
       .rejects.toMatchObject({ code: 'TEMPLATE_NOT_FOUND' });
     await expect(readResourceStatsFromFrame(buildScreens().dialog.raw(), templates, 0, 1))
       .rejects.toMatchObject({ code: 'TEMPLATE_NOT_FOUND' });
+  });
+
+  it('turns an unreadable template set into a guiding Chinese error, not a raw Node error', async () => {
+    const gone = join(await tempDir('avdm-res-gone-'), 'no-such-set');
+    const missing = readResourceStatsFromFrame(buildScreens().dialog.raw(), templates, 0, 1, { templateDir: gone });
+    await expect(missing).rejects.toMatchObject({ code: 'TEMPLATE_NOT_FOUND', detail: { templateDir: gone } });
+    await expect(missing).rejects.toThrow(/目录不存在或缺少 manifest\.json.*请在「模板」页重新选择模板集/);
+    await expect(missing).rejects.not.toThrow(/ENOENT/);
+    const corrupt = await tempDir('avdm-res-corrupt-');
+    await writeFile(join(corrupt, 'manifest.json'), '{ not json');
+    await expect(loadResourceUnitTemplates(corrupt)).rejects.toThrow(/manifest\.json 不是有效的 JSON/);
+  });
+
+  it('reports a unit template that fails to compile through onWarn (the original console.warn)', async () => {
+    const broken = await writeResourceTemplateSet();
+    await writeFile(join(broken, 'tpl_resstat_unit_yi.png'), Buffer.from('definitely not a png'));
+    const warnings: string[] = [];
+    const snap = await readResourceStatsFromFrame(buildScreens().items.raw(), templates, 0, 1, {
+      templateDir: broken, onWarn: (m) => warnings.push(m),
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^单位字模板「tpl_resstat_unit_yi」编译失败，已跳过：/);
+    expect(snap.warnings.some((w) => w.includes('单位字模板缺「亿」「万」'))).toBe(true);
   });
 });
 
