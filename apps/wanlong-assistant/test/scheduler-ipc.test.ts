@@ -13,6 +13,7 @@ function fakeAutomation() {
     listWakes: vi.fn(() => []),
     cancelWake: vi.fn(),
     forget: vi.fn(async () => undefined),
+    status: vi.fn(() => ({ gameId: 'wanlong', owner: false, message: '另一个万龙助手进程正在管理自动采集调度', since: 1 })),
   };
   const automation = { eta, setSchedule: vi.fn(async () => ({ enabled: true })) };
   return { automation, eta, ctx: { automation: automation as unknown as AutomationHost, sender: {} as never } };
@@ -30,6 +31,8 @@ describe('scheduler IPC handlers', () => {
     await expect(schedulerHandlers.schedulerCancelWake(ctx, 'wanlong', 1)).resolves.toBeUndefined();
     await schedulerHandlers.schedulerForget(ctx, 'wanlong', 1);
     expect(eta.forget).toHaveBeenCalledWith(1);
+    await expect(schedulerHandlers.schedulerStatus(ctx, 'wanlong')).resolves.toMatchObject({ owner: false, message: expect.stringContaining('另一个') });
+    await expect(schedulerHandlers.schedulerStatus(ctx, 'other')).rejects.toThrow();
     await expect(schedulerHandlers.schedulerState(ctx, 'wanlong', -1)).rejects.toThrow();
     await expect(schedulerHandlers.schedulerStates(ctx, 'unknown-game')).rejects.toThrow();
   });

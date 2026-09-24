@@ -6,7 +6,9 @@ import type { AndroidKey, ProbeReport, RawFrame } from '@avdm/automation';
 import { ensureGameForeground, type GamePresence, type SerializedError } from '@avdm/automation/wanlong';
 import { SchedulerError, abortError, codeOf, messageOf, sleep, throwIfAborted } from './errors';
 import type { LogLevel } from './types';
-import type { MainToWorker, VisionJobResult, VisionJobSpec, VisionRequest, WorkerToMain } from './vision-protocol';
+import type {
+  MainToWorker, VisionJobResult, VisionJobSpec, VisionQuery, VisionQueryResult, VisionRequest, WorkerToMain,
+} from './vision-protocol';
 
 /** After an abort, the worker gets this long to report back before it is terminated (its cache is lost). */
 const ABORT_GRACE_MS = 5_000;
@@ -16,8 +18,13 @@ const DEFAULT_IDLE_MS = 30 * 60_000;
 const MAX_HOOK_MS = 30 * 60_000;
 /** Taps per `input tap …; sleep …` shell command (original chunking). */
 const TAPS_PER_SHELL = 32;
-/** Whitelisted pre-approval actions per job (the sampler ladder uses each at most once; cancel may follow twice). */
-const WHITELIST_BUDGET = { closePopup: 1, exitCancel: 2, probeBack: 1 } as const;
+/**
+ * Whitelisted pre-approval actions per job (the sampler ladder uses each at most once; cancel may follow twice;
+ * the gather pre-gate ladder may consult the advisor twice).
+ */
+const WHITELIST_BUDGET = { closePopup: 1, exitCancel: 2, probeBack: 1, advise: 2 } as const;
+/** A read-only query (recognize / match on a frame main holds) never takes longer than this. */
+const DEFAULT_QUERY_TIMEOUT_MS = 60_000;
 
 /** The subset of `@avdm/core` AdbDevice a vision job drives. */
 export interface VisionDevice {
@@ -44,6 +51,11 @@ export interface VisionJobContext {
    * in the foreground, the same AVD). Rejects with the Chinese refusal.
    */
   approve(probe: ProbeReport): Promise<void>;
+  /**
+   * The same AVD still runs at this index (`getState` + `record.createdAt`): checked before every input, next to the
+   * foreground package. Throws a Chinese reason.
+   */
+  assertInstance?(): Promise<void>;
   /** Monkey launch of `packageName` is allowed (cold-start recovery). */
   allowColdStart: boolean;
   log?(level: LogLevel, message: string): void;
@@ -62,10 +74,17 @@ export interface VisionWorkerLike {
   terminate(): Promise<number>;
 }
 
+interface PendingQuery {
+  resolve(result: VisionQueryResult): void;
+  reject(error: Error): void;
+}
+
 interface Slot {
   worker: VisionWorkerLike;
   job: ((message: WorkerToMain) => void) | null;
   onExit: ((error: Error) => void) | null;
+  /** Read-only queries in flight on this worker (they never occupy `job`). */
+  queries: Map<number, PendingQuery>;
   idle?: NodeJS.Timeout;
   dead: boolean;
 }
@@ -105,6 +124,7 @@ export class VisionWorkerPool {
   private readonly entry: string;
   private readonly idleMs: number;
   private nextJobId = 1;
+  private nextQueryId = 1;
   private disposed = false;
 
   constructor(options: VisionWorkerPoolOptions = {}) {
@@ -138,12 +158,47 @@ export class VisionWorkerPool {
     return new Job(this, index, slot, jobId, spec, ctx).start();
   }
 
+  /**
+   * A read-only question about a frame main already holds (is it a known screen? where do these templates match?),
+   * answered with the instance worker's cached compiled set. ★ Works while a job of that instance is running — the
+   * AI recover path and the kicked probe ask from hooks the running sample / cycle is awaiting, so a second job
+   * would only ever get CONCURRENCY_LIMIT. No device access, no approval, no instance lock needed.
+   */
+  query(index: number, query: VisionQuery, signal?: AbortSignal, timeoutMs = DEFAULT_QUERY_TIMEOUT_MS): Promise<VisionQueryResult> {
+    if (this.disposed) return Promise.reject(new SchedulerError('RUN_ABORTED', '助手正在退出'));
+    if (signal?.aborted) return Promise.reject(abortError(signal));
+    const slot = this.slotFor(index);
+    if (slot.idle) { clearTimeout(slot.idle); slot.idle = undefined; }
+    const queryId = this.nextQueryId++;
+    const { frame, transfer } = copyFrame(query.frame);
+    return new Promise<VisionQueryResult>((resolve, reject) => {
+      let timer: NodeJS.Timeout | undefined;
+      const settle = (): void => {
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        slot.queries.delete(queryId);
+        if (!slot.job && slot.queries.size === 0 && !slot.dead) this.released(index, slot, false);
+      };
+      const onAbort = (): void => { settle(); reject(abortError(signal!)); };
+      slot.queries.set(queryId, {
+        resolve: (result) => { settle(); resolve(result); },
+        reject: (error) => { settle(); reject(error); },
+      });
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(() => { settle(); reject(new SchedulerError('TIMEOUT', '图像识别超时')); }, timeoutMs);
+      timer.unref?.();
+      try { slot.worker.postMessage({ type: 'query', queryId, query: { ...query, frame } }, transfer); }
+      catch (error) { settle(); reject(new SchedulerError('UNKNOWN', `无法联系视觉工作线程：${messageOf(error)}`)); }
+    });
+  }
+
   /** @internal */
   released(index: number, slot: Slot, kill: boolean): void {
     slot.job = null;
     slot.onExit = null;
     if (kill || slot.dead) { void this.kill(index, slot); return; }
-    if (this.disposed) return;
+    if (this.disposed || slot.queries.size > 0) return;
+    if (slot.idle) clearTimeout(slot.idle);
     slot.idle = setTimeout(() => { void this.kill(index, slot); }, this.idleMs);
     slot.idle.unref?.();
   }
@@ -152,13 +207,27 @@ export class VisionWorkerPool {
     const existing = this.slots.get(index);
     if (existing && !existing.dead) return existing;
     const worker = this.workerFactory(this.entry);
-    const slot: Slot = { worker, job: null, onExit: null, dead: false };
-    worker.on('message', (message) => slot.job?.(message));
-    worker.on('error', (error) => { slot.dead = true; slot.onExit?.(error); });
+    const slot: Slot = { worker, job: null, onExit: null, queries: new Map(), dead: false };
+    const failQueries = (error: Error): void => {
+      for (const pending of [...slot.queries.values()]) pending.reject(error);
+    };
+    worker.on('message', (message) => {
+      if (message.type === 'queryResult') {
+        const pending = slot.queries.get(message.queryId);
+        if (!pending) return;
+        if (message.ok) pending.resolve(message.result);
+        else pending.reject(reviveError(message.error, '图像识别失败'));
+        return;
+      }
+      slot.job?.(message);
+    });
+    worker.on('error', (error) => { slot.dead = true; slot.onExit?.(error); failQueries(error); });
     worker.on('exit', (code) => {
       slot.dead = true;
       if (this.slots.get(index) === slot) this.slots.delete(index);
-      slot.onExit?.(new SchedulerError('UNKNOWN', `视觉工作线程已退出 (${code})`));
+      const error = new SchedulerError('UNKNOWN', `视觉工作线程已退出 (${code})`);
+      slot.onExit?.(error);
+      failQueries(error);
     });
     this.slots.set(index, slot);
     return slot;
@@ -176,7 +245,7 @@ export class VisionWorkerPool {
 /** One job on one worker: device RPC, the two-level input gate, timeouts and settle-once bookkeeping. */
 class Job {
   private approved = false;
-  private readonly spent: Record<keyof typeof WHITELIST_BUDGET, number> = { closePopup: 0, exitCancel: 0, probeBack: 0 };
+  private readonly spent: Record<keyof typeof WHITELIST_BUDGET, number> = { closePopup: 0, exitCancel: 0, probeBack: 0, advise: 0 };
   private deviceQueue: Promise<void> = Promise.resolve();
   private readonly shots: Promise<void>[] = [];
   private settled = false;
@@ -210,13 +279,7 @@ class Job {
       this.slot.onExit = (error) => scope.runInAsyncScope(() => this.finish(error, undefined, true));
       this.ctx.signal.addEventListener('abort', this.onAbort, { once: true });
       this.armTimer();
-      const post: MainToWorker = { type: 'job', jobId: this.jobId, spec: this.spec };
-      if (this.spec.kind === 'recognize') {
-        const { frame, transfer } = copyFrame(this.spec.frame);
-        this.post({ ...post, spec: { ...this.spec, frame } }, transfer);
-      } else {
-        this.post(post);
-      }
+      this.post({ type: 'job', jobId: this.jobId, spec: this.spec });
     });
   }
 
@@ -281,7 +344,7 @@ class Job {
   }
 
   private onMessage(message: WorkerToMain): void {
-    if (this.settled || message.jobId !== this.jobId) return;
+    if (this.settled || message.type === 'queryResult' || message.jobId !== this.jobId) return;
     switch (message.type) {
       case 'request': {
         const { id } = message;
@@ -350,6 +413,18 @@ class Job {
     }
   }
 
+  /** Before every input: the same AVD (identity) and, unless launching it, the game in front. */
+  private async assertInputTarget(foreground = true): Promise<void> {
+    if (this.ctx.assertInstance) {
+      try { await this.ctx.assertInstance(); }
+      catch (error) {
+        throw error instanceof SchedulerError ? error : new SchedulerError('DEVICE_NOT_READY', `${messageOf(error)}，已停止输入`);
+      }
+      this.check();
+    }
+    if (foreground) await this.assertForeground();
+  }
+
   private check(): void {
     throwIfAborted(this.controller.signal);
   }
@@ -359,6 +434,8 @@ class Job {
     this.check();
     switch (request.op) {
       case 'capture': {
+        // Once approved, frames are only taken of the game itself (conventions §5.3): a foreign screen ends the job.
+        if (this.approved) await this.assertForeground();
         let frame: RawFrame;
         try { frame = await device.screencapRaw(); }
         catch (error) {
@@ -379,7 +456,7 @@ class Job {
         const presence = await ensureGameForeground({
           foreground: async () => (await device.foregroundPackage()) ?? null,
           // ★ Monkey only (`startApp` without an activity): `am start` returns success but the game never starts.
-          launch: () => device.startApp(packageName),
+          launch: async () => { await this.assertInputTarget(false); this.check(); await device.startApp(packageName); },
           ...(device.isAppRunning ? { isRunning: () => device.isAppRunning!(packageName) } : {}),
           log: (level, message) => this.ctx.log?.(level, message),
           sleep: (ms) => sleep(ms, this.controller.signal),
@@ -394,7 +471,7 @@ class Job {
           if (intent !== 'closePopup' && intent !== 'exitCancel') this.requireApproved('点击');
           else this.spend(intent);
         }
-        await this.assertForeground();
+        await this.assertInputTarget();
         this.check();
         await device.tap(x, y);
         return {};
@@ -407,7 +484,7 @@ class Job {
         const gap = Math.max(0, Math.min(5_000, Number.isFinite(gapMs) ? gapMs : 0));
         for (let i = 0; i < points.length; i += TAPS_PER_SHELL) {
           const chunk = points.slice(i, i + TAPS_PER_SHELL);
-          await this.assertForeground();
+          await this.assertInputTarget();
           this.check();
           if (device.shell) {
             // One shell per chunk (measured: 5 taps 103 ms separately, 34 ms merged); coordinates are integers.
@@ -427,7 +504,7 @@ class Job {
         this.requireApproved('滑动');
         const [x1, y1, x2, y2, ms] = request.args;
         assertPoint(x1, y1, x2, y2);
-        await this.assertForeground();
+        await this.assertInputTarget();
         this.check();
         await device.swipe(x1, y1, x2, y2, Math.max(0, Math.min(10_000, ms)));
         return {};
@@ -438,7 +515,7 @@ class Job {
           if (intent !== 'probeBack' || key !== 'BACK') this.requireApproved('按键');
           else this.spend('probeBack');
         }
-        await this.assertForeground();
+        await this.assertInputTarget();
         this.check();
         await device.keyevent(key);
         return {};
@@ -447,6 +524,8 @@ class Job {
         this.requireApproved('启动应用');
         const [pkg, cold] = request.args;
         if (pkg !== packageName) throw new SchedulerError('INVALID_ARGUMENT', '禁止启动其他应用');
+        await this.assertInputTarget(false);
+        this.check();
         if (cold) await device.stopApp(packageName);
         this.check();
         await device.startApp(packageName);
@@ -457,7 +536,7 @@ class Job {
         this.requireApproved('停止应用');
         const [pkg] = request.args;
         if (pkg !== packageName) throw new SchedulerError('INVALID_ARGUMENT', '禁止停止其他应用');
-        await this.assertForeground();
+        await this.assertInputTarget();
         this.check();
         await device.stopApp(packageName);
         return {};
@@ -469,7 +548,9 @@ class Job {
         return { value };
       }
       case 'advise': {
-        this.requireApproved('界面恢复');
+        // Before the gate only a limited number of consults (DECISIONS C ④); the advisor acts in main under its
+        // own whitelist and switches (autoActions), re-entering the instance lock this job holds.
+        if (!this.approved) this.spend('advise');
         const [raw, attempt] = request.args;
         const hook = this.ctx.onAdvise;
         const value = hook ? await this.suspendTimeout(() => hook(raw, attempt)) : false;

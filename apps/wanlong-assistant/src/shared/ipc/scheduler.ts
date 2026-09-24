@@ -26,6 +26,20 @@ export interface SchedulerQueueState extends InstanceQueueState {
   readOnly?: boolean;
 }
 
+/**
+ * Whether this window schedules. Only one assistant process owns the scheduler (a lease under the data directory);
+ * another one only shows state and keeps retrying, so a lease left behind by a crash expires on its own (≈ 30 s).
+ */
+export interface SchedulerServiceStatus {
+  gameId: string;
+  /** This process arms wakes, samples and dispatches. */
+  owner: boolean;
+  /** Chinese explanation while read-only; null for the owner. */
+  message: string | null;
+  /** When this process became read-only (ms); null for the owner. */
+  since: number | null;
+}
+
 export interface SchedulerApi {
   /** Every instance the scheduler knows about, sorted by index. */
   schedulerStates(gameId: string): Promise<SchedulerQueueState[]>;
@@ -41,20 +55,24 @@ export interface SchedulerApi {
   schedulerCancelWake(gameId: string, index: number): Promise<void>;
   /** Turn auto off and forget all bookkeeping (queue, marches, travel hints) of the instance. */
   schedulerForget(gameId: string, index: number): Promise<void>;
+  /** Owner or read-only (and why), for the gather overview's schedule card. */
+  schedulerStatus(gameId: string): Promise<SchedulerServiceStatus>;
 }
 
 export const SCHEDULER_METHODS = [
   'schedulerStates', 'schedulerState', 'schedulerSample', 'schedulerSetAuto', 'schedulerConfig', 'saveSchedulerConfig',
-  'schedulerWakes', 'schedulerCancelWake', 'schedulerForget',
+  'schedulerWakes', 'schedulerCancelWake', 'schedulerForget', 'schedulerStatus',
 ] as const satisfies readonly (keyof SchedulerApi)[];
 
 export interface SchedulerEvents {
   /** An instance's queue changed (sample, auto switch, wake re-armed, operating flag). */
   'scheduler-changed': SchedulerQueueState;
   'scheduler-config-changed': SchedulerConfig;
+  /** This window became read-only or took the scheduler over. */
+  'scheduler-status': SchedulerServiceStatus;
 }
 
-export const SCHEDULER_EVENTS = ['scheduler-changed', 'scheduler-config-changed'] as const satisfies readonly (keyof SchedulerEvents)[];
+export const SCHEDULER_EVENTS = ['scheduler-changed', 'scheduler-config-changed', 'scheduler-status'] as const satisfies readonly (keyof SchedulerEvents)[];
 
 export type SchedulerContractCheck = [
   Assert<ListsExactly<SchedulerApi, typeof SCHEDULER_METHODS>>,

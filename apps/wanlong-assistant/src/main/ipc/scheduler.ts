@@ -57,4 +57,8 @@ export const schedulerHandlers: DomainHandlers<SchedulerApi, SchedulerServices> 
     gatherGame(gameId);
     await automation.eta.forget(asIndex(index));
   },
+  async schedulerStatus({ automation }, gameId) {
+    gatherGame(gameId);
+    return automation.eta.status();
+  },
 };

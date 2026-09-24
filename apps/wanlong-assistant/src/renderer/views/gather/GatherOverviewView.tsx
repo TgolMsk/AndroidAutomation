@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AutomationGameSummary, AutomationProbeReport, AutomationSettings } from '../../../shared/ipc';
+import type { AutomationGameSummary, AutomationProbeReport, AutomationSettings, SchedulerServiceStatus } from '../../../shared/ipc';
 import { avdm, errMsg } from '../../api';
 import { Icon } from '../../components/Icon';
 import { Spinner, StatusBadge } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
 import { beijingTime } from '../../format';
+import { useAvdmEvent } from '../../hooks/useAvdmEvent';
 import { RUN_LABEL, isRunActive, useActivity } from '../../state/activity';
 import { useNavigation } from '../../state/navigation';
 import { useSelection, useSelectionLock } from '../../state/selection';
@@ -54,6 +55,15 @@ export function GatherOverviewView(_props: ViewProps) {
   const { templateChange } = useTemplateFlow();
   const seenTemplateChange = useRef(templateChange?.seq ?? 0);
   useSelectionLock(busy ? BUSY_LOCK[busy] : scheduleTarget !== null ? '正在切换自动续跑，完成后再切换实例' : null);
+  // Another assistant process may own the scheduler (or its lease is still expiring after a crash): say so.
+  const [schedulerStatus, setSchedulerStatus] = useState<SchedulerServiceStatus | null>(null);
+  useEffect(() => {
+    if (gameId !== 'wanlong') { setSchedulerStatus(null); return; }
+    let live = true;
+    avdm.schedulerStatus(gameId).then((status) => { if (live) setSchedulerStatus(status); }, () => undefined);
+    return () => { live = false; };
+  }, [gameId]);
+  useAvdmEvent('scheduler-status', (status) => { if (status.gameId === gameId) setSchedulerStatus(status); });
 
   useEffect(() => {
     setTaskId((current) => (game?.tasks.some((task) => task.id === current) ? current : game?.tasks[0]?.id ?? ''));
@@ -275,6 +285,7 @@ export function GatherOverviewView(_props: ViewProps) {
               <div><span>下次唤醒（北京）</span><strong>{scheduleEnabled ? beijingTime(schedule?.nextWakeAt) : '—'}</strong></div>
               <div><span>连续失败</span><strong>{schedule?.failureCount ?? 0} 次</strong></div>
             </div>
+            {schedulerStatus && !schedulerStatus.owner && <p className="automation-schedule-note is-readonly" role="status">{schedulerStatus.message ?? '另一个万龙助手进程正在管理自动采集调度，本窗口只显示状态。'}</p>}
             {schedulesError && <div className="automation-inline-error" role="alert">调度状态读取失败：{schedulesError}<button className="btn xs" onClick={() => void refreshSchedules()}>重试</button></div>}
             {!scheduleEnabled && !canEnableSchedule && !schedulesLoading && !schedulesError && <p className="automation-schedule-note">启用前需保存配置、通过画面启动检查并确认探针结果。</p>}
           </div>}

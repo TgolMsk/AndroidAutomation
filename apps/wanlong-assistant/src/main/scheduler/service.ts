@@ -21,7 +21,7 @@ import {
   type WakeInfo,
 } from '@avdm/automation/wanlong/pure';
 import { formatCstClock } from '../../shared/time';
-import type { SchedulerQueueState } from '../../shared/ipc/scheduler';
+import type { SchedulerQueueState, SchedulerServiceStatus } from '../../shared/ipc/scheduler';
 import {
   SchedulerError, abortError, codeOf, isAbortCode, isAttentionCode, messageOf, sleep, throwIfAborted,
 } from './errors';
@@ -44,6 +44,15 @@ const DEFAULT_MAX_CONSECUTIVE_FAILURES = 8;
  * abort grace is 5 s); the shell bounds the whole addon dispose at 15 s.
  */
 const DISPOSE_DRAIN_MS = 8_000;
+/**
+ * A read-only process retries the scheduler lease this often. The lease of a crashed / force-quit owner stops being
+ * refreshed and expires after 30 s (withFileLock's stale age), so a restart right after a crash takes over by itself.
+ */
+const OWNER_RETRY_MS = 10_000;
+/** Mutating entry points wait this long for `restore()` before going ahead (the merge keeps live runtimes anyway). */
+const RESTORE_WAIT_MS = 15_000;
+const READ_ONLY_MESSAGE = '另一个万龙助手进程正在管理自动采集调度，本窗口只显示状态，不会排期或自动派遣。' +
+  '如果并没有别的窗口（例如上次异常退出后留下的调度租约），本窗口会在约 30 秒内自动接管。';
 
 export interface EtaSchedulerOptions {
   now?: () => number;
@@ -52,9 +61,13 @@ export interface EtaSchedulerOptions {
   maxConsecutiveFailures?: number;
   /** Test seam for the single-owner service lease. */
   ownerLease?: boolean;
+  /** Test seam: how often a read-only process retries the lease (default 10 s). */
+  ownerRetryMs?: number;
   /** Host wiring (IPC push). Separate from `setHooks` so later modules cannot unplug the renderer by accident. */
   publish?(state: SchedulerQueueState): void;
   publishConfig?(config: SchedulerConfig): void;
+  /** Owner / read-only changes of this process (the UI explains why nothing is scheduled while read-only). */
+  publishStatus?(status: SchedulerServiceStatus): void;
   log?(level: LogLevel, message: string): void;
   /** The consecutive-failure safety pause fired (before auto is switched off). */
   onSafetyPause?(index: number, failureCount: number, reason: string): void;
@@ -116,7 +129,12 @@ export class EtaScheduler {
   private restored: Promise<void> | null = null;
   private stopping = false;
   private readOnly = false;
+  private readOnlySince: number | null = null;
   private ownerRelease: (() => Promise<void>) | null = null;
+  private ownerRetry?: NodeJS.Timeout;
+  private takeover: Promise<void> | null = null;
+  /** saveConfig ran before restore finished loading: the file is older than memory. */
+  private configTouched = false;
 
   constructor(private readonly home: string, private readonly ports: EtaSchedulerPorts, private readonly options: EtaSchedulerOptions = {}) {
     if (!path.isAbsolute(home)) throw new Error('调度数据目录必须是绝对路径');
@@ -152,18 +170,63 @@ export class EtaScheduler {
   }
 
   private async doRestore(): Promise<void> {
-    if (this.options.ownerLease !== false) await this.acquireOwnerLease();
+    const owner = this.options.ownerLease === false || await this.tryOwnerLease();
+    if (!owner) {
+      // A viewer only shows the owner's state: no migration, no identity reset, no timers, no writes. It keeps
+      // retrying the lease, so a lease left behind by a crash never makes this window read-only for good.
+      this.readOnly = true;
+      this.readOnlySince = this.now();
+      this.log('warn', READ_ONLY_MESSAGE);
+      await this.loadPersisted(false);
+      this.publishStatus();
+      this.scheduleOwnerRetry();
+      return;
+    }
+    const adopted = await this.loadPersisted(false);
+    await this.startOwning(adopted, '面板重启后恢复排期');
+  }
+
+  /**
+   * Read config and per-instance bookkeeping from disk. At startup (`overwrite` false) an instance that an operation
+   * already registered keeps its live runtime (its AbortController, lock depth and fresh sample must not be orphaned);
+   * a takeover (`overwrite` true) refreshes the persisted fields of every runtime in place, because the previous
+   * owner kept writing while this process only viewed. @returns the runtimes taken from disk
+   */
+  private async loadPersisted(overwrite: boolean): Promise<Runtime[]> {
     const { config, warnings } = await this.store.loadConfig();
-    this.config = config;
+    if (overwrite || !this.configTouched) this.config = config;
     const loaded = await this.store.loadInstances();
     for (const w of [...warnings, ...loaded.warnings]) this.log('warn', w);
-    for (const item of loaded.instances) this.runtimes.set(item.instanceIndex, this.fromPersisted(item));
-    // A viewer only shows the owner's state: no migration, no identity reset, no timers, no writes.
-    if (this.readOnly) return;
+    const adopted: Runtime[] = [];
+    for (const item of loaded.instances) {
+      const live = this.runtimes.get(item.instanceIndex);
+      if (!live) {
+        const rt = this.fromPersisted(item);
+        this.runtimes.set(item.instanceIndex, rt);
+        adopted.push(rt);
+      } else if (overwrite) {
+        const fresh = this.fromPersisted(item);
+        live.state = { ...fresh.state, sampling: live.state.sampling, operating: live.state.operating };
+        live.identity = fresh.identity;
+        // Dispatches noted while viewing (manual cycles) are kept next to the owner's.
+        const seen = new Set(fresh.travelHints.map((hint) => `${hint.at}:${hint.coord ?? ''}`));
+        live.travelHints = trimHints([...fresh.travelHints, ...live.travelHints.filter((hint) => !seen.has(`${hint.at}:${hint.coord ?? ''}`))]);
+        live.failureCount = fresh.failureCount;
+        adopted.push(live);
+      }
+    }
+    return adopted;
+  }
+
+  /** Become the scheduling process: migrate the legacy switch and re-arm every auto instance among `candidates`. */
+  private async startOwning(candidates: readonly Runtime[], why: string): Promise<void> {
+    this.readOnly = false;
+    this.readOnlySince = null;
     await this.migrateLegacy();
+    const migrated = [...this.runtimes.values()].filter((rt) => !candidates.includes(rt) && rt.state.auto && !rt.autoController);
     let armed = 0;
-    for (const rt of [...this.runtimes.values()]) {
-      if (!rt.state.auto) continue;
+    for (const rt of [...candidates, ...migrated]) {
+      if (!rt.state.auto || this.stopping) continue;
       const index = rt.state.instanceIndex;
       try {
         const instance = await this.ports.instance(index);
@@ -174,22 +237,23 @@ export class EtaScheduler {
           continue;
         }
         rt.identity ??= instance.createdAt;
-        rt.autoController = new AbortController();
-        this.rearm(index, '面板重启后恢复排期');
+        if (!rt.autoController || rt.autoController.signal.aborted) rt.autoController = new AbortController();
+        this.rearm(index, why);
         armed++;
       } catch (error) {
         // ★ Never auto=true without a timer: retry on the backoff ladder; the wake re-checks the instance identity.
         this.log('warn', `实例 #${index} 的调度恢复时读不到实例状态，按退避稍后重试：${messageOf(error)}`);
-        rt.autoController = new AbortController();
+        if (!rt.autoController || rt.autoController.signal.aborted) rt.autoController = new AbortController();
         this.rearm(index, `恢复排期时读不到实例状态：${messageOf(error)}`, 1);
         armed++;
       }
     }
+    this.publishStatus();
     this.log('info', `ETA 调度器已就绪，恢复了 ${this.runtimes.size} 个实例的记账，其中 ${armed} 个开着自动调度。`);
   }
 
-  /** Only one assistant process schedules; a second one shows state read-only. */
-  private async acquireOwnerLease(): Promise<void> {
+  /** Try the single-owner lease once (150 ms). @returns whether this process now owns the scheduler */
+  private async tryOwnerLease(): Promise<boolean> {
     const lease = path.join(this.home, 'automation', 'games', GAME_ID, 'eta-scheduler.lock');
     let entered!: () => void;
     let exit!: () => void;
@@ -197,12 +261,60 @@ export class EtaScheduler {
     const held = new Promise<void>((resolve) => { exit = resolve; });
     const lockDone = withFileLock(lease, async () => { entered(); await held; }, { timeoutMs: 150 });
     const winner = await Promise.race([acquired.then(() => true), lockDone.then(() => false, () => false)]);
-    if (!winner) {
-      this.readOnly = true;
-      this.log('warn', '另一个万龙助手进程正在管理自动采集调度；本窗口只显示状态，不会排期或自动派遣。');
-      return;
-    }
+    if (!winner) return false;
     this.ownerRelease = async () => { exit(); await lockDone.catch(() => undefined); };
+    return true;
+  }
+
+  private scheduleOwnerRetry(): void {
+    if (this.stopping || !this.readOnly) return;
+    this.ownerRetry = setTimeout(() => {
+      this.ownerRetry = undefined;
+      this.takeover = this.retryOwner().finally(() => { this.takeover = null; });
+    }, this.options.ownerRetryMs ?? OWNER_RETRY_MS);
+    this.ownerRetry.unref?.();
+  }
+
+  /** A read-only process takes over once the lease is free (the owner quit, or its lease went stale after a crash). */
+  private async retryOwner(): Promise<void> {
+    if (this.stopping || !this.readOnly) return;
+    let won = false;
+    try { won = await this.tryOwnerLease(); }
+    catch (error) { this.log('debug', `尝试接管自动采集调度失败，稍后再试：${messageOf(error)}`); }
+    if (!won) { this.scheduleOwnerRetry(); return; }
+    if (this.stopping) return;
+    let adopted: Runtime[] = [];
+    try { adopted = await this.loadPersisted(true); }
+    catch (error) { this.log('warn', `接管时读取调度状态失败，按内存里的状态继续：${messageOf(error)}`); }
+    if (this.stopping) return;
+    this.log('info', '已接管自动采集调度（之前的管理进程已退出，或它留下的调度租约已过期）。');
+    await this.startOwning(adopted, '接管调度后恢复排期');
+    // Every queue view loses its read-only flag.
+    for (const rt of this.runtimes.values()) this.publish(rt);
+  }
+
+  /**
+   * Mutating entry points wait (bounded) for `restore()`: an IPC call that arrives while the window is up but the
+   * bookkeeping is still loading must not race it. Never throws.
+   */
+  private async ready(): Promise<void> {
+    if (!this.restored) return;
+    await Promise.race([this.restored.catch(() => undefined), sleep(RESTORE_WAIT_MS)]);
+  }
+
+  /** Whether this process schedules, and why not while read-only (IPC `schedulerStatus`). */
+  status(): SchedulerServiceStatus {
+    return {
+      gameId: GAME_ID,
+      owner: !this.readOnly,
+      message: this.readOnly ? READ_ONLY_MESSAGE : null,
+      since: this.readOnly ? this.readOnlySince : null,
+    };
+  }
+
+  private publishStatus(): void {
+    const status = this.status();
+    this.emit(() => this.options.publishStatus?.(status));
   }
 
   /** The previous per-instance wake scheduler only kept an enabled flag; its wake times are stale. */
@@ -232,10 +344,13 @@ export class EtaScheduler {
    */
   async dispose(): Promise<void> {
     this.stopping = true;
+    if (this.ownerRetry) { clearTimeout(this.ownerRetry); this.ownerRetry = undefined; }
     this.lifetime.abort(new SchedulerError('RUN_ABORTED', '助手正在退出'));
     for (const rt of this.runtimes.values()) rt.autoController?.abort(new SchedulerError('RUN_ABORTED', '助手正在退出'));
     this.timers.cancelAll();
     await this.restored?.catch(() => undefined);
+    await this.takeover?.catch(() => undefined);
+    this.timers.cancelAll();
     const drained = Promise.allSettled([...this.runtimes.keys()].map((index) => this.locks.drain(index)));
     await Promise.race([drained, sleep(DISPOSE_DRAIN_MS)]);
     await Promise.allSettled([...this.runtimes.values()].map((rt) => this.persist(rt)));
@@ -279,10 +394,12 @@ export class EtaScheduler {
   // ── operations ───────────────────────────────────────────────────────────
 
   async saveConfig(patch: Partial<SchedulerConfig>): Promise<SchedulerConfig> {
+    await this.ready();
     this.assertOwner();
     const next = mergeSchedulerConfig(this.config, patch);
     await this.store.saveConfig(next);
     this.config = next;
+    this.configTouched = true;
     this.emit(() => this.options.publishConfig?.(this.getConfig()));
     this.emit(() => this.hooks.onConfigChange?.(this.getConfig()));
     // Slack or intervals changed: re-plan every auto instance.
@@ -300,6 +417,7 @@ export class EtaScheduler {
    */
   async setAuto(index: number, enabled: boolean, reason?: string): Promise<SchedulerQueueState> {
     assertIndex(index);
+    await this.ready();
     if (!enabled) {
       const known = this.runtimes.get(index);
       // Nothing to turn off: never register the instance or write a file just to say so.
@@ -366,6 +484,7 @@ export class EtaScheduler {
    * next wake — and schedules「脚本执行结束，重读队列校验」15 s later.
    */
   async suspendForScript(index: number, graceMs: number, reason: string): Promise<() => void> {
+    await this.ready();
     let rt: Runtime;
     try { rt = this.rt(index); } catch { return () => undefined; }
     rt.scriptHolds++;
@@ -406,6 +525,9 @@ export class EtaScheduler {
    * @param what Chinese action name for the refusal message, e.g.「截图」「读资源统计」.
    */
   async exclusive<T>(index: number, what: string, fn: (ctx: { signal: AbortSignal }) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    assertIndex(index);
+    // A nested call (from a hook inside the lock) never waits: restore finished long before the lock was taken.
+    if (!this.locks.held(index)) await this.ready();
     const rt = this.rt(index);
     if (!this.locks.held(index)) {
       const busy = this.ports.externalBusy?.(index);
@@ -419,6 +541,7 @@ export class EtaScheduler {
   /** The panel's "refresh": read the queue now (throttled), never dispatch. */
   async sampleNow(index: number): Promise<SchedulerQueueState> {
     assertIndex(index);
+    await this.ready();
     this.assertOwner();
     await this.sample(index, '面板手动刷新', { signal: this.lifetime.signal, force: false, allowColdStart: true });
     return this.view(this.rt(index));
@@ -441,6 +564,7 @@ export class EtaScheduler {
       }
     }
     if (notes.length === 0) return;
+    if (!this.locks.held(index)) await this.ready();
     const rt = this.rt(index);
     const at = this.now();
     for (const note of notes) {
@@ -469,6 +593,7 @@ export class EtaScheduler {
   /** Turn auto off and drop every piece of bookkeeping for the instance (the panel's "reset"). */
   async forget(index: number): Promise<void> {
     assertIndex(index);
+    await this.ready();
     this.assertOwner();
     const rt = this.runtimes.get(index);
     if (rt) {
@@ -1007,5 +1132,6 @@ function newRuntime(index: number): Runtime {
 }
 
 function readOnlyError(): SchedulerError {
-  return new SchedulerError('CONCURRENCY_LIMIT', '另一个万龙助手进程正在管理自动采集调度，请在那个窗口操作');
+  return new SchedulerError('CONCURRENCY_LIMIT',
+    '另一个万龙助手进程正在管理自动采集调度，请在那个窗口操作；如果并没有别的窗口（例如上次异常退出），本窗口会在约 30 秒内自动接管，请稍后再试');
 }

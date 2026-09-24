@@ -10,7 +10,9 @@ import {
   type UnknownScreenAdvisor,
 } from '@avdm/automation/wanlong';
 import { GATHER_PROBE_TEMPLATE_IDS, inspectGatherProbe } from '../automation/gather-probe-guard';
-import type { MainToWorker, VisionJobResult, VisionJobSpec, VisionRequest, WorkerToMain } from './vision-protocol';
+import type {
+  MainToWorker, VisionJobResult, VisionJobSpec, VisionQuery, VisionQueryResult, VisionRequest, WorkerToMain,
+} from './vision-protocol';
 
 if (!parentPort) throw new Error('视觉工作线程缺少通信端口');
 const port = parentPort;
@@ -18,6 +20,8 @@ const PACKAGE = wanlongPlugin.packageName;
 /** Cold start: a monkey launch reaches the foreground in ~10 s; the city / world map appears 90 s+ later. */
 const GAME_LOAD_WAIT_MS = 150_000;
 const GAME_LOAD_POLL_MS = 2_500;
+/** Advisor consults (AI / game update) offered before the probe gate; main enforces the same budget. */
+const PRE_GATE_ADVISE = 2;
 
 interface CompiledSet {
   dir: string;
@@ -37,6 +41,10 @@ interface ActiveJob {
 }
 
 let compiled: CompiledSet | null = null;
+/** A compile in flight, shared by a job and the read-only queries that arrive meanwhile (never compile twice). */
+let compiling: { dir: string; stamp: string; promise: Promise<CompiledSet> } | null = null;
+/** Bumped by `invalidate`: a compile that started before it never becomes the cache. */
+let generation = 0;
 let active: ActiveJob | null = null;
 let nextRequestId = 1;
 
@@ -85,12 +93,19 @@ function copyFrame(raw: RawFrame): { frame: RawFrame; transfer: ArrayBuffer[] } 
   return { frame: { ...raw, data }, transfer: [data.buffer] };
 }
 
+type Logger = (level: 'debug' | 'info' | 'warn' | 'error', message: string) => void;
+
+/** Compile logs go to the running job (a query outside any job has nobody to tell). */
+function compileLog(): Logger {
+  return (level, message) => { if (active) log(active, level, message); };
+}
+
 /**
  * Compile once per (template directory, manifest content). Every save or delete through the template library
  * rewrites manifest.json, so the stamp check also picks up edits made outside this app; main can still force a
- * recompile with `invalidate`.
+ * recompile with `invalidate`. A job and queries asking at the same time share one compile.
  */
-async function templates(job: ActiveJob, templateDir: string): Promise<CompiledSet> {
+async function templates(templateDir: string, logTo: Logger = compileLog()): Promise<CompiledSet> {
   let dir: string;
   let manifest: Buffer;
   try {
@@ -102,21 +117,33 @@ async function templates(job: ActiveJob, templateDir: string): Promise<CompiledS
   }
   const stamp = createHash('sha1').update(manifest).digest('hex');
   if (compiled && compiled.dir === dir && compiled.stamp === stamp) return compiled;
-  compiled = null;
+  if (compiling && compiling.dir === dir && compiling.stamp === stamp) return compiling.promise;
+  const startedGeneration = generation;
+  const promise = compile(dir, stamp, logTo);
+  compiling = { dir, stamp, promise };
+  try {
+    const set = await promise;
+    if (generation === startedGeneration) compiled = set;
+    return set;
+  } finally {
+    if (compiling?.promise === promise) compiling = null;
+  }
+}
+
+async function compile(dir: string, stamp: string, logTo: Logger): Promise<CompiledSet> {
   const started = Date.now();
   const gather = await loadGatherTemplates({
     templateDir: dir,
     requireCritical: false,
-    onWarn: (message) => log(job, 'warn', `模板：${message}`),
+    onWarn: (message) => logTo('warn', `模板：${message}`),
   });
   let scheduler: SchedulerTemplates | null = null;
   let schedulerError: Error | null = null;
   try { scheduler = buildSchedulerTemplates(gather); }
   catch (error) { schedulerError = error instanceof Error ? error : new Error(String(error)); }
-  log(job, 'info', `模板集 ${gather.setId} 已编译（${Date.now() - started}ms）：界面模板 ${gather.ui.size} 张，字形集 ${gather.glyphSets.size} 套` +
+  logTo('info', `模板集 ${gather.setId} 已编译（${Date.now() - started}ms）：界面模板 ${gather.ui.size} 张，字形集 ${gather.glyphSets.size} 套` +
     (gather.missing.length > 0 ? `，缺 ${gather.missing.length} 张（${gather.missing.slice(0, 12).join('、')}${gather.missing.length > 12 ? '…' : ''}）` : ''));
-  compiled = { dir, stamp, gather, scheduler, schedulerError };
-  return compiled;
+  return { dir, stamp, gather, scheduler, schedulerError };
 }
 
 /** The probe gate report, built on a frame already captured with the cached anchors (no recompiling per job). */
@@ -185,7 +212,7 @@ function devicePort(job: ActiveJob): DevicePort {
 // ── sample job ─────────────────────────────────────────────────────────────
 
 async function runSample(job: ActiveJob, spec: Extract<VisionJobSpec, { kind: 'sample' }>): Promise<VisionJobResult> {
-  const set = await templates(job, spec.templateDir);
+  const set = await templates(spec.templateDir);
   if (!set.scheduler) throw set.schedulerError ?? new AppError('TEMPLATE_NOT_FOUND', '模板集缺少部队管理面板所需的字形');
   const t = set.scheduler;
   if (spec.config.templateSetId && spec.config.templateSetId !== t.setId) {
@@ -246,12 +273,22 @@ async function findClosePopup(set: CompiledSet, raw: RawFrame): Promise<MatchRes
   return null;
 }
 
+/** Ask main's unknown-screen advisor (AI / game update) about a frame; true = it acted and the screen changed. */
+async function advise(job: ActiveJob, raw: RawFrame, attempt: number): Promise<boolean> {
+  const { frame, transfer } = copyFrame(raw);
+  return (await request<boolean>(job, { op: 'advise', args: [frame, attempt] }, transfer)) === true;
+}
+
 /**
  * Pre-approval recovery for a gather cycle (DECISIONS C whitelist): monkey-launch the game when it is not in front
- * and wait (look only) for a known screen; then at most one popup ×, one blind BACK and an exit-dialog「取消」
- * (never「确定」). Everything else waits for the probe gate.
+ * and wait (look only) for a known screen; then the original G0 ladder in miniature — at most one popup ×, the
+ * unknown-screen advisor (AI / update, when main offers it), one blind BACK and an exit-dialog「取消」(never「确定」).
+ * Everything else waits for the probe gate.
+ * @returns the last frame and whether it passes the gate locally (main re-checks at approval)
  */
-async function recoverBeforeGate(job: ActiveJob, set: CompiledSet, spec: Extract<VisionJobSpec, { kind: 'gather' }>): Promise<void> {
+async function recoverBeforeGate(
+  job: ActiveJob, set: CompiledSet, spec: Extract<VisionJobSpec, { kind: 'gather' }>,
+): Promise<{ raw: RawFrame; ok: boolean }> {
   const g = set.gather;
   const foreground = await request<string | null>(job, { op: 'foregroundPackage', args: [] });
   if (foreground !== PACKAGE && spec.allowColdStart) {
@@ -275,17 +312,33 @@ async function recoverBeforeGate(job: ActiveJob, set: CompiledSet, spec: Extract
     }
   }
   let raw = await capture(job);
-  if (await gateOk(job, set, raw)) return;
+  if (await gateOk(job, set, raw)) return { raw, ok: true };
   // A known screen that still fails the gate (e.g. two anchors close): the gate's reason is the answer, and a
   // blind BACK on the world map would only raise the exit dialog.
-  if (await isRecognizableScreen(g, raw, { refWidth: g.refWidth, refHeight: g.refHeight })) return;
+  if (await isRecognizableScreen(g, raw, { refWidth: g.refWidth, refHeight: g.refHeight })) return { raw, ok: false };
   const popup = await findClosePopup(set, raw);
   if (popup) {
     log(job, 'info', `找到弹窗关闭按钮（${popup.templateId} ${popup.score}），点它关掉活动弹窗。`);
     await request<void>(job, { op: 'tap', args: [Math.round(popup.centerX * raw.width / g.refWidth), Math.round(popup.centerY * raw.height / g.refHeight), 'closePopup'] });
     await sleep(job, 900);
     raw = await capture(job);
-    if (await gateOk(job, set, raw)) return;
+    if (await gateOk(job, set, raw)) return { raw, ok: true };
+  }
+  // Original order: popup × → advisor → blind BACK (the advisor never presses BACK itself).
+  if (spec.advisor) {
+    for (let attempt = 1; attempt <= PRE_GATE_ADVISE; attempt++) {
+      let handled = false;
+      try { handled = await advise(job, raw, attempt); }
+      catch (error) {
+        const code = (error as { code?: unknown }).code;
+        if (code === 'GAME_UPDATE_REQUIRED' || code === 'AI_RISK_BLOCKED' || job.controller.signal.aborted) throw error;
+        log(job, 'warn', `AI 顾问出错，按未处理继续：${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (!handled) break;
+      log(job, 'info', 'AI 顾问处理了认不出的界面，重新判断。');
+      raw = await capture(job);
+      if (await gateOk(job, set, raw)) return { raw, ok: true };
+    }
   }
   log(job, 'warn', '认不出当前界面，按一次 BACK 试探（若弹出退出确认框会立刻点「取消」）。');
   await request<void>(job, { op: 'key', args: ['BACK', 'probeBack'] });
@@ -301,19 +354,37 @@ async function recoverBeforeGate(job: ActiveJob, set: CompiledSet, spec: Extract
         log(job, 'warn', '弹出了退出游戏确认框，立刻点「取消」（绝不会点确定）。');
         await request<void>(job, { op: 'tap', args: [Math.round(btn.centerX * raw.width / g.refWidth), Math.round(btn.centerY * raw.height / g.refHeight), 'exitCancel'] });
         await sleep(job, 600);
-        await capture(job);
+        raw = await capture(job);
       } else {
         log(job, 'warn', '弹出了退出游戏确认框，但没定位到「取消」按钮，请手动关掉它。');
       }
     }
   }
+  return { raw, ok: await gateOk(job, set, raw) };
+}
+
+/**
+ * The pre-gate ladder is exhausted and the screen still fails the gate: end the cycle like the original G0 does —
+ * a「g0-failed」scene shot (main saves it and runs the kicked probe on it) and STEP_FAILED with step 'G0', so alerts
+ * see "recovery ladder exhausted" instead of a generic start-up failure.
+ */
+async function failG0(job: ActiveJob, set: CompiledSet, raw: RawFrame): Promise<never> {
+  const decision = inspectGatherProbe(await probeOf(job, set, raw));
+  const { frame, transfer } = copyFrame(raw);
+  post({ type: 'shot', jobId: job.jobId, label: 'g0-failed', raw: frame }, transfer);
+  const reason = decision.ok ? '' : decision.reason;
+  throw new AppError('STEP_FAILED',
+    `开跑前的恢复阶梯（拉起游戏 / 关弹窗 / AI / BACK）跑完仍回不到可识别的界面${reason ? `：${reason}` : ''}。` +
+    '请手动把游戏切到城内或世界地图，或检查城内 / 世界地图的模板是否仍然有效。', { step: 'G0' });
 }
 
 async function runGather(job: ActiveJob, spec: Extract<VisionJobSpec, { kind: 'gather' }>): Promise<VisionJobResult> {
-  const set = await templates(job, spec.templateDir);
+  const set = await templates(spec.templateDir);
   assertGatherTemplatesComplete(set.gather);
   checkAbort(job);
-  await recoverBeforeGate(job, set, spec);
+  const gate = await recoverBeforeGate(job, set, spec);
+  checkAbort(job);
+  if (!gate.ok) await failG0(job, set, gate.raw);
   await approve(job, set);
   checkAbort(job);
   const g = set.gather;
@@ -346,20 +417,46 @@ async function runGather(job: ActiveJob, spec: Extract<VisionJobSpec, { kind: 'g
   return { kind: 'gather', result };
 }
 
-async function runRecognize(job: ActiveJob, spec: Extract<VisionJobSpec, { kind: 'recognize' }>): Promise<VisionJobResult> {
-  const set = await templates(job, spec.templateDir);
+// ── read-only queries (any time, also during a job) ──────────────────────
+
+async function answer(query: VisionQuery): Promise<VisionQueryResult> {
+  const set = await templates(query.templateDir);
   const g = set.gather;
-  const recognized = await isRecognizableScreen(g, spec.frame, { refWidth: g.refWidth, refHeight: g.refHeight });
-  return { kind: 'recognize', recognized };
+  if (query.kind === 'recognize') {
+    return { kind: 'recognize', recognized: await isRecognizableScreen(g, query.frame, { refWidth: g.refWidth, refHeight: g.refHeight }) };
+  }
+  const frame = await prepareFrame(query.frame, { refWidth: g.refWidth, refHeight: g.refHeight, shrink: 2 });
+  const matches: MatchResult[] = [];
+  for (const id of query.templateIds) {
+    const tpl = g.get(id);
+    if (!tpl || tpl.shrink !== 2) {
+      matches.push({
+        templateId: id, found: false, score: 0, x: -1, y: -1, w: 0, h: 0, centerX: -1, centerY: -1,
+        threshold: query.threshold ?? 0, elapsedMs: 0, reason: '模板缺失',
+      });
+      continue;
+    }
+    matches.push(await matchTemplate(frame, tpl, {
+      ...(query.roi ? { roi: query.roi } : {}),
+      ...(query.threshold === undefined ? {} : { threshold: query.threshold }),
+    }));
+  }
+  return { kind: 'match', matches };
+}
+
+async function runQuery(queryId: number, query: VisionQuery): Promise<void> {
+  try {
+    post({ type: 'queryResult', queryId, ok: true, result: await answer(query) });
+  } catch (error) {
+    post({ type: 'queryResult', queryId, ok: false, error: serializeError(error) });
+  }
 }
 
 async function run(jobId: number, spec: VisionJobSpec): Promise<void> {
   const job: ActiveJob = { jobId, controller: new AbortController(), pending: new Map(), approved: false, lastFrame: null };
   active = job;
   try {
-    const result = spec.kind === 'sample' ? await runSample(job, spec)
-      : spec.kind === 'gather' ? await runGather(job, spec)
-        : await runRecognize(job, spec);
+    const result = spec.kind === 'sample' ? await runSample(job, spec) : await runGather(job, spec);
     post({ type: 'result', jobId, result });
   } catch (error) {
     const err = job.controller.signal.aborted ? aborted(job) : error;
@@ -370,7 +467,8 @@ async function run(jobId: number, spec: VisionJobSpec): Promise<void> {
 }
 
 port.on('message', (message: MainToWorker) => {
-  if (message.type === 'invalidate') { compiled = null; return; }
+  if (message.type === 'invalidate') { compiled = null; compiling = null; generation++; return; }
+  if (message.type === 'query') { void runQuery(message.queryId, message.query); return; }
   if (message.type === 'job') {
     if (active) {
       post({ type: 'failed', jobId: message.jobId, error: { code: 'CONCURRENCY_LIMIT', message: '视觉工作线程正忙' } });

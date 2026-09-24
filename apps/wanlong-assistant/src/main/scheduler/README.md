@@ -38,15 +38,24 @@ ScheduleCompat (compat.ts)              旧 AutomationSchedule 视图（渲染�
 - **退出**：`AutomationHost.dispose()` 先中止所有采集轮（手动轮与调度器共用实例锁），再同时收尾调度器与运行器；
   调度器等锁排空最多 8 s。
 - **重启恢复**：开着自动的实例全部重新排期；启动时读不到实例状态就按退避第 1 档重试（绝不留下「auto 开着却没有定时器」）。
+  `restore()` 还没读完落盘时到达的 IPC（开关、立即采样、`exclusive`、`suspendForScript`、派兵记账、改配置、重置）先等它（最多 15 s）；
+  读盘只填充还没登记的实例，绝不替换已经在用的运行时（它的 AbortController / 锁深度 / 刚采的样）。
 
 ## 门槛与安全
 
 - 视觉工作线程每次输入都经过主进程：**探针门槛之前**只允许白名单恢复动作（`closePopup` 点关闭 ×1、`probeBack` 盲按 BACK ×1、
-  `exitCancel` 点「取消」×2、`ensureGame` monkey 拉起），其余输入一律拒绝；**门槛之后**（恰好一个已知场景锚点、分数 ≥ 0.90 且领先 0.05，
-  游戏在前台，`record.createdAt` 未变）才放开。每次输入前主进程都复核前台包名。
+  `exitCancel` 点「取消」×2、`ensureGame` monkey 拉起、`advise` 问一次未知界面顾问（AI / 游戏更新）×2），其余输入一律拒绝；
+  **门槛之后**（恰好一个已知场景锚点、分数 ≥ 0.90 且领先 0.05，游戏在前台，`record.createdAt` 未变）才放开。
+  **每次输入前**（白名单动作也算）主进程都复核实例身份（`getState` + `record.createdAt`）与前台包名；门槛之后每次截图前也复核前台。
+- 采集一轮开跑前的恢复阶梯（冷启动 → 关弹窗 → 顾问 → 盲按 BACK + 取消退出框）跑完仍过不了门槛时，与原版 G0 一样：留一张
+  `g0-failed` 现场截图（主进程按 shotPolicy 落盘并在这一帧上跑顶号探针），这一轮记为 `STEP_FAILED`、`step: 'G0'` 的失败轮，
+  而不是笼统的「没能启动」。
 - 实例锁同时是跨进程租约：登录、脚本计划、另一个助手进程占着实例时，调度器在 150 ms 内得到 `CONCURRENCY_LIMIT` 并让路，不算失败。
 - 调度器本身也有一把「单写者」租约 `automation/games/wanlong/eta-scheduler.lock`：第二个进程只读（`readOnly: true`）——不排期、
   不迁移、不落盘；`setAuto(true)`、关闭一个开着的实例、`forget`、`saveConfig`、`sampleNow` 都以 `CONCURRENCY_LIMIT` 拒绝。
+  ★ 只读进程每 10 s 重试一次租约：真有另一个窗口时它一退出就接管；崩溃 / 强退 / 退出超时留下的租约心跳停了，30 s 后过期、
+  随即被接管（重读落盘状态、迁移、给开着自动的实例重新排期）。只读期间「采集总览」的自动续跑卡片会显示原因
+  （IPC `schedulerStatus` + 事件 `scheduler-status`）。
 - **首次开启要过只读探针**（DECISIONS C）：`AutomationHost.setSchedule(true)`（IPC 的 `setAutomationSchedule` / `schedulerSetAuto`）
   在主进程再跑一次 `probe()`，`launchReady` 才放行（渲染进程另有确认勾选）。通过记录按「实例身份 + 模板集」记在内存里，
   模板或采集配置一改就作废；之后再开启不必重探（游戏没开也会被冷启动）。恢复路径（告警恢复、机器人）直接调 `eta.setAuto(i, true)`，不过探针。
@@ -87,9 +96,21 @@ automation.setPorts({
 钩子由视觉工作线程的消息触发时（`onUnrecognizedFrame` 等），在**这次作业自己的异步上下文**里执行（`AsyncResource`），
 与常驻 worker 最早在哪里创建无关：锁内的采样 / 采集里，钩子调 `exclusive()` 一定重入。
 
-`AutomationHostHooks`（构造参数）另有 `onNeedsAttention(gameId, index, info)`（需要人处理的兜底告警）、`onCycleResult(index, fact, source)`（`GatherCycleFact`：outcome / step（`'G0'` = 恢复阶梯用尽）/
-errorCode / dispatched / captures / shotPath / kicked，**在失败的调度轮往上抛之前**报；「这一轮压根没跑起来」也补报一次；取消的轮次不报）
-与 `onDispatched(index, records, at)`（每趟派兵：资源 / 坐标 / 等级 / 搜索下限 / 储量 / 行军秒数）。
+采集轮的观察者是 `AutomationHostHooks`，用 `automation.setHooks({...})` 在各模块自己的段落里合并注册（也可以走构造参数）：
+
+```ts
+// ── alerts / stats ──
+automation.setHooks({
+  onCycleResult: async (index, fact, source) => alerts.onCycleResult(index, fact),   // 失败的调度轮往上抛之前报
+  onDispatched: (index, records, at) => stats.recordDispatches(index, records, at),  // 每趟派兵（轮次失败也报）
+  onNeedsAttention: (gameId, index, info) => alerts.raiseAttention(index, info),      // 兜底：scheduler 的 onNeedsAttention 没人接时
+});
+```
+
+`onCycleResult` 的 `GatherCycleFact`：outcome / step（`'G0'` = 恢复阶梯用尽，含开跑前的阶梯）/ errorCode / dispatched / captures / shotPath / kicked。
+**在失败的调度轮往上抛之前**报；「这一轮压根没跑起来」（开跑前的检查、模板、运行器在出结果前就失败）也补报一次
+（`step: null`，message 以「采集流程没能启动：」开头）；取消的轮次、让路（`CONCURRENCY_LIMIT`）、被中止与需要人处理
+（`GAME_UPDATE_REQUIRED` / `AI_RISK_BLOCKED`）都不报。`onDispatched(index, records, at)`：资源 / 坐标 / 等级 / 搜索下限 / 储量 / 行军秒数。
 
 `EtaScheduler` 公共方法：
 
@@ -104,15 +125,23 @@ errorCode / dispatched / captures / shotPath / kicked，**在失败的调度轮�
 | `getConfig()` / `saveConfig(patch)` | 全局 `SchedulerConfig`（原版字段与默认值，`SCHEDULER_CONFIG_RANGE` 夹值） |
 | `list()` / `getState(i)` / `isAuto(i)` / `isOperating(i)` | 队列视图 `SchedulerQueueState`（读，不登记实例） |
 | `setHooks(partial)` / `setQueueFreeHook(fn)` | 合并钩子（传 `undefined` 移除一个）；采集交接 |
+| `status()` | `{ owner, message, since }`：本进程是否在管调度（只读时附中文原因）；变化时推 `scheduler-status` |
 
-`AutomationHost` 还提供 `recognizeScreen(i, raw, signal)`（用缓存模板判断是否已知界面，给卡死恢复等主界面用）与
-`invalidateTemplates()`（AI 自学模板之后让所有 worker 丢弃编译缓存；普通模板编辑靠 manifest 指纹自动失效）。
+`AutomationHost` 还提供两个只读识别查询，都用该实例常驻 worker 里**已编译的模板**，不碰设备、不拿锁：
+
+- `recognizeScreen(i, raw, signal?)`：这一帧是不是已知界面（`isRecognizableScreen`；AI 点完复验、卡死恢复等主界面）。
+- `matchTemplates(i, raw, templateIds, { threshold?, roi?, signal? })`：按 id 匹配界面模板（顶号探针在失败现场那一帧上）；
+  模板集里没有的 id 返回 `found: false`、`reason: '模板缺失'`，从不抛。
+
+★ 它们是「查询」而不是「作业」：正在跑的采样 / 采集作业等待钩子（`onUnrecognizedFrame`、`adviseUnknownScreen`、`probeKicked`）时，
+同一个 worker 照样回答（作业此时停在 await 上），而再开一个作业只会得到 `CONCURRENCY_LIMIT`。作业与同时到达的查询共用一次编译。
+`invalidateTemplates()`：AI 自学模板之后让所有 worker 丢弃编译缓存（普通模板编辑靠 manifest 指纹自动失效）。
 
 ### IPC 与事件
 
 `src/shared/ipc/scheduler.ts`：`schedulerStates / schedulerState / schedulerSample / schedulerSetAuto / schedulerConfig /
-saveSchedulerConfig / schedulerWakes / schedulerCancelWake / schedulerForget`；事件 `scheduler-changed`（`SchedulerQueueState`）与
-`scheduler-config-changed`。旧的 `setAutomationSchedule` / `automationSchedules` / `automation-schedule` 继续可用（经 `ScheduleCompat`）。
+saveSchedulerConfig / schedulerWakes / schedulerCancelWake / schedulerForget / schedulerStatus`；事件 `scheduler-changed`（`SchedulerQueueState`）、
+`scheduler-config-changed` 与 `scheduler-status`（`SchedulerServiceStatus`：本窗口是否在管调度、只读原因）。旧的 `setAutomationSchedule` / `automationSchedules` / `automation-schedule` 继续可用（经 `ScheduleCompat`）。
 渲染进程可用 `@avdm/automation/wanlong/pure` 的 `deriveMarchView` / `formatDuration` / `summarizeQueues` 每秒本地递推倒计时，零 ADB。
 
 ### 错误码
@@ -130,6 +159,7 @@ saveSchedulerConfig / schedulerWakes / schedulerCancelWake / schedulerForget`；
 - 视觉工作线程常驻；hook（AI 问询、等游戏更新）期间暂停作业超时，单次最多 30 分钟，作为「游戏更新时延长一轮超时」的实现。
 - 连续失败安全暂停（8 次）是本仓库保留的额外保护。
 - 首次开启的探针门槛与「通过记录」是本仓库的加固（原版只在开启时校验账号就绪）。
+- 单写者调度租约与只读进程的自动接管是本仓库的加固（原版靠单实例锁）。
 
 ## 验证
 

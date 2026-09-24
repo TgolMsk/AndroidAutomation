@@ -4,7 +4,7 @@ import { Worker } from 'node:worker_threads';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import { AppError, canonicalDirectory, TemplateLibrary, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
+import { AppError, canonicalDirectory, TemplateLibrary, type MatchResult, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
 import {
   cycleFactOf, normalizeGatherConfig, startupFailureFact, type DispatchRecord, type GatherCycleFact,
   type GatherCycleResult, type KickedProbeResult, type PanelSample,
@@ -20,7 +20,7 @@ import { InstanceLocks } from '../scheduler/instance-lock';
 import { EtaScheduler, type EtaSchedulerOptions } from '../scheduler/service';
 import { ShotStore } from '../scheduler/shots';
 import type { HealthFrame, LogLevel, QueueFreeResult, SampleRequest } from '../scheduler/types';
-import { WanlongGatherRunner, type GatherManager, type GatherRunResult } from './gather-runner';
+import { WanlongGatherRunner, type GatherManager, type GatherRunResult, type MatchQueryOptions } from './gather-runner';
 import { inspectGatherProbe } from './gather-probe-guard';
 import { gamePlugin, gameSummaries, gameTask } from './games';
 import type { ProbeWorkerInput, ProbeWorkerOutput } from './probe-worker';
@@ -58,11 +58,15 @@ function isRun(value: unknown): value is AutomationRun {
 }
 
 type GatherRunnerPort = Pick<WanlongGatherRunner, 'runOnce' | 'stop' | 'dispose' | 'isRunning'> &
-  Partial<Pick<WanlongGatherRunner, 'sample' | 'healthFrame' | 'invalidateTemplates' | 'recognize'>>;
+  Partial<Pick<WanlongGatherRunner, 'sample' | 'healthFrame' | 'invalidateTemplates' | 'recognize' | 'match'>>;
 
 /** A future durable scheduler may consume a completed cycle and return only a wake it actually stored. */
 export type CycleCompletionSink = (run: AutomationRun, result: GatherCycleResult) => Promise<number | null>;
 
+/**
+ * Observers of gather runs. Pass them to the constructor or merge them later with `AutomationHost.setHooks()` from a
+ * module's own section of main/index.ts (alerts: `onCycleResult` / `onNeedsAttention`, stats: `onDispatched`…).
+ */
 export interface AutomationHostHooks {
   onCycle?: (run: AutomationRun, result: GatherCycleResult, source: 'manual' | 'scheduled') => Promise<void>;
   onFailure?: (run: AutomationRun, error: unknown, source: 'manual' | 'scheduled') => Promise<void>;
@@ -115,7 +119,7 @@ export interface AutomationHostPorts {
 
 export interface AutomationHostOptions {
   locks?: InstanceLocks;
-  scheduler?: Omit<EtaSchedulerOptions, 'locks' | 'publish' | 'publishConfig' | 'log' | 'onSafetyPause' | 'onAttentionPause'>;
+  scheduler?: Omit<EtaSchedulerOptions, 'locks' | 'publish' | 'publishConfig' | 'publishStatus' | 'log' | 'onSafetyPause' | 'onAttentionPause'>;
   shots?: ShotStore;
 }
 
@@ -148,6 +152,7 @@ export class AutomationHost {
   readonly locks: InstanceLocks;
   private readonly shots: ShotStore;
   private ports: AutomationHostPorts = {};
+  private hooks: AutomationHostHooks;
   private readonly workers = new Set<Worker>();
   private readonly runHistory = new Map<string, AutomationRun>();
   private readonly activeRuns = new Map<string, ActiveAutomationRun>();
@@ -166,7 +171,8 @@ export class AutomationHost {
   private disposed = false;
 
   constructor(private readonly host: ManagerHost, home: string, gatherRunner?: GatherRunnerPort, private readonly cycleSink?: CycleCompletionSink,
-    private readonly hooks: AutomationHostHooks = {}, options: AutomationHostOptions = {}) {
+    hooks: AutomationHostHooks = {}, options: AutomationHostOptions = {}) {
+    this.hooks = { ...hooks };
     this.home = home;
     this.store = new AutomationSettingsStore(home);
     this.templates = new TemplateLibrary(home);
@@ -196,6 +202,7 @@ export class AutomationHost {
         broadcast('automation-schedule', toAutomationSchedule(state));
       },
       publishConfig: (config) => broadcast('scheduler-config-changed', config),
+      publishStatus: (status) => broadcast('scheduler-status', status),
       log: (level, message) => this.logLine(level, message),
       onSafetyPause: (index, failureCount) => {
         void this.hooks.onScheduleStop?.(GATHER_GAME_ID, index, failureCount).catch((error: unknown) =>
@@ -213,6 +220,14 @@ export class AutomationHost {
   /** Plug in the ports of later modules (accounts, alerts, AI). Merges; `undefined` removes one. */
   setPorts(ports: Partial<AutomationHostPorts>): void {
     this.ports = { ...this.ports, ...ports };
+  }
+
+  /**
+   * Merge run observers (`onCycleResult`, `onDispatched`, `onNeedsAttention`, …) from a later module's own section of
+   * main/index.ts. Passing `undefined` for a key removes it. Applies to cycles that finish after the call.
+   */
+  setHooks(hooks: Partial<AutomationHostHooks>): void {
+    this.hooks = { ...this.hooks, ...hooks };
   }
 
   games(): AutomationGameSummary[] {
@@ -751,14 +766,30 @@ export class AutomationHost {
   }
 
   /**
-   * Whether a frame shows a known screen (world map, city, panels…) with the instance's cached templates. For later
-   * modules (freeze recovery waiting for the main screen, AI verification). Runs in the vision worker.
+   * Whether a frame shows a known screen (world map, city, panels…) with the instance's cached templates
+   * (`isRecognizableScreen`). For later modules: AI click verification, freeze recovery waiting for the main screen.
+   * A read-only query on the instance's long-lived vision worker: ★ it also works from a hook the running sample or
+   * cycle is awaiting (onUnrecognizedFrame, adviseUnknownScreen, probeKicked). No device access, no lock.
    */
-  async recognizeScreen(index: number, raw: RawFrame, signal: AbortSignal): Promise<boolean> {
-    const settings = await this.store.get(GATHER_GAME_ID, asIndex(index));
+  async recognizeScreen(index: number, raw: RawFrame, signal?: AbortSignal): Promise<boolean> {
+    const i = asIndex(index);
+    const settings = await this.store.get(GATHER_GAME_ID, i);
     if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
-    if (this.gatherRunner.recognize) return this.gatherRunner.recognize(index, settings.templateDir, raw, signal);
-    return false;
+    if (!this.gatherRunner.recognize) throw new SchedulerError('UNKNOWN', '采集运行器不支持界面识别');
+    return this.gatherRunner.recognize(i, settings.templateDir, raw, signal);
+  }
+
+  /**
+   * Match UI templates by id on a frame main already holds (the kicked probe on a failure frame, AI checks), with
+   * the instance's cached compiled templates. Missing templates answer `found: false` with reason「模板缺失」, so a
+   * probe for user-authored templates degrades silently. Same read-only query path as `recognizeScreen`.
+   */
+  async matchTemplates(index: number, raw: RawFrame, templateIds: string[], options: MatchQueryOptions = {}): Promise<MatchResult[]> {
+    const i = asIndex(index);
+    const settings = await this.store.get(GATHER_GAME_ID, i);
+    if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
+    if (!this.gatherRunner.match) throw new SchedulerError('UNKNOWN', '采集运行器不支持模板匹配');
+    return this.gatherRunner.match(i, settings.templateDir, raw, templateIds, options);
   }
 
   /** Compiled templates are dropped in every vision worker (e.g. after an AI template harvest). */

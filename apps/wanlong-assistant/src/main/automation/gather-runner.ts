@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import path, { dirname, join } from 'node:path';
-import type { ProbeReport, RawFrame } from '@avdm/automation';
+import type { MatchResult, ProbeReport, RawFrame } from '@avdm/automation';
 import {
   FAILURE_SHOT_LABELS,
   createRuntimeState,
@@ -22,6 +22,7 @@ import { SchedulerError, codeOf, messageOf } from '../scheduler/errors';
 import { InstanceLocks } from '../scheduler/instance-lock';
 import type { HealthFrame, LogLevel } from '../scheduler/types';
 import { VisionWorkerPool, type VisionDevice, type VisionJobContext, type VisionWorkerLike } from '../scheduler/vision-pool';
+import type { VisionQuery } from '../scheduler/vision-protocol';
 import { inspectGatherProbe } from './gather-probe-guard';
 
 const GAME_ID = 'wanlong';
@@ -82,6 +83,15 @@ export interface SampleOnceOptions {
   onCaptureFailed?(error: unknown): void;
   onUnrecognized?(raw: RawFrame): Promise<boolean | 'recovered' | 'updated'>;
   log?(level: LogLevel, message: string): void;
+}
+
+/** Options of a read-only template match on a frame main already holds (kicked probe, AI verification). */
+export interface MatchQueryOptions {
+  /** Overrides each template's own threshold. */
+  threshold?: number;
+  /** Reference-coordinate search region; defaults to each template's own ROI. */
+  roi?: { x: number; y: number; w: number; h: number };
+  signal?: AbortSignal;
 }
 
 export interface WanlongGatherRunnerOptions {
@@ -241,6 +251,10 @@ function checkAbort(signal: AbortSignal): void {
   if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('采集已取消');
 }
 
+function stepOf(error: unknown): unknown {
+  return (error as { detail?: { step?: unknown } } | null)?.detail?.step;
+}
+
 /**
  * One G0–G16 cycle, one troop-panel sample or one health frame per call. Vision runs in the long-lived per-instance
  * worker (templates compiled once); every device write goes through main, which enforces the probe gate, the
@@ -339,15 +353,37 @@ export class WanlongGatherRunner {
     return { raw, foreground, running };
   }
 
-  /** Whether a frame shows a known screen (world map, city, panels…), with the cached templates. */
-  async recognize(index: number, templateDir: string, raw: RawFrame, signal: AbortSignal): Promise<boolean> {
-    const dir = await realpath(templateDir);
-    const result = await this.pool.run(index, { kind: 'recognize', instanceIndex: index, templateDir: dir, frame: raw }, {
-      device: { screencapRaw: async () => raw } as unknown as VisionDevice,
-      packageName: wanlongPlugin.packageName, signal, timeoutMs: 60_000, allowColdStart: false,
-      approve: async () => { throw new Error('识别任务不允许输入'); },
-    });
-    return result.kind === 'recognize' && result.recognized;
+  /**
+   * Whether a frame shows a known screen (world map, city, panels…), with the instance worker's cached templates.
+   * ★ Answered even while that instance's sample or cycle is running (from a hook it awaits): a read-only query,
+   * not a job. No device access, no lock.
+   */
+  async recognize(index: number, templateDir: string, raw: RawFrame, signal?: AbortSignal): Promise<boolean> {
+    assertIndex(index);
+    const result = await this.pool.query(index, { kind: 'recognize', templateDir: await realpath(templateDir), frame: raw }, signal);
+    if (result.kind !== 'recognize') throw new SchedulerError('UNKNOWN', '视觉工作线程返回了错误的结果类型');
+    return result.recognized;
+  }
+
+  /**
+   * Match UI templates (by id) on a frame main already holds — the kicked probe on a failure frame, AI checks — with
+   * the cached compiled set. Missing templates answer `found: false` (reason「模板缺失」), never throw. Same
+   * read-only query path as `recognize`: also works inside a running job's hook.
+   */
+  async match(index: number, templateDir: string, raw: RawFrame, templateIds: string[], options: MatchQueryOptions = {}): Promise<MatchResult[]> {
+    assertIndex(index);
+    if (!Array.isArray(templateIds) || templateIds.length > 64 || !templateIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 128)) {
+      throw new SchedulerError('INVALID_ARGUMENT', '模板 id 列表无效');
+    }
+    if (templateIds.length === 0) return [];
+    const query: VisionQuery = {
+      kind: 'match', templateDir: await realpath(templateDir), frame: raw, templateIds: [...templateIds],
+      ...(options.threshold === undefined ? {} : { threshold: options.threshold }),
+      ...(options.roi ? { roi: { ...options.roi } } : {}),
+    };
+    const result = await this.pool.query(index, query, options.signal);
+    if (result.kind !== 'match') throw new SchedulerError('UNKNOWN', '视觉工作线程返回了错误的结果类型');
+    return result.matches;
   }
 
   private async prepare(
@@ -369,21 +405,27 @@ export class WanlongGatherRunner {
     }
   }
 
-  /** Main-side gate shared by every job: the probe decision, the game in front, the same AVD. */
+  /** Main-side gate shared by every job: the probe decision, the game in front, the same AVD (at approval and before every input). */
   private context(index: number, device: GatherAdbDevice, createdAt: string, signal: AbortSignal, timeoutMs: number, allowColdStart: boolean): VisionJobContext {
+    const assertInstance = async (): Promise<void> => {
+      const now = await this.manager.getState(index);
+      if (now.status !== 'running' || now.record.createdAt !== createdAt) {
+        throw new SchedulerError('DEVICE_NOT_READY', `实例 #${index} 已停止或被替换`);
+      }
+    };
     return {
       device,
       packageName: wanlongPlugin.packageName,
       signal,
       timeoutMs,
       allowColdStart,
+      assertInstance,
       approve: async (probe: ProbeReport) => {
         const decision = inspectGatherProbe(probe);
         if (!decision.ok) throw new Error(decision.reason);
         const foreground = await device.foregroundPackage();
         if (foreground !== wanlongPlugin.packageName) throw new Error(`万龙觉醒已离开前台（当前：${foreground ?? '未知'}）`);
-        const now = await this.manager.getState(index);
-        if (now.status !== 'running' || now.record.createdAt !== createdAt) throw new Error(`实例 #${index} 已停止或被替换`);
+        await assertInstance();
       },
     };
   }
@@ -406,7 +448,7 @@ export class WanlongGatherRunner {
     let probed = false;
     const warnings: string[] = [];
     // The pool's job timeout aborts the worker like a stop does: the cycle ends as `cancelled` with its state intact.
-    const outcome = await this.pool.run(index, {
+    const job = this.pool.run(index, {
       kind: 'gather', instanceIndex: index, templateDir, config, state, allowColdStart, shotPolicy: policy,
       advisor: Boolean(options.advise),
     }, {
@@ -431,6 +473,23 @@ export class WanlongGatherRunner {
         }
       },
     });
+    let outcome: Awaited<typeof job>;
+    try {
+      outcome = await job;
+    } catch (error) {
+      // ★ The pre-gate recovery ladder ran out (the worker left a「g0-failed」shot, saved and kicked-probed above):
+      //   a failed cycle at step G0 like the original, not a generic start-up failure. Nothing was dispatched and
+      //   the runtime state is untouched, so there is nothing to save.
+      if (signal.aborted || codeOf(error) !== 'STEP_FAILED' || stepOf(error) !== 'G0') throw error;
+      const message = messageOf(error);
+      const failed: GatherCycleResult = {
+        outcome: 'error', message, dispatched: [], queue: null, nextWakeAt: null,
+        nextWakeReason: '开跑前回不到可识别的界面', captures: 0, state, warnings: [],
+        error: { code: 'STEP_FAILED', message, detail: { step: 'G0' } },
+      };
+      options.log?.('error', message);
+      return { ...failed, fact: cycleFactOf(failed, { shotPath, kicked }) };
+    }
     if (outcome.kind !== 'gather') throw new SchedulerError('UNKNOWN', '视觉工作线程返回了错误的结果类型');
     const result: GatherCycleResult = outcome.result;
     // ★ Must save back (level memory, in-flight bookkeeping, backoff). A failed save only warns: the troops already

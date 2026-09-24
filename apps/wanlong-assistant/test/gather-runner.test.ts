@@ -324,6 +324,140 @@ describe('WanlongGatherRunner', () => {
     expect(taps).toHaveLength(0);
   });
 
+  it('checks the AVD identity before every input, whitelisted recovery actions included', async () => {
+    const answers: Array<{ ok: boolean; message?: string }> = [];
+    const runner = runnerWith((message, worker) => {
+      if (message.type === 'job') {
+        createdAt = 'another-avd';
+        worker.request({ op: 'tap', args: [5, 5, 'closePopup'] });
+        worker.request({ op: 'key', args: ['BACK', 'probeBack'] });
+        worker.request({ op: 'ensureGame', args: [] });
+      }
+      if (message.type === 'response') {
+        answers.push(message.ok ? { ok: true } : { ok: false, message: message.error.message });
+        if (answers.length === 3) worker.fail('done', 'CANCELLED');
+      }
+    });
+    foreground = 'com.android.launcher3';
+    await expect(runner.runOnce(1, options())).rejects.toThrow('done');
+    expect(answers[0]).toMatchObject({ ok: false, message: expect.stringContaining('已停止或被替换') });
+    expect(answers[1]).toMatchObject({ ok: false, message: expect.stringContaining('已停止或被替换') });
+    // The cold-start helper reports its own failure instead of throwing; the monkey launch never ran.
+    expect(launches).toBe(0);
+    expect(taps).toEqual([]);
+    expect(keys).toEqual([]);
+  });
+
+  it('checks the AVD identity before approved input too, not only at approval', async () => {
+    let answer: { ok: boolean; message?: string } | undefined;
+    const runner = runnerWith((message, worker) => {
+      approvedScript((w) => { createdAt = 'another-avd'; w.request({ op: 'swipe', args: [1, 2, 3, 4, 100] }); })(message, worker);
+      if (message.type === 'response') {
+        answer = message.ok ? { ok: true } : { ok: false, message: message.error.message };
+        worker.fail('done', 'CANCELLED');
+      }
+    });
+    await expect(runner.runOnce(1, options())).rejects.toThrow('done');
+    expect(answer).toMatchObject({ ok: false, message: expect.stringContaining('已停止或被替换') });
+  });
+
+  it('re-checks the foreground before captures once approved (not before)', async () => {
+    const answers: boolean[] = [];
+    const runner = runnerWith((message, worker) => {
+      if (message.type === 'job') { foreground = 'com.android.launcher3'; worker.request({ op: 'capture', args: [] }); }
+      if (message.type === 'response' && answers.length === 0) {
+        answers.push(message.ok);
+        foreground = PACKAGE;
+        worker.ready();
+      }
+      if (message.type === 'approved') { foreground = 'com.android.launcher3'; worker.request({ op: 'capture', args: [] }); }
+      if (message.type === 'response' && answers.length === 1 && worker.sentOf('approved').length === 1) {
+        answers.push(message.ok);
+        worker.fail('done', 'CANCELLED');
+      }
+    });
+    await expect(runner.runOnce(1, options())).rejects.toThrow('done');
+    expect(answers).toEqual([true, false]);
+  });
+
+  it('offers the unknown-screen advisor before the gate within its budget (DECISIONS C ④)', async () => {
+    const advise = vi.fn(async () => true);
+    const answers: boolean[] = [];
+    const runner = runnerWith((message, worker) => {
+      if (message.type === 'job') {
+        for (let attempt = 1; attempt <= 3; attempt++) worker.request({ op: 'advise', args: [frame(), attempt] });
+      }
+      if (message.type === 'response') {
+        answers.push(message.ok);
+        if (answers.length === 3) worker.fail('done', 'CANCELLED');
+      }
+    });
+    await expect(runner.runOnce(1, options({ advise }))).rejects.toThrow('done');
+    expect(answers).toEqual([true, true, false]);
+    expect(advise).toHaveBeenCalledTimes(2);
+  });
+
+  it('ends an exhausted pre-gate ladder as a failed G0 cycle with its scene shot and the kicked probe', async () => {
+    const saved: string[] = [];
+    const probeKicked = vi.fn(async () => null);
+    const runner = runnerWith((message, worker) => {
+      if (message.type === 'job') {
+        worker.shot('g0-failed');
+        worker.emit('message', { type: 'failed', jobId: worker.jobId, error: {
+          code: 'STEP_FAILED', message: '开跑前的恢复阶梯跑完仍回不到可识别的界面', detail: { step: 'G0' },
+        } } satisfies WorkerToMain);
+      }
+    });
+    const outcome = await runner.runOnce(1, options({
+      saveShot: async (label: string) => { saved.push(label); return `automation/wanlong/shots/inst1-${label}.jpg`; },
+      probeKicked,
+    }));
+    expect(outcome).toMatchObject({ outcome: 'error', dispatched: [], error: { code: 'STEP_FAILED', detail: { step: 'G0' } } });
+    expect(outcome.fact).toMatchObject({
+      outcome: 'error', step: 'G0', errorCode: 'STEP_FAILED', shotPath: 'automation/wanlong/shots/inst1-g0-failed.jpg', kicked: null,
+    });
+    expect(saved).toEqual(['g0-failed']);
+    expect(probeKicked).toHaveBeenCalledTimes(1);
+    expect(runner.isRunning(1)).toBe(false);
+  });
+
+  it('answers recognize / match queries from inside a running sample\'s hook with the same worker', async () => {
+    const created: FakeWorker[] = [];
+    const runner = runnerWith((message, worker) => {
+      if (message.type === 'job') worker.request({ op: 'unrecognized', args: [frame()] });
+      if (message.type === 'query') {
+        const result = message.query.kind === 'recognize'
+          ? { kind: 'recognize' as const, recognized: true }
+          : { kind: 'match' as const, matches: message.query.templateIds.map((templateId) => ({
+            templateId, found: false, score: 0, x: -1, y: -1, w: 0, h: 0, centerX: -1, centerY: -1, threshold: 0.9, elapsedMs: 0, reason: '模板缺失',
+          })) };
+        worker.emit('message', { type: 'queryResult', queryId: message.queryId, ok: true, result } satisfies WorkerToMain);
+      }
+      if (message.type === 'response') {
+        worker.emit('message', { type: 'result', jobId: worker.jobId, result: { kind: 'sample', sample: {
+          sampledAt: Date.now(), queueUsed: 1, queueTotal: 5, rows: [], warnings: [String(message.ok && message.value)],
+        } } } satisfies WorkerToMain);
+      }
+    }, created);
+    const seen: unknown[] = [];
+    const sample = await runner.sample(1, {
+      templateDir, config: defaultSchedulerConfig(), deadlineAt: Date.now() + 60_000, signal: new AbortController().signal,
+      allowColdStart: false,
+      onUnrecognized: async (raw) => {
+        seen.push(await runner.recognize(1, templateDir, raw));
+        seen.push((await runner.match(1, templateDir, raw, ['tpl_dlg_kicked'], { threshold: 0.92 })).map((m) => [m.templateId, m.found, m.reason]));
+        return 'recovered';
+      },
+    });
+    expect(sample.warnings).toEqual(['recovered']);
+    expect(seen).toEqual([true, [['tpl_dlg_kicked', false, '模板缺失']]]);
+    expect(created).toHaveLength(1);
+    const queries = created[0].sentOf('query');
+    expect(queries.map((q) => q.query.kind)).toEqual(['recognize', 'match']);
+    expect(queries[1].query).toMatchObject({ templateIds: ['tpl_dlg_kicked'], threshold: 0.92 });
+    await expect(runner.match(1, templateDir, frame(), ['x'.repeat(200)])).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+  });
+
   it('refuses a gather result that skipped the probe gate', async () => {
     const runner = runnerWith((message, worker) => { if (message.type === 'job') worker.finish(); });
     await expect(runner.runOnce(1, options())).rejects.toThrow('越过探针门槛');

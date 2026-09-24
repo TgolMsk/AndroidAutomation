@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -579,5 +579,76 @@ describe('EtaScheduler', () => {
     expect(await readFile(file, 'utf8')).toBe(before);
     expect(owner.getState(1).readOnly).toBeUndefined();
     await owner.dispose();
+  });
+
+  it('takes the scheduler over once the owning process quits and re-arms its auto instances', async () => {
+    vi.useRealTimers();
+    const owner = make({ ownerLease: true });
+    await owner.restore();
+    samples.push(async () => panel(5, 5));
+    await owner.setAuto(1, true);
+    const statuses: Array<{ owner: boolean; message: string | null }> = [];
+    const viewer = make({ ownerLease: true, ownerRetryMs: 20, publishStatus: (status) => statuses.push(status) });
+    await viewer.restore();
+    expect(viewer.status()).toMatchObject({ gameId: 'wanlong', owner: false, message: expect.stringContaining('30 秒内自动接管') });
+    expect(statuses).toEqual([expect.objectContaining({ owner: false })]);
+    await expect(viewer.setAuto(1, false)).rejects.toThrow('自动接管');
+    await owner.dispose();
+    await until(() => statuses.at(-1)?.owner === true, '接管调度');
+    expect(statuses.at(-1)).toMatchObject({ owner: true, message: null });
+    expect(viewer.getState(1).readOnly).toBeUndefined();
+    expect(viewer.getState(1)).toMatchObject({ auto: true, nextWakeAt: expect.any(Number) });
+    expect(viewer.listWakes()).toHaveLength(1);
+    expect((await viewer.setAuto(1, false)).auto).toBe(false);
+  });
+
+  it('takes over a scheduler lease left behind by a crash once it goes stale (no read-only lifetime)', async () => {
+    const first = await ready();
+    samples.push(async () => panel(5, 5));
+    await first.setAuto(1, true);
+    await first.dispose();
+    vi.useRealTimers();
+    // A crashed owner: the lease directory exists and was refreshed moments ago, then nobody refreshes it.
+    const lease = path.join(home, 'automation', 'games', 'wanlong', 'eta-scheduler.lock');
+    await mkdir(lease, { recursive: true });
+    const restarted = make({ ownerLease: true, ownerRetryMs: 20 });
+    await restarted.restore();
+    expect(restarted.status().owner).toBe(false);
+    expect(restarted.listWakes()).toEqual([]);
+    // 30 s later the heartbeat is stale; the next retry breaks it.
+    const past = new Date(Date.now() - 60_000);
+    await utimes(lease, past, past);
+    await until(() => restarted.listWakes().length === 1, '接管过期租约');
+    expect(restarted.status().owner).toBe(true);
+    expect(restarted.getState(1)).toMatchObject({ auto: true, nextWakeAt: expect.any(Number) });
+    expect(logs.join('\n')).toContain('已接管自动采集调度');
+  });
+
+  it('lets an operation that arrives during restore wait for it instead of being overwritten by the file', async () => {
+    const first = await ready();
+    samples.push(async () => panel(5, 5, [gatheringRow(1, 3_600_000)]));
+    await first.setAuto(1, true);
+    samples.push(async () => panel(2, 5));
+    await first.setAuto(2, true);
+    await first.setAuto(1, false);
+    await first.dispose();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const second = make({}, {
+      // Instance 2 is re-armed at restore; its state read is slow.
+      instance: vi.fn(async (index: number) => { if (index === 2) await gate; return instance; }),
+    });
+    const restoring = second.restore();
+    const enabling = second.setAuto(1, true);
+    await settle();
+    expect(ports.sample).toHaveBeenCalledTimes(2);
+    release();
+    await restoring;
+    const state = await enabling;
+    // The persisted march survived and the enable took effect (its first sample is throttled right after restart).
+    expect(state).toMatchObject({ auto: true, queueUsed: 5 });
+    expect(state.marches).toHaveLength(1);
+    expect(second.isAuto(2)).toBe(true);
+    expect(second.listWakes().map((wake) => wake.instanceIndex).sort()).toEqual([1, 2]);
   });
 });

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRuntimeState, wanlongPlugin, type GatherCycleResult, type PanelSample } from '@avdm/automation/wanlong';
 import { AutomationHost, type AutomationHostHooks } from '../src/main/automation/host';
 import type { TemplateJob, TemplateJobOutput } from '../src/main/automation/template-jobs';
+import { SchedulerError } from '../src/main/scheduler/errors';
 import { InstanceLocks } from '../src/main/scheduler/instance-lock';
 import type { ManagerHost } from '../src/main/manager-host';
 import type { AutomationProbeReport } from '../src/shared/ipc';
@@ -239,6 +240,63 @@ describe('AutomationHost single-cycle gathering', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('reports a scheduled cycle that never started as a fact before the scheduler counts it (alerts iron rule 5)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await host.dispose();
+      const order: string[] = [];
+      const facts: unknown[] = [];
+      runner = controlledRunner();
+      host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner, undefined, {}, {
+        locks: new InstanceLocks(home, { fileLock: async (_path, fn) => fn() }),
+        scheduler: { ownerLease: false, random: () => 0 },
+      });
+      // Registered later, from the alerts module's own section of main/index.ts.
+      host.setHooks({ onCycleResult: async (index, fact, source) => { order.push('fact'); facts.push({ index, fact, source }); } });
+      host.eta.setHooks({ log: (_level, message) => { if (message.includes('派遣流程报错')) order.push('scheduler'); } });
+      allowProbe(host);
+      await enable();
+      await host.setSchedule('wanlong', 1, true);
+      // The account's gather config was switched off meanwhile: startRun refuses before any cycle result exists.
+      host.setPorts({ accountGatherConfig: async () => ({ version: 2, enabled: false }) });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(host.eta.getState(1).failureCount).toBe(1));
+      expect(runner.runOnce).not.toHaveBeenCalled();
+      expect(order).toEqual(['fact', 'scheduler']);
+      expect(facts).toEqual([{ index: 1, source: 'scheduled', fact: {
+        outcome: 'error', message: '采集流程没能启动：请先启用并保存自动采集配置', step: null, errorCode: 'UNKNOWN',
+        dispatched: 0, captures: 0, shotPath: null, kicked: null,
+      } }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a runner that fails before any cycle result, but never a hand-over, a stop or a human-needed pause', async () => {
+    const facts: Array<{ message: string; errorCode: string | null; step: string | null }> = [];
+    host.setHooks({ onCycleResult: async (_index, fact) => { facts.push({ message: fact.message, errorCode: fact.errorCode, step: fact.step }); } });
+    await enable();
+    const gather = (signal = new AbortController().signal) =>
+      (host as unknown as { gatherForScheduler(index: number, signal: AbortSignal): Promise<unknown> }).gatherForScheduler(1, signal);
+
+    runner.runOnce.mockImplementationOnce(async () => { throw new SchedulerError('TEMPLATE_NOT_FOUND', '缺少采集关键模板：tpl_btn_search'); });
+    await expect(gather()).rejects.toMatchObject({ code: 'TEMPLATE_NOT_FOUND' });
+    expect(facts).toEqual([{ message: '采集流程没能启动：缺少采集关键模板：tpl_btn_search', errorCode: 'TEMPLATE_NOT_FOUND', step: null }]);
+
+    for (const code of ['CONCURRENCY_LIMIT', 'RUN_ABORTED', 'CANCELLED', 'GAME_UPDATE_REQUIRED', 'AI_RISK_BLOCKED']) {
+      runner.runOnce.mockImplementationOnce(async () => { throw new SchedulerError(code, `不该上报：${code}`); });
+      await expect(gather()).rejects.toMatchObject({ code });
+    }
+    // Stopped by the scheduler: neither a failed start nor a runner error that follows the abort is a fact.
+    const stopped = new AbortController();
+    stopped.abort(new SchedulerError('RUN_ABORTED', '自动调度已停止'));
+    await expect(gather(stopped.signal)).rejects.toThrow('自动调度已停止');
+    const aborting = new AbortController();
+    runner.runOnce.mockImplementationOnce(async () => { aborting.abort(new Error('停')); throw new Error('ADB 截图失败: 断开'); });
+    await expect(gather(aborting.signal)).rejects.toThrow('ADB 截图失败');
+    expect(facts).toHaveLength(1);
   });
 
   it('counts a scheduled cycle that its own timeout cancelled as a failure, not a stop', async () => {

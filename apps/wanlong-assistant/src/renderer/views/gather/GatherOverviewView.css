@@ -609,6 +609,10 @@
   color: var(--red);
 }
 
+.automation-schedule-note.is-readonly {
+  color: var(--amber);
+}
+
 .automation-schedule > .automation-inline-error .btn {
   margin-left: 10px;
 }
