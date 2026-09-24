@@ -19,6 +19,11 @@ export interface AutomationSettings {
    * for an instance without a current account, whose config lives in the instance's own settings file.
    */
   configAccount?: { id: string; name: string };
+  /**
+   * The instance's own config (no `configAccount`) was saved for another AVD that used to sit at this index: shown,
+   * but flagged so the user checks and re-saves it (never inherited by index alone; binding does not move it).
+   */
+  configReplaced?: boolean;
 }
 
 export interface AutomationProbeMatch {

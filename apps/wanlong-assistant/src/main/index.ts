@@ -115,6 +115,7 @@ bootstrapApp({
       // afterAccountBind); from then on gather reads and saves the account's copy (`automation.settings()` and the
       // scheduler ports below read `gatherConfigFor()` first and fall back to the instance file).
       instanceGatherConfig: (gameId, index) => automation.instanceGatherConfig(gameId, index),
+      clearInstanceGatherConfig: (gameId, index) => automation.clearInstanceGatherConfig(gameId, index),
       onAccountsChanged: (event) => broadcast('account-changed', event),
       onLoginChanged: (session) => broadcast('login-changed', session),
     });

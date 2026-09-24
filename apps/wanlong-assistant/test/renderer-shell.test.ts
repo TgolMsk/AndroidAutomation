@@ -8,7 +8,7 @@ import { VIEW_REGISTRY, restoredScrollTop } from '../src/renderer/views/registry
 import { sectionTones, sortBadges } from '../src/renderer/state/badges';
 import { isRunActive, upsertRun, upsertSchedule } from '../src/renderer/state/activity';
 import { isPlanRunActive } from '../src/renderer/state/plan-runs';
-import { GATHER_RESOURCES, wanlongConfig, wanlongDraftOf } from '../src/renderer/views/gather/gather-config';
+import { draftOf } from '../src/renderer/views/gather/config-model';
 import { describeServiceFailure, serviceFailureDetail, serviceFailureLabel } from '../src/renderer/hooks/useServiceFailures';
 
 function memoryStorage(initial: Record<string, string> = {}) {
@@ -118,22 +118,19 @@ describe('gather config draft', () => {
   const settings = (config: Record<string, unknown>): AutomationSettings => ({ templateDir: '/t', config });
 
   it('takes resource defaults from the single automation source (mana off, no queue)', () => {
-    expect(GATHER_RESOURCES.map((item) => item.label)).toEqual(['木材', '金币', '铁矿石', '魔水']);
-    expect(GATHER_RESOURCES.find((item) => item.type === 'mana')).toMatchObject({ defaultEnabled: false, defaultQueues: 0 });
-    const draft = wanlongDraftOf(settings({}));
-    expect(draft).toEqual({ enabled: false, resources: { wood: true, gold: true, iron: true, mana: false } });
-    const config = wanlongConfig(settings({}), draft);
-    expect(config['version']).toBe(2);
-    expect((config['resources'] as { type: string; queues: number }[]).find((item) => item.type === 'mana')?.queues).toBe(0);
+    const draft = draftOf(settings({}));
+    expect(draft.resources.map((item) => item.type)).toEqual(['wood', 'gold', 'iron', 'mana']);
+    expect(draft.resources.find((item) => item.type === 'mana')).toMatchObject({ enabled: false, queues: 0 });
+    expect(draft.version).toBe(2);
+    expect(draft.enabled).toBe(false);
   });
 
-  it('gives an enabled resource at least one queue and keeps fields the page does not edit', () => {
-    const saved = settings({ version: 2, enabled: true, schedule: { x: 1 }, resources: [{ type: 'mana', enabled: false, queues: 0, minStorage: 5 }] });
-    const draft = wanlongDraftOf(saved);
-    const config = wanlongConfig(saved, { ...draft, resources: { ...draft.resources, mana: true } });
-    const mana = (config['resources'] as Record<string, unknown>[]).find((item) => item['type'] === 'mana');
-    expect(mana).toMatchObject({ enabled: true, queues: 1, minStorage: 5, priority: 4 });
-    expect(config['schedule']).toEqual({ x: 1 });
-    expect(config['enabled']).toBe(true);
+  it('keeps saved values as they are (no forced queue, no clamping) and per-resource overrides', () => {
+    const saved = settings({ version: 2, enabled: true, schedule: { slackSeconds: 5000 }, resources: [{ type: 'mana', enabled: true, queues: 0, minStorage: 5 }] });
+    const draft = draftOf(saved);
+    expect(draft.resources.find((item) => item.type === 'mana')).toMatchObject({ enabled: true, queues: 0, minStorage: 5, priority: 4 });
+    expect(draft.schedule.slackSeconds).toBe(5000);
+    expect(draft.enabled).toBe(true);
   });
 });
+

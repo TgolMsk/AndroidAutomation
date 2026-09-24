@@ -72,6 +72,11 @@ export interface AccountManagerPorts {
    * nothing about the gather config, so there is never a second copy that nothing reads.
    */
   instanceGatherConfig?(gameId: string, index: number): Promise<Record<string, unknown> | null>;
+  /**
+   * Clears the instance's own gather config once it moved into the account (original afterAccountBind removed the local
+   * copy), so a later unbind shows defaults instead of an outdated pre-bind copy. Best-effort: the account copy wins.
+   */
+  clearInstanceGatherConfig?(gameId: string, index: number): Promise<void>;
   /** Preview encoder; defaults to a JPEG at 960 px width from the long-lived `login-preview-worker`. */
   encodePreview?(frame: RawFrame): Promise<EncodedPreview>;
   onAccountsChanged?(event: AccountsChangedEvent): void;
@@ -472,6 +477,8 @@ export class AccountManager {
       const next = { ...(account.scriptParams?.[GATHER_PARAM_SCOPE] ?? {}), [GATHER_PARAM_KEY]: json };
       const saved = await this.store.setScriptParams(account.id, GATHER_PARAM_SCOPE, next);
       account.scriptParams = saved.scriptParams;
+      // The account copy is authoritative now; a copy left on the instance is harmless, so a failed clear is ignored.
+      await this.ports.clearInstanceGatherConfig?.(account.gameId, index).catch(() => undefined);
       return `实例上保存的采集配置已搬到账号「${account.name}」，以后跟着账号走。`;
     } catch (error) {
       return `账号已绑定，但采集配置没能搬进账号：${(error as Error).message}。打开采集配置点一次「保存」即可。`;

@@ -9,6 +9,7 @@ import {
   cycleFactOf, normalizeGatherConfig, startupFailureFact, type DispatchRecord, type GatherCycleFact,
   type GatherCycleResult, type KickedProbeResult, type PanelSample, type ShotPolicy,
 } from '@avdm/automation/wanlong';
+import { coerceGatherConfig, describeBlockingIssues, validateGatherConfig } from '@avdm/automation/wanlong/pure';
 import type { AutomationGameSummary, AutomationProbeReport, AutomationRun, AutomationSchedule, AutomationSettings, TemplateAlphaPreview, TemplateCapture, TemplateCoverage, TemplateImportResult, TemplatesChange, TemplateTestOptions, TemplateTestResult } from '../../shared/ipc';
 import { withLabelledLease } from '../app/instance-access';
 import { broadcast } from '../events';
@@ -26,7 +27,7 @@ import { gamePlugin, gameSummaries, gameTask } from './games';
 import type { ProbeWorkerInput, ProbeWorkerOutput } from './probe-worker';
 import { transferableJob, type TemplateJob, type TemplateJobOutput } from './template-jobs';
 import { buildTemplateCoverage, rawFrameToPng, TemplateChangeFeed, workerError, type TemplatesChangeListener } from './template-tools';
-import { AutomationSettingsStore } from './store';
+import { AutomationSettingsStore, type StoredAutomationSettings } from './store';
 
 const PROBE_TIMEOUT_MS = 120_000;
 const TEMPLATE_JOB_TIMEOUT_MESSAGES: Record<TemplateJob['kind'], string> = {
@@ -286,14 +287,30 @@ export class AutomationHost {
     gamePlugin(gameId);
     const i = asIndex(index);
     const stored = await this.store.get(gameId, i);
-    if (gameId !== GATHER_GAME_ID || !this.ports.accountGatherConfig) return stored;
+    const own = () => this.instanceView(i, stored);
+    if (gameId !== GATHER_GAME_ID || !this.ports.accountGatherConfig) return own();
     let owned: Awaited<ReturnType<NonNullable<AutomationHostPorts['accountGatherConfig']>>>;
     try { owned = await this.ports.accountGatherConfig(i); }
     catch (error) {
       this.logLine('warn', `[实例 #${i}] 读不出绑定账号里的采集配置，先显示实例上的那份（重新保存即可修复）：${messageOf(error)}`);
-      return stored;
+      return own();
     }
-    return owned ? { ...stored, config: owned.config, configAccount: { id: owned.accountId, name: owned.accountName } } : stored;
+    return owned
+      ? { templateDir: stored.templateDir, config: owned.config, configAccount: { id: owned.accountId, name: owned.accountName } }
+      : own();
+  }
+
+  /**
+   * The instance file as the renderer sees it: `configReplaced` when its gather config was saved for another AVD that
+   * used to sit at this index (identity stamp ≠ current `record.createdAt`). Files without a stamp are not flagged.
+   */
+  private async instanceView(index: number, stored: StoredAutomationSettings): Promise<AutomationSettings> {
+    const view: AutomationSettings = { templateDir: stored.templateDir, config: stored.config };
+    if (stored.configFor && Object.keys(stored.config).length > 0) {
+      const identity = await this.instanceIdentity(index).catch(() => null);
+      if (identity && identity.createdAt !== stored.configFor) view.configReplaced = true;
+    }
+    return view;
   }
 
   /**
@@ -311,8 +328,21 @@ export class AutomationHost {
    * binding moves it into a newly bound account that has none (original afterAccountBind).
    */
   async instanceGatherConfig(gameId: string, index: number): Promise<Record<string, unknown> | null> {
-    const { config } = await this.instanceSettings(gameId, index);
-    return Object.keys(config).length > 0 ? config : null;
+    gamePlugin(gameId);
+    const i = asIndex(index);
+    const view = await this.instanceView(i, await this.store.get(gameId, i));
+    // A config saved for an AVD that no longer exists never moves into the newly bound account.
+    return Object.keys(view.config).length > 0 && !view.configReplaced ? view.config : null;
+  }
+
+  /**
+   * Original afterAccountBind removed the local copy once it moved into the account: the instance's own gather config is
+   * cleared (template set kept), so unbinding later shows defaults instead of an outdated pre-bind copy. Lease-free
+   * (the caller already holds the instance lease); only the settings file's own lock is taken.
+   */
+  async clearInstanceGatherConfig(gameId: string, index: number): Promise<void> {
+    gamePlugin(gameId);
+    await this.store.save(gameId, asIndex(index), { config: {} });
   }
 
   templateSets(gameId: string): Promise<TemplateSet[]> {
@@ -582,6 +612,10 @@ export class AutomationHost {
         const config = patch.config;
         if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('自动化参数无效');
         if ('version' in config && config.version !== 2) throw new Error('万龙觉醒配置版本不兼容');
+        // Original validateGatherConfig: out-of-range values are refused with Chinese reasons instead of being
+        // silently clamped by the runtime normalization below (the form shows the same issues before saving).
+        const blocking = describeBlockingIssues(validateGatherConfig(coerceGatherConfig(config)));
+        if (blocking) throw new Error(blocking);
         // The game package owns its schema and defaults; preserve its full normalized document.
         patch = { ...patch, config: normalizeGatherConfig(config as Parameters<typeof normalizeGatherConfig>[0]) as unknown as Record<string, unknown> };
       }
@@ -595,13 +629,15 @@ export class AutomationHost {
       // scriptParams); without a current account it stays in the instance's settings file.
       const accountId = patch.config !== undefined && gameId === GATHER_GAME_ID && this.ports.saveAccountGatherConfig
         ? await this.ports.accountIdOf?.(i) ?? null : null;
+      // An instance-file config is stamped with the AVD it was saved for (identity awareness of the fallback copy).
+      const configFor = !accountId && patch.config !== undefined ? (await this.instanceIdentity(i).catch(() => null))?.createdAt ?? null : null;
       await this.withDeviceLease(i, async () => {
         if (accountId) {
           const { config, ...rest } = patch;
           await this.ports.saveAccountGatherConfig!(accountId, config!);
           if (rest.templateDir !== undefined) await this.store.save(gameId, i, rest);
         } else {
-          await this.store.save(gameId, i, patch);
+          await this.store.save(gameId, i, patch, { configFor });
         }
       });
       return this.settings(gameId, i);

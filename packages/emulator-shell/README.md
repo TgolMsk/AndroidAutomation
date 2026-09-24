@@ -7,7 +7,7 @@
 | `main/bootstrap` | Start an Electron product with generic emulator services and optional product services. |
 | `main/ipc-handlers`, `shared/ipc` | Authorized, typed emulator commands and events. |
 | `renderer/views/LiveView` | Reusable live emulator window. |
-| `renderer/components/*`, `renderer/hooks/*`, `renderer/format` | Shared UI primitives (Icon, StatusBadge, Toasts, Modal, ConfirmDialog, DropdownMenu, Drawer) and instance state. |
+| `renderer/components/*`, `renderer/hooks/*`, `renderer/format` | Shared UI primitives (Icon, StatusBadge, Toasts, Modal, ConfirmDialog, DropdownMenu, Drawer), the generic instance dialogs (CreateDialog, CloneDialog, EditDialog with SpecFields / IdentityFields, used by the manager and product apps) and instance state. |
 | `renderer/styles.css` | Shared dark design tokens and emulator UI styles. |
 
 Each product owns its own `src/main/index.ts`, preload, renderer entry, app ID, icon, and `electron-builder.yml`. The manager calls `bootstrapApp({ name })`; an assistant adds its services via `createAddon` and registers its own namespaced IPC. Both depend on `@avdm/core` for instance state and CLI-equivalent operations. No shell module imports from a product directory.

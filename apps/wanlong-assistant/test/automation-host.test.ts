@@ -471,6 +471,7 @@ describe('AutomationHost single-cycle gathering', () => {
   it('does not enable automatic scheduling while a manual start is in preflight', async () => {
     allowProbe(host);
     await enable();
+    getState.mockClear(); // saving the config reads the AVD identity (stamp); count only the manual start's reads
     let releaseState!: () => void;
     const gate = new Promise<void>((resolve) => { releaseState = resolve; });
     getState.mockImplementationOnce(async () => { await gate; return { status: 'running', record: { createdAt: '2026-09-23T00:00:00Z' } }; });

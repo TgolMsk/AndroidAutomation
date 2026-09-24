@@ -14,6 +14,7 @@ export const wanlongPlugin: GamePlugin = {
 };
 
 export * from './config.js';
+export * from './config-validate.js';
 export type { GatherConfig } from './config.js';
 export type { GatherIo, GatherLogger } from './gather/session.js';
 export type { GatherCycleResult, GatherRuntimeState } from './gather/types.js';
