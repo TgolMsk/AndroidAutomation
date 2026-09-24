@@ -4,6 +4,7 @@ import type { GameAccount } from '../../../main/automation/accounts/types';
 import type { AccountPlan, PlanConfig, PlanOverview, PlanRun, PlanTask, ScriptDef, ScriptIssue, ScriptMeta, ScriptStep, TaskTrigger } from '../../../main/plans/types';
 import { convertLegacyAccountPlan, convertLegacyConfig, convertLegacyScript, legacyPlanChoices } from '../../../main/plans/legacy';
 import { avdm, errMsg } from '../../api';
+import { beijingTime } from '../../format';
 import { useToast } from '../../components/Toasts';
 import { ScriptStepBlock } from './ScriptStepBlock';
 import { insertSavedTemplate, type TemplateInsertRequest, type TemplateInsertResult } from './script-template-flow';
@@ -44,20 +45,31 @@ const triggerLabel = (trigger: TaskTrigger): string => {
   if (trigger.kind === 'daily') return `每天 ${trigger.at.join('、')}`;
   return `每 ${trigger.everyMinutes} 分钟${trigger.window ? ` · ${trigger.window.from}–${trigger.window.to}` : ''}`;
 };
-const fmt = (at: number | null): string => at === null ? '—' : new Date(at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+const fmt = (at: number | null): string => beijingTime(at);
+
+export type PlanPanelMode = 'plans' | 'scripts';
 
 interface PlanPanelProps {
   gameId: string;
   index: number | null;
   visible?: boolean;
+  /** Pin the panel to one part (the shell shows plans and the script library as separate pages). */
+  mode?: PlanPanelMode;
+  /** In `plans` mode: open the script library page (e.g. 「添加任务」 while no script exists yet). */
+  onOpenScripts?(): void;
   onCreateTemplate?(request: TemplateInsertRequest): void;
   templateResult?: TemplateInsertResult | null;
   onTemplateResultHandled?(requestId: string): void;
 }
 
-export function PlanPanel({ gameId, index, visible = true, onCreateTemplate, templateResult, onTemplateResultHandled }: PlanPanelProps) {
+export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, onCreateTemplate, templateResult, onTemplateResultHandled }: PlanPanelProps) {
   const toast = useToast();
-  const [tab, setTab] = useState<'plans' | 'scripts'>('plans');
+  const [ownTab, setOwnTab] = useState<PlanPanelMode>(mode ?? 'plans');
+  const tab = mode ?? ownTab;
+  const setTab = (next: PlanPanelMode): void => {
+    if (!mode) setOwnTab(next);
+    else if (next !== mode && next === 'scripts') onOpenScripts?.();
+  };
   const [overview, setOverview] = useState<PlanOverview | null>(null);
   const [accounts, setAccounts] = useState<GameAccount[]>([]);
   const [scripts, setScripts] = useState<ScriptMeta[]>([]);
@@ -109,7 +121,13 @@ export function PlanPanel({ gameId, index, visible = true, onCreateTemplate, tem
       setError('');
     } catch (cause) { setError(errMsg(cause)); }
   }, [gameId, index]);
-  useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 5_000); return () => window.clearInterval(timer); }, [refresh]);
+  useEffect(() => {
+    // A hidden (kept-alive) panel does not poll; it refreshes as soon as it is shown again.
+    if (!visible) return;
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [refresh, visible]);
   useEffect(() => {
     if (planDirty) return;
     const found = overview?.plans.find((one) => one.accountId === accountId);
@@ -220,17 +238,20 @@ export function PlanPanel({ gameId, index, visible = true, onCreateTemplate, tem
     });
   };
 
-  return <section className="plan-panel" aria-label="脚本与任务计划">
-    <header className="plan-heading"><div><span>WORKFLOWS</span><h2>脚本与任务计划</h2><p>每个账号绑定一个实例。计划按北京时间触发，实例内串行执行。</p></div><button className="btn xs" onClick={() => void refresh()}>刷新</button></header>
-    <div className="plan-safety">脚本和自动采集都操作同一实例。启用脚本计划前，请先关闭该实例的自动采集调度；系统会在运行前再次检查并取得实例锁。</div>
-    <nav className="plan-tabs"><button className={tab === 'plans' ? 'active' : ''} onClick={() => setTab('plans')}>任务计划</button><button className={tab === 'scripts' ? 'active' : ''} onClick={() => setTab('scripts')}>脚本库</button></nav>
+  const heading = mode === 'plans' ? { label: 'PLANS', title: '任务计划', text: '每个账号绑定一个实例。计划按北京时间触发，实例内串行执行。' }
+    : mode === 'scripts' ? { label: 'SCRIPTS', title: '脚本库', text: '脚本保存为纯数据，可复用到同一游戏的所有账号；从画面截取模板可直接生成步骤。' }
+      : { label: 'WORKFLOWS', title: '脚本与任务计划', text: '每个账号绑定一个实例。计划按北京时间触发，实例内串行执行。' };
+  return <section className="plan-panel" aria-label={heading.title}>
+    <header className="plan-heading"><div><span>{heading.label}</span><h2>{heading.title}</h2><p>{heading.text}</p></div><button className="btn xs" onClick={() => void refresh()}>刷新</button></header>
+    {tab === 'plans' && <div className="plan-safety">脚本和自动采集都操作同一实例。启用脚本计划前，请先关闭该实例的自动采集调度；系统会在运行前再次检查并取得实例锁。</div>}
+    {!mode && <nav className="plan-tabs"><button className={tab === 'plans' ? 'active' : ''} onClick={() => setTab('plans')}>任务计划</button><button className={tab === 'scripts' ? 'active' : ''} onClick={() => setTab('scripts')}>脚本库</button></nav>}
     {error && <p className="plan-error" role="alert">{error}</p>}
     {tab === 'plans' && <>
       <div className="plan-toolbar"><label>账号<select value={accountId} onChange={(e) => { setPlanDirty(false); setAccountId(e.target.value); }}><option value="">选择账号</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.binding ? `#${account.binding.index}` : '未绑定'}</option>)}</select></label><label className="plan-switch"><input type="checkbox" checked={overview?.config.enabled ?? false} onChange={(e) => void act('更新计划总开关', async () => { await api.planSaveConfig(gameId, { enabled: e.target.checked }); })} disabled={!overview || !!busy} />自动计划总开关</label></div>
       {configDraft && <details className="plan-settings"><summary>调度设置</summary><div className="plan-task-fields"><label>错过后补跑（分钟）<input type="number" min={0} max={720} value={configDraft.catchUpMs / 60_000} onChange={(e) => { setConfigDirty(true); setConfigDraft({ ...configDraft, catchUpMs: Number(e.target.value) * 60_000 }); }} /></label><label>排队等待上限（分钟）<input type="number" min={1} max={720} value={configDraft.queueWaitMs / 60_000} onChange={(e) => { setConfigDirty(true); setConfigDraft({ ...configDraft, queueWaitMs: Number(e.target.value) * 60_000 }); }} /></label><label>失败重试次数<input type="number" min={0} max={5} value={configDraft.retry} onChange={(e) => { setConfigDirty(true); setConfigDraft({ ...configDraft, retry: Number(e.target.value) }); }} /></label><label>重试等待（秒）<input type="number" min={0} max={1800} value={configDraft.retryDelayMs / 1000} onChange={(e) => { setConfigDirty(true); setConfigDraft({ ...configDraft, retryDelayMs: Number(e.target.value) * 1000 }); }} /></label></div><div className="plan-settings-foot"><span>失败重试会从脚本首步重新执行；涉及点击、提交等动作时建议保持 0 次。</span><button className="btn sm" disabled={!configDirty || !!busy} onClick={() => void act('保存调度设置', async () => { await api.planSaveConfig(gameId, configDraft); setConfigDirty(false); })}>保存设置</button></div></details>}
       <div className="plan-import"><label className="btn xs">导入旧 plans.json<input type="file" accept=".json,application/json" onChange={(e) => void loadLegacyPlanFile(e.currentTarget.files?.[0])} /></label>{Boolean(legacyPlanFile) && <><select aria-label="旧账号计划" value={legacyAccountId} onChange={(e) => setLegacyAccountId(e.target.value)}>{legacyPlanChoices(legacyPlanFile).map((choice) => <option key={choice.accountId} value={choice.accountId}>{choice.accountId} · {choice.tasks} 项</option>)}</select><button className="btn xs" onClick={importLegacyPlan} disabled={!accountId || !!busy}>导入到当前账号</button></>}</div>
       {importMessage && <p className="plan-import-message" role="status">{importMessage}</p>}
-      {!accounts.length && <div className="plan-empty">还没有账号。先在“账号”页面创建并绑定实例，再配置脚本计划。</div>}
+      {!accounts.length && <div className="plan-empty">还没有账号。先在「设备与账号 → 账号管理」创建并绑定实例，再配置脚本计划。</div>}
       {selectedAccount && plan && <>
         <div className="plan-summary"><div><strong>{selectedAccount.name}</strong><small>{selectedAccount.binding ? `实例 #${selectedAccount.binding.index}` : '未绑定实例'} · {selectedAccount.login.status === 'ready' ? '已验证登录' : '待验证登录'}</small></div><label className="plan-switch"><input type="checkbox" checked={plan.enabled} onChange={(e) => { setPlanDirty(true); setPlan({ ...plan, enabled: e.target.checked }); }} />启用该账号计划</label><button className="btn primary sm" onClick={savePlan} disabled={!!busy || !planDirty}>保存计划</button></div>
         <div className="plan-tasks-heading"><h3>任务</h3><button className="btn sm" onClick={() => {

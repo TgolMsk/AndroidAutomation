@@ -1,0 +1,71 @@
+.runs-view {
+  display: grid;
+  gap: 28px;
+}
+
+.runs-section {
+  display: grid;
+  gap: 12px;
+}
+
+.runs-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.runs-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.runs-head span {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.runs-scroll {
+  overflow-x: auto;
+}
+
+.runs-message {
+  max-width: 320px;
+  color: var(--text-dim);
+}
+
+.runs-status {
+  color: var(--text-dim);
+}
+
+.runs-status.is-running,
+.runs-status.is-queued {
+  color: var(--accent);
+}
+
+.runs-status.is-stopping {
+  color: var(--amber);
+}
+
+.runs-status.is-succeeded {
+  color: var(--green);
+}
+
+.runs-status.is-failed {
+  color: var(--red);
+}
+
+.runs-empty {
+  margin: 0;
+  padding: 22px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+}
+
+.runs-error {
+  margin: 0;
+  color: var(--red);
+  font-size: 12px;
+}

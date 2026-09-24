@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AdvisorConfigPatch, AdvisorConfigView, AdvisorRecord, AdvisorStatus, AdvisorTemplateProposal, AdvisorTestResult } from '../../../main/automation/advisor/types';
 import { avdm, errMsg } from '../../api';
+import { beijingTime } from '../../format';
 import { Icon } from '../../components/Icon';
 import { Spinner } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
@@ -19,7 +20,7 @@ const SCREEN_LABEL = {
   maintenance: '维护公告', update: '更新', loading: '加载中', other: '其它界面', unknown: '未知界面',
 } as const;
 
-function atLabel(at: number): string { return new Date(at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); }
+function atLabel(at: number): string { return beijingTime(at); }
 
 interface Draft {
   baseUrl: string; model: string; apiKey: string; timeoutMs: number;

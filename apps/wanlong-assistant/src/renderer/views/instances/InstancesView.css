@@ -1,0 +1,63 @@
+.instances-view {
+  display: grid;
+  gap: 14px;
+}
+
+.instances-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.instances-head h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.instances-head p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.instances-error {
+  margin: 0;
+  color: var(--red);
+  font-size: 12px;
+}
+
+.instances-note {
+  margin: 0;
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.instances-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 28px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+}
+
+.instances-scroll {
+  overflow-x: auto;
+}
+
+.instances-table .instances-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+@media (max-width: 640px) {
+  .instances-head {
+    flex-direction: column;
+  }
+}

@@ -1,25 +1,28 @@
+import { cstDayStart, inClockWindow, parseClock as parseCstClock } from '../../shared/time';
 import type { TaskTrigger } from './types';
 
 const DAY = 86_400_000;
-const CST = 8 * 3_600_000;
-const CLOCK = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
+/**
+ * Strict `HH:MM` for stored plans. Delegates to the shared Beijing clock (`src/shared/time.ts`), which also
+ * tolerates surrounding spaces like the original; plans keep rejecting them so stored times stay canonical.
+ */
 export function parseClock(value: string): number | null {
-  const match = CLOCK.exec(value);
-  return match ? Number(match[1]) * 3_600_000 + Number(match[2]) * 60_000 : null;
+  return value === value.trim() ? parseCstClock(value) : null;
 }
 
+/** Beijing midnight of the day containing `at`. */
 export function beijingDayStart(at: number): number {
-  return Math.floor((at + CST) / DAY) * DAY - CST;
+  return cstDayStart(at);
 }
 
+/**
+ * Whether `at` is inside the Beijing window. Unlike the original `inClockWindow` (an invalid window counts as
+ * the whole day), an invalid window never matches here; the plans port decides which semantics to keep.
+ */
 export function inWindow(at: number, window: { from: string; to: string }): boolean {
-  const from = parseClock(window.from);
-  const to = parseClock(window.to);
-  if (from === null || to === null) return false;
-  if (from === to) return true;
-  const offset = at - beijingDayStart(at);
-  return from < to ? offset >= from && offset <= to : offset >= from || offset <= to;
+  if (parseClock(window.from) === null || parseClock(window.to) === null) return false;
+  return inClockWindow(at, window);
 }
 
 /** Most recent trigger no later than now, with an explicit Beijing clock. */

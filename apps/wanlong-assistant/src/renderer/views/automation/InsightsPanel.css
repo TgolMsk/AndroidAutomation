@@ -104,3 +104,12 @@
   .insights-resource-list small { grid-column: 1 / -1; width: auto; text-align: left; }
   .insights-alert-row time { white-space: normal; }
 }
+
+.insights-inline-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  color: var(--red);
+  font-size: 12px;
+}

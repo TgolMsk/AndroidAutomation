@@ -1,8 +1,9 @@
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ToastProvider } from './components/Toasts';
-import { AutomationView } from './views/AutomationView';
 import { LiveView } from '@avdm/emulator-shell/renderer/views/LiveView';
+import { App } from './App';
+import { ToastProvider } from './components/Toasts';
+// Kept after the app imports (as before the shell refactor): page styles were tuned against this cascade order.
 import '@avdm/emulator-shell/renderer/styles.css';
 
 if (/Mac/i.test(navigator.userAgent)) document.documentElement.classList.add('platform-mac');
@@ -16,7 +17,7 @@ function PanelApp() {
   }, []);
   const live = /^#\/live\/(\d+)\/?$/.exec(hash);
   useEffect(() => { document.documentElement.dataset['route'] = live ? 'live' : 'automation'; }, [live]);
-  return <ToastProvider>{live ? <LiveView index={Number(live[1])} /> : <AutomationView />}</ToastProvider>;
+  return <ToastProvider>{live ? <LiveView index={Number(live[1])} /> : <App />}</ToastProvider>;
 }
 
 const root = document.getElementById('root');

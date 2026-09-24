@@ -2,18 +2,26 @@ import { bootstrapApp } from '@avdm/emulator-shell/main/bootstrap';
 import { AccountManager } from './automation/accounts';
 import { loginActive } from './automation/accounts/types';
 import { AdvisorService } from './automation/advisor';
+import { gamePlugin } from './automation/games';
 import { AutomationHost } from './automation/host';
 import { InsightsService } from './automation/insights';
 import { registerWanlongIpcHandlers } from './ipc-handlers';
+import { runServiceSteps } from './lifecycle';
 import { MonitoringService, ReadOnlyTelegramBot } from './monitoring';
-import { gamePlugin } from './automation/games';
 import { PlanService } from './plans';
 
+/**
+ * Composition root. Services are built and wired here only, one `// ── <domain> ──` section each, so ported
+ * modules append to their own section. Cross-service hooks are closures over ports, never service imports.
+ */
 bootstrapApp({
   name: '万龙助手',
   rendererPage: 'index.html',
   createAddon(services, home) {
+    // ── insights (stats / notifications) ──
     const insights = new InsightsService(home);
+
+    // ── automation (gather runs, schedules, templates) ──
     let monitoring: MonitoringService;
     const automation = new AutomationHost(services.host, home, undefined, undefined, {
       onCycle: async (run, result, source) => {
@@ -26,8 +34,14 @@ bootstrapApp({
       },
       onScheduleStop: (gameId, index, count) => insights.recordScheduleStop(gameId, index, count),
     });
+
+    // ── accounts ──
     const accounts = new AccountManager(services.host, automation, home);
+
+    // ── advisor (AI) ──
     const advisor = new AdvisorService(home, (gameId, index) => automation.captureReadOnly(gameId, index));
+
+    // ── plans (task plans + script library) ──
     const plans = new PlanService(home, {
       accounts: (gameId) => accounts.list(gameId),
       instance: async (index) => (await services.host.get()).getState(index),
@@ -36,6 +50,8 @@ bootstrapApp({
       gatherScheduleEnabled: async (gameId, index) =>
         (await automation.schedules()).some((item) => item.gameId === gameId && item.index === index && item.enabled),
     });
+
+    // ── monitoring (failure / freeze / kicked detection) ──
     monitoring = new MonitoringService(home, {
       async targets() {
         const [schedules, runs, states] = await Promise.all([
@@ -63,6 +79,8 @@ bootstrapApp({
       onAlert: (alert) => insights.recordMonitorAlert(alert),
       classifyCaptureError: (error) => error instanceof Error && error.message.startsWith('ADB 截图失败:') ? 'device' : 'unknown',
     });
+
+    // ── bot (Telegram) ──
     const remoteBot = new ReadOnlyTelegramBot({
       config: () => insights.readOnlyBotConfig(),
       async statuses() {
@@ -78,22 +96,30 @@ bootstrapApp({
       screenshot: async (index) => (await automation.captureReadOnly('wanlong', index)).frame,
       log: (message) => console.warn('[wanlong/bot]', message),
     });
+
+    // ── ipc ──
     registerWanlongIpcHandlers({ automation, accounts, insights, advisor, plans, remoteBot, windows: services.windows });
+
     return {
+      /** Each service starts on its own: one failure is logged and never blocks the others. */
       async restore() {
-        await automation.restoreSchedules();
-        await plans.start('wanlong');
-        monitoring.start();
-        await remoteBot.start().catch((error: unknown) =>
-          console.warn('[wanlong/bot] 只读机器人未启动', error instanceof Error ? error.message : String(error)));
+        await runServiceSteps('start', [
+          { name: '自动续跑调度', run: () => automation.restoreSchedules() },
+          { name: '脚本计划', run: () => plans.start('wanlong') },
+          { name: '运行监控', run: () => monitoring.start() },
+          { name: '只读机器人', run: () => remoteBot.start() },
+        ]);
       },
+      /** Inbound network first, then observers, device writers, and finally stores that flush on exit. */
       async dispose() {
-        await remoteBot.stop();
-        await monitoring.dispose();
-        await plans.shutdown();
-        await accounts.shutdown();
-        await automation.dispose();
-        await insights.dispose();
+        await runServiceSteps('stop', [
+          { name: '只读机器人', run: () => remoteBot.stop() },
+          { name: '运行监控', run: () => monitoring.dispose() },
+          { name: '脚本计划', run: () => plans.shutdown() },
+          { name: '账号登录', run: () => accounts.shutdown() },
+          { name: '自动化运行', run: () => automation.dispose() },
+          { name: '运行统计', run: () => insights.dispose() },
+        ]);
       },
     };
   },

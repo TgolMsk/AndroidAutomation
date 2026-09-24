@@ -1,19 +1,23 @@
+import { cstDateKey as cstDateKeyOf, shiftDateKey as shiftCstDateKey } from '../../../shared/time';
 import type { InsightAlert, InsightDay, InsightResource, InsightResourceTotals } from './contracts';
 
 export const INSIGHT_RESOURCES: readonly InsightResource[] = ['wood', 'gold', 'iron', 'mana'];
-const CST_OFFSET_MS = 8 * 60 * 60 * 1000;
 
-/** The game uses Beijing dates regardless of the Mac's configured time zone. */
+/**
+ * The game uses Beijing dates regardless of the Mac's configured time zone. Delegates to `src/shared/time.ts`;
+ * unlike the original (which returns '0000-00-00'), an invalid time throws so no fact lands in a bogus bucket.
+ */
 export function cstDateKey(at: number): string {
   if (!Number.isFinite(at)) throw new Error('统计时间无效');
-  return new Date(at + CST_OFFSET_MS).toISOString().slice(0, 10);
+  return cstDateKeyOf(at);
 }
 
+/** Shifts a real calendar date; malformed keys (including `2026-02-30`) are rejected instead of normalized. */
 export function shiftDateKey(key: string, days: number): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(key) || !Number.isInteger(days)) throw new Error('统计日期无效');
   const at = Date.parse(`${key}T00:00:00.000Z`);
   if (!Number.isFinite(at) || new Date(at).toISOString().slice(0, 10) !== key) throw new Error('统计日期无效');
-  return new Date(at + days * 86_400_000).toISOString().slice(0, 10);
+  return shiftCstDateKey(key, days);
 }
 
 export interface InsightDispatchFact {

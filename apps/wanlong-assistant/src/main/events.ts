@@ -1,18 +1,23 @@
 import { BrowserWindow } from 'electron';
 import { broadcast as broadcastCore } from '@avdm/emulator-shell/main/events';
 import type { LogEntry } from '@avdm/emulator-shell/shared/ipc';
-import type { AutomationRun, AutomationSchedule } from '../shared/ipc';
+import { WANLONG_EVENT_CHANNEL, type WanlongEvents } from '../shared/ipc';
 
-/** Assistant events have their own channel; the emulator product never registers them. */
-export function broadcast(channel: 'automation-run', payload: AutomationRun): void;
-export function broadcast(channel: 'automation-schedule', payload: AutomationSchedule): void;
-export function broadcast(channel: 'log', payload: LogEntry): void;
-export function broadcast(channel: string, payload: unknown): void {
+/** Channels main may push: the assistant's own events plus the shell's user-visible `log`. */
+export type BroadcastEvents = WanlongEvents & { log: LogEntry };
+
+/**
+ * Push one event to every window. Assistant events have their own channel (the emulator product never
+ * registers them); `log` goes through the shell's channel. Services receive this as an injected callback.
+ */
+export function broadcast<C extends keyof BroadcastEvents>(channel: C, payload: BroadcastEvents[C]): void {
   if (channel === 'log') {
     broadcastCore('log', payload as LogEntry);
     return;
   }
   for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.webContents.isDestroyed()) win.webContents.send('wanlong:event', { channel, payload });
+    if (win.webContents.isDestroyed()) continue;
+    try { win.webContents.send(WANLONG_EVENT_CHANNEL, { channel, payload }); }
+    catch { /* The renderer is going away. */ }
   }
 }

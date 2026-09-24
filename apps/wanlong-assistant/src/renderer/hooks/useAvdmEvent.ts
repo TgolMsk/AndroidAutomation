@@ -1,12 +1,13 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { avdm } from '../api';
-import type { WanlongEvents } from '../../shared/ipc';
-import type { AvdmEvents } from '@avdm/emulator-shell/shared/ipc';
+import type { WanlongAllEvents } from '../../shared/ipc';
 
-type AllEvents = AvdmEvents & WanlongEvents;
-export function useAvdmEvent<C extends keyof AllEvents>(channel: C, listener: (payload: AllEvents[C]) => void): void {
-  useEffect(() => {
-    const subscribe = avdm.on as (name: keyof AllEvents, fn: (payload: AllEvents[keyof AllEvents]) => void) => () => void;
-    return subscribe(channel, listener as (payload: AllEvents[keyof AllEvents]) => void);
-  }, [channel, listener]);
+/**
+ * Subscribe to a shell or assistant push event for the lifetime of the component. The latest listener is kept
+ * in a ref, so inline callbacks do not resubscribe on every render.
+ */
+export function useAvdmEvent<C extends keyof WanlongAllEvents>(channel: C, listener: (payload: WanlongAllEvents[C]) => void): void {
+  const ref = useRef(listener);
+  ref.current = listener;
+  useEffect(() => avdm.on(channel, (payload) => ref.current(payload)), [channel]);
 }

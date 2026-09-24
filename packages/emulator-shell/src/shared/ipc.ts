@@ -103,6 +103,14 @@ export interface AvdmEvents {
 
 export type AvdmEventChannel = keyof AvdmEvents;
 
+/** Every event channel as data (exhaustive by construction), so products can prove their events never collide. */
+const EVENT_CHANNEL_SET: Record<AvdmEventChannel, true> = {
+  'instance-state': true, 'instances-changed': true, 'thumbnail': true, 'live-frame': true, 'live-ended': true,
+  'window-state': true, 'settings-changed': true, 'sdk-progress': true, 'script-run': true, 'script-output': true,
+  'log': true, 'app-outdated': true,
+};
+export const AVDM_EVENT_CHANNELS = Object.keys(EVENT_CHANNEL_SET) as AvdmEventChannel[];
+
 export interface AvdmApi {
   // ── state / settings / host ──
   listInstances(): Promise<InstanceState[]>;

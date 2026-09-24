@@ -1,0 +1,91 @@
+/** Gather automation: game catalogue, per-instance settings, read-only probe, runs and auto-resume schedules. */
+import type { Assert, ListsExactly } from './contract';
+
+export interface AutomationGameSummary {
+  id: string;
+  name: string;
+  version: string;
+  packageName: string;
+  tasks: { id: string; name: string; description: string }[];
+}
+
+export interface AutomationSettings {
+  templateDir: string;
+  /** Game-owned configuration, normalized before a task starts. */
+  config: Record<string, unknown>;
+}
+
+export interface AutomationProbeMatch {
+  templateId: string;
+  found: boolean;
+  score: number;
+  threshold: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  reason?: string;
+}
+
+export interface AutomationProbeReport {
+  gameId: string;
+  packageName: string;
+  foregroundPackage: string | null;
+  deviceWidth: number;
+  deviceHeight: number;
+  capturedAt: number;
+  matches: AutomationProbeMatch[];
+  launchReady: boolean;
+  launchReason: string;
+  timingsMs: Record<string, number>;
+}
+
+export interface AutomationSchedule {
+  gameId: string;
+  index: number;
+  enabled: boolean;
+  nextWakeAt: number | null;
+  failureCount: number;
+}
+
+export interface AutomationRun {
+  runId: string;
+  gameId: string;
+  taskId: string;
+  index: number;
+  status: 'running' | 'stopping' | 'succeeded' | 'failed' | 'cancelled';
+  startedAt: number;
+  endedAt: number | null;
+  message: string;
+  nextWakeAt?: number | null;
+}
+
+export interface AutomationApi {
+  automationGames(): Promise<AutomationGameSummary[]>;
+  pickAutomationTemplateSet(): Promise<string | null>;
+  getAutomationSettings(gameId: string, index: number): Promise<AutomationSettings>;
+  saveAutomationSettings(gameId: string, index: number, patch: Partial<AutomationSettings>): Promise<AutomationSettings>;
+  probeAutomation(gameId: string, index: number): Promise<AutomationProbeReport>;
+  runAutomation(gameId: string, taskId: string, index: number): Promise<AutomationRun>;
+  stopAutomation(runId: string): Promise<void>;
+  automationRuns(): Promise<AutomationRun[]>;
+  automationSchedules(): Promise<AutomationSchedule[]>;
+  setAutomationSchedule(gameId: string, index: number, enabled: boolean): Promise<AutomationSchedule>;
+}
+
+export const AUTOMATION_METHODS = [
+  'automationGames', 'pickAutomationTemplateSet', 'getAutomationSettings', 'saveAutomationSettings',
+  'probeAutomation', 'runAutomation', 'stopAutomation', 'automationRuns', 'automationSchedules', 'setAutomationSchedule',
+] as const satisfies readonly (keyof AutomationApi)[];
+
+export interface AutomationEvents {
+  'automation-run': AutomationRun;
+  'automation-schedule': AutomationSchedule;
+}
+
+export const AUTOMATION_EVENTS = ['automation-run', 'automation-schedule'] as const satisfies readonly (keyof AutomationEvents)[];
+
+export type AutomationContractCheck = [
+  Assert<ListsExactly<AutomationApi, typeof AUTOMATION_METHODS>>,
+  Assert<ListsExactly<AutomationEvents, typeof AUTOMATION_EVENTS>>,
+];

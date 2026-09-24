@@ -3,6 +3,7 @@ import type { Rect, TemplateDefinition, TemplateSet } from '@avdm/automation';
 import type { TemplateAlphaPreview, TemplateCapture, TemplateTestResult } from '../../../shared/ipc';
 import type { AdvisorTemplateProposal } from '../../../main/automation/advisor/types';
 import { avdm, errMsg } from '../../api';
+import { beijingTime } from '../../format';
 import { Icon } from '../../components/Icon';
 import { Spinner } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
@@ -61,7 +62,7 @@ function rectStyle(rect: Rect, width: number, height: number): CSSProperties {
 }
 
 function timeLabel(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return beijingTime(timestamp, 'clock');
 }
 
 /** Template edits are based on a fresh, read-only screen capture and an explicit crop. */

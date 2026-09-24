@@ -15,6 +15,14 @@
       "types": "./dist/wanlong/index.d.ts",
       "default": "./dist/wanlong/index.js"
     },
+    "./wanlong/pure": {
+      "types": "./dist/wanlong/pure.d.ts",
+      "default": "./dist/wanlong/pure.js"
+    },
+    "./script": {
+      "types": "./dist/script/index.d.ts",
+      "default": "./dist/script/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": ["dist"],

@@ -4,6 +4,7 @@ import type {
   NotificationConfigView, RemoteBotConfigView,
 } from '../../../main/automation/insights/contracts';
 import { avdm, errMsg } from '../../api';
+import { beijingTime } from '../../format';
 import { Icon } from '../../components/Icon';
 import { Spinner } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
@@ -28,7 +29,7 @@ const number = new Intl.NumberFormat('zh-CN');
 const compact = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 });
 
 function timeLabel(at: number): string {
-  return new Date(at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return beijingTime(at);
 }
 
 function summarize(days: InsightDay[]): InsightDay | null {
@@ -269,7 +270,7 @@ export function InsightsPanel({ gameId, index }: { gameId: string; index: number
         {([['overview', '数据概览'], ['alerts', '告警记录'], ['notifications', '通知设置']] as const).map(([key, label]) =>
           <button key={key} type="button" className={tab === key ? 'is-active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => setTab(key)}>{label}</button>)}
       </nav>
-      {error && <div className="automation-inline-error" role="alert">数据读取失败：{error}<button className="btn xs" onClick={() => void refresh(true)}>重试</button></div>}
+      {error && <div className="insights-inline-error" role="alert">数据读取失败：{error}<button className="btn xs" onClick={() => void refresh(true)}>重试</button></div>}
       {loading && <p className="insights-loading"><Spinner size={15} />正在读取统计与通知设置…</p>}
       {!loading && tab === 'overview' && <>
         <div className="insights-range"><span>{index === null ? '当前游戏 · 全部实例' : `当前游戏 · 实例 #${index}`}</span><label>时间范围<select value={range} onChange={(event) => setRange(Number(event.target.value) as 7 | 30)}><option value={7}>最近 7 天</option><option value={30}>最近 30 天</option></select></label></div>

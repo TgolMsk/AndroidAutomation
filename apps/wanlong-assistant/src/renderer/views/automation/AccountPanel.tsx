@@ -3,6 +3,7 @@ import type { InstanceState } from '@avdm/core';
 import type { AccountDetails, AccountLoginCommand, AccountLoginSession,
   GameAccount } from '../../../main/automation/accounts/types';
 import { avdm, errMsg } from '../../api';
+import { beijingTime } from '../../format';
 import { Icon } from '../../components/Icon';
 import { useToast } from '../../components/Toasts';
 import './AccountPanel.css';
@@ -208,7 +209,7 @@ export function AccountPanel({ gameId, index, instance }: {
               <div className="account-facts">
                 <span>所属游戏<strong>{selected.gameId}</strong></span>
                 <span>绑定实例<strong>{selected.binding ? `#${selected.binding.index}` : '未绑定'}</strong></span>
-                <span>上次验证<strong>{selected.login.verifiedAt ? new Date(selected.login.verifiedAt).toLocaleString('zh-CN') : '尚未验证'}</strong></span>
+                <span>上次验证<strong>{selected.login.verifiedAt ? `${beijingTime(selected.login.verifiedAt, 'full')}（北京）` : '尚未验证'}</strong></span>
               </div>
               {staleBinding && <div className="account-warning" role="alert">实例编号已被新设备占用。请解除绑定后重新登录。</div>}
               {targetOwnedByOther && <div className="account-warning">当前实例已绑定「{targetOwnedByOther.name}」。先解除其绑定，再绑定此账号。</div>}
