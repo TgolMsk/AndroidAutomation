@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AvdmError } from '@avdm/core';
-import { readLeaseOwner } from '../src/main/app/instance-access';
+import { readLeaseOwner, withLabelledLease } from '../src/main/app/instance-access';
 import type { GameAccount } from '../src/main/automation/accounts/types';
 import { PlanService, ScriptRunner } from '../src/main/plans';
 import type { ScriptExecuteOptions } from '../src/main/plans/script-runner';
@@ -148,6 +148,17 @@ async function scenario(plans: AccountPlan[], accounts: GameAccount[], scripts: 
 
 const count = (trace: string[], entry: string): number => trace.filter((item) => item === entry).length;
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Another writer (a login, a manual gather round …) holds the instance lease until `release()`. */
+async function holdLease(home: string, index: number, label: string): Promise<{ release(): Promise<void> }> {
+  let entered!: () => void;
+  let exit!: () => void;
+  const acquired = new Promise<void>((resolve) => { entered = resolve; });
+  const held = new Promise<void>((resolve) => { exit = resolve; });
+  const done = withLabelledLease(home, index, label, async () => { entered(); await held; });
+  await acquired;
+  return { release: async () => { exit(); await done; } };
+}
 
 describe('plan-offline-check §三–§十四: the planner end to end', () => {
   it('§三 due → ★ yield first → start → bookkeeping → next run scheduled', async () => {
@@ -441,6 +452,93 @@ describe('planner additions', () => {
     const overview = await w.overview();
     expect(overview.queues[0]?.waitingTaskIds).toEqual([]);
     expect(overview.runs.find((item) => item.taskId === 't2')).toMatchObject({ status: 'cancelled' });
+  });
+
+  it('★ a round waiting for a busy instance lease stays 排队中 and starts (执行中) once the lease frees', async () => {
+    const w = await scenario([plan(1, [task('t1', 's1', { trigger: { kind: 'manual' } })])], [account(1, 0)], [script('s1')], { queueWaitMs: 30 * MIN });
+    const other = await holdLease(w.home, 0, '登录');
+    await w.service.runNow(GAME, accountId(1), 't1');
+    await eventually(() => w.trace.includes('yield:0'));
+    await pause(400);
+    expect(w.started).toHaveLength(0);
+    expect(await w.row('t1')).toMatchObject({ phase: 'queued', nextRunAt: null });
+    expect((await w.row('t1')).queuedAt).not.toBeNull();
+    // The queue view lists it first among the waiting rounds, not as the running one.
+    expect((await w.overview()).queues).toEqual([expect.objectContaining({ instanceIndex: 0, running: null, runningTaskId: null, waitingTaskIds: ['t1'] })]);
+    await other.release();
+    await eventually(() => w.started.length === 1);
+    expect((await w.row('t1')).phase).toBe('running');
+    expect((await w.overview()).queues).toEqual([expect.objectContaining({ runningTaskId: 't1', waitingTaskIds: [] })]);
+    w.finish(w.started[0]!.runId, 'succeeded');
+    await eventually(async () => (await w.row('t1')).phase === 'done');
+  });
+
+  it('★ 停止 / 删除 / 关开关 / 退出 never wait out queueWaitMs while a round waits for the instance lease', async () => {
+    const w = await scenario([plan(1, [task('t1', 's1', { trigger: { kind: 'manual' } }), task('t2', 's2', { trigger: { kind: 'manual' } })])],
+      [account(1, 0)], [script('s1'), script('s2')], { queueWaitMs: 30 * MIN });
+    const other = await holdLease(w.home, 0, '手动采集一轮');
+    try {
+      const waitingFor = async (taskId: string): Promise<void> => {
+        await w.service.runNow(GAME, accountId(1), taskId);
+        await eventually(() => count(w.trace, 'yield:0') > count(w.trace, 'restore:0'));
+        await pause(300);
+      };
+      const timed = async (work: () => Promise<unknown>): Promise<number> => {
+        const began = Date.now();
+        await work();
+        return Date.now() - began;
+      };
+
+      // 停止 (the row's stop button).
+      await waitingFor('t1');
+      expect(await timed(() => w.service.cancelTask(GAME, accountId(1), 't1'))).toBeLessThan(2_000);
+      expect((await w.row('t1')).phase).toBe('idle');
+      expect((await w.overview()).runs[0]).toMatchObject({ taskId: 't1', status: 'cancelled', startedAt: null, message: '用户取消排队' });
+      await eventually(() => count(w.trace, 'restore:0') === count(w.trace, 'yield:0'));
+
+      // Switching the task off takes it back like a queued round.
+      await waitingFor('t1');
+      expect(await timed(() => w.service.setTaskEnabled(GAME, accountId(1), 't1', false))).toBeLessThan(2_000);
+      expect((await w.overview()).runs[0]).toMatchObject({ taskId: 't1', status: 'cancelled', message: '任务已关闭，排队取消' });
+
+      // 删除 (the row's delete button).
+      await waitingFor('t1');
+      expect(await timed(() => w.service.removeTask(GAME, accountId(1), 't1'))).toBeLessThan(2_000);
+      expect((await w.overview()).tasks.map((row) => row.taskId)).toEqual(['t2']);
+
+      // Quitting the assistant.
+      await waitingFor('t2');
+      expect(await timed(() => w.service.shutdown())).toBeLessThan(2_000);
+      expect((await w.service.store.overview(GAME)).runs[0]).toMatchObject({ taskId: 't2', status: 'cancelled', message: '助手正在退出' });
+      expect(w.started).toHaveLength(0);
+      expect(count(w.trace, 'restore:0')).toBe(count(w.trace, 'yield:0'));
+    } finally {
+      await other.release();
+    }
+  });
+
+  it('a claimed round that loses the race to 「立即运行」 is closed as cancelled (never left 排队中) and its claim released', async () => {
+    const w = await scenario([plan(1, [task('t1', 's1')])], [account(1, 0)], [script('s1')], { enabled: false });
+    const claim = w.service.store.claimScheduled.bind(w.service.store);
+    let raced = false;
+    vi.spyOn(w.service.store, 'claimScheduled').mockImplementation(async (...args) => {
+      const claimed = await claim(...args);
+      if (claimed && !raced) {
+        raced = true;
+        // A 「立即运行」 click lands while the planner was waiting for its claim to be written.
+        await w.service.runNow(GAME, accountId(1), 't1');
+      }
+      return claimed;
+    });
+    await w.service.saveConfig(GAME, { enabled: true });
+    await eventually(() => w.started.length === 1);
+    await eventually(async () => (await w.overview()).runs.some((run) => run.origin === 'schedule' && run.status === 'cancelled'));
+    const { runs, runtime } = await w.overview();
+    const scheduled = runs.filter((run) => run.origin === 'schedule');
+    expect(scheduled).toEqual([expect.objectContaining({ status: 'cancelled', message: '同一任务已在队列里', startedAt: null })]);
+    expect(runs.filter((run) => run.status === 'queued')).toEqual([]);
+    expect(runtime.find((row) => row.taskId === 't1')?.lastClaimedAt).toBeNull();
+    expect(w.started[0]?.source).toBe('plan');
   });
 
   it('starts on a damaged plans.json (repaired, backed up, warned) instead of blocking startup', async () => {

@@ -29,7 +29,16 @@ export { defaultPlanConfig } from './store';
 export { ScriptRunner } from './script-runner';
 
 interface Waiting { run: PlanRun; deadline: number }
-interface Active { run: PlanRun; deadline: number; controller: AbortController; done: Promise<void> }
+interface Active {
+  run: PlanRun;
+  deadline: number;
+  controller: AbortController;
+  done: Promise<void>;
+  /** The instance lease is held. Until then the round still shows as 排队中 (it may be waiting for the lease). */
+  leased: boolean;
+  /** Set when a switch took the round back before it held the lease: its claim is released like a dequeued one. */
+  releaseClaim?: boolean;
+}
 interface Manual { runId: string; gameId: string; controller: AbortController; done: Promise<void> }
 interface Lease { release(): Promise<void> }
 
@@ -62,6 +71,11 @@ const PUBLISH_DELAY_MS = 50;
 const MANUAL_DEFAULT_MINUTES = 60;
 const MANUAL_MAX_MINUTES = 720;
 const MANUAL_LEASE_WAIT_MS = 200;
+/**
+ * A plan run waits for the instance lease in slices this long: core's file lock takes no AbortSignal, so the run's
+ * signal (停止 / 删除 / quitting) is checked between slices and a stop never waits out the whole queue budget.
+ */
+const LEASE_POLL_MS = 250;
 const MAX_PARAMS = 50;
 const PARAM_KEY = /^[A-Za-z0-9_.-]{1,64}$/;
 const TASK_GONE = '找不到这条任务，面板可能不是最新的，刷新一下再试。';
@@ -94,6 +108,34 @@ const liveKey = (gameId: string, accountId: string, taskId: string): string => `
 function errorCode(error: unknown): string | undefined {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === 'string' ? code : undefined;
+}
+
+/**
+ * Settles like `work`, or rejects with the abort reason as soon as `signal` aborts. A value that arrives after the
+ * abort goes to `late` (e.g. giving back a scheduler hold nobody will use any more).
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal, late: (value: T) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      reject(signal.reason);
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+    work.then((value) => {
+      signal.removeEventListener('abort', onAbort);
+      if (settled) { late(value); return; }
+      settled = true;
+      resolve(value);
+    }, (error: unknown) => {
+      signal.removeEventListener('abort', onAbort);
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+  });
 }
 
 function checkedRunOptions(options: ScriptRunOptions | undefined): Required<Pick<ScriptRunOptions, 'maxRunMinutes'>> & ScriptRunOptions {
@@ -458,7 +500,7 @@ export class PlanService {
     let lease: Lease | null = null;
     let giveBack: (() => void) | null = null;
     const cleanup = async (): Promise<void> => {
-      try { giveBack?.(); } catch (error) { console.error('[plan] 恢复自动采集失败', error); }
+      this.giveBackGather(giveBack);
       giveBack = null;
       await lease?.release();
       lease = null;
@@ -667,7 +709,9 @@ export class PlanService {
   }
 
   private phaseOf(gameId: string, accountId: string, taskId: string, runtime: TaskRuntime | undefined): PlanTaskPhase {
-    if (this.activeOf(gameId, accountId, taskId)) return 'running';
+    // Taken off the queue but still waiting for the instance lease: 排队中 until the lease is actually held.
+    const active = this.activeOf(gameId, accountId, taskId);
+    if (active) return active.leased ? 'running' : 'queued';
     if (this.waitingOf(gameId, accountId, taskId)) return 'queued';
     return this.live.get(liveKey(gameId, accountId, taskId))?.phase ?? phaseOfResult(runtime?.lastResult);
   }
@@ -721,11 +765,17 @@ export class PlanService {
     for (const [index, item] of this.active) if (item.run.gameId === gameId) indices.add(index);
     const entry = (run: PlanRun): PlanQueueEntry => ({ accountId: run.accountId, taskId: run.taskId, runId: run.runId });
     return [...indices].sort((a, b) => a - b).map((instanceIndex) => {
-      const running = this.active.get(instanceIndex);
-      const waiting = (this.queues.get(instanceIndex) ?? []).filter((item) => item.run.gameId === gameId).map((item) => entry(item.run));
+      const current = this.active.get(instanceIndex);
+      const mine = current?.run.gameId === gameId ? current : undefined;
+      // A round still waiting for the instance lease heads the waiting list rather than showing as 执行中.
+      const running = mine?.leased ? mine : undefined;
+      const waiting = [
+        ...(mine && !mine.leased ? [entry(mine.run)] : []),
+        ...(this.queues.get(instanceIndex) ?? []).filter((item) => item.run.gameId === gameId).map((item) => entry(item.run)),
+      ];
       return {
-        instanceIndex, runningTaskId: running?.run.gameId === gameId ? running.run.taskId : null,
-        waitingTaskIds: waiting.map((item) => item.taskId), running: running?.run.gameId === gameId ? entry(running.run) : null, waiting,
+        instanceIndex, runningTaskId: running?.run.taskId ?? null,
+        waitingTaskIds: waiting.map((item) => item.taskId), running: running ? entry(running.run) : null, waiting,
       };
     });
   }
@@ -799,7 +849,18 @@ export class PlanService {
             // Cheap pre-check; the store re-checks under the file lock before claiming the round.
             if (dueReason(task.trigger, now, lastRunAtOf(runtime), data.config.catchUpMs) === null) continue;
             const claimed = await this.store.claimScheduled(gameId, account.id, task.id, this.newRun(gameId, account, task, 'schedule', 1, ''), now);
-            if (!claimed || this.queuedOrActive(gameId, plan.accountId, task.id)) continue;
+            if (!claimed) continue;
+            if (this.closing) {
+              // Quitting began during the claim: the round is closed like the queued ones shutdown() skips.
+              await this.finish(claimed, 'skipped', '助手退出，未开始执行');
+              return;
+            }
+            if (this.queuedOrActive(gameId, plan.accountId, task.id)) {
+              // A 「立即运行」 of the same task landed during the claim: this round never joins the queue, so its
+              // record is closed (not left 排队中) and the claim released, like runNow() / retry() handle the race.
+              await this.finish(claimed, 'cancelled', '同一任务已在队列里', true);
+              continue;
+            }
             const state = this.liveOf(gameId, plan.accountId, task.id);
             state.retryLeft = data.config.retry;
             state.retryOrigin = 'schedule';
@@ -887,9 +948,17 @@ export class PlanService {
   /**
    * Takes matching waiting rounds off the queue; they end as cancelled. `releaseClaim` (a switch turned off): the
    * round did not run, so it is due again once the switch is back on (original: only a start counts). A user
-   * cancel keeps the claim — the user did not want this round.
+   * cancel keeps the claim — the user did not want this round. Rounds already taken off the queue but still waiting
+   * for the instance lease (shown as 排队中 too) are stopped the same way; a script that holds the lease is not.
    */
   private async dropWaiting(gameId: string, match: (run: PlanRun) => boolean, message: string, releaseClaim = true): Promise<void> {
+    const stopping: Active[] = [];
+    for (const item of this.active.values()) {
+      if (item.leased || item.run.gameId !== gameId || item.controller.signal.aborted || !match(item.run)) continue;
+      item.releaseClaim = releaseClaim;
+      item.controller.abort(new Error(message));
+      stopping.push(item);
+    }
     const dropped: PlanRun[] = [];
     for (const [index, list] of [...this.queues]) {
       const keep = list.filter((item) => !(item.run.gameId === gameId && match(item.run)));
@@ -902,6 +971,7 @@ export class PlanService {
       this.liveOf(run.gameId, run.accountId, run.taskId).phase = 'idle';
     }
     if (dropped.length) this.publish(gameId);
+    await Promise.all(stopping.map((item) => item.done));
   }
 
   private pumpAll(): void {
@@ -929,7 +999,7 @@ export class PlanService {
     if (!list.length) this.queues.delete(index);
     // Admission is synchronous: a manual run arriving meanwhile sees the instance taken.
     const release = this.runner.reserve(index, next.run.runId);
-    const active: Active = { run: next.run, deadline: next.deadline, controller: new AbortController(), done: Promise.resolve() };
+    const active: Active = { run: next.run, deadline: next.deadline, controller: new AbortController(), done: Promise.resolve(), leased: false };
     this.active.set(index, active);
     active.done = this.execute(active).catch((error: unknown) => console.error('[plan] 计划执行收尾出错', error)).finally(() => {
       release();
@@ -946,7 +1016,8 @@ export class PlanService {
 
   /**
    * One attempt of one round: re-check → ★ gather yields → instance lease → run → lease released → gather given
-   * back → bookkeeping → maybe a retry later (outside the lease, as a new queued attempt).
+   * back → bookkeeping → maybe a retry later (outside the lease, as a new queued attempt). Every wait before the
+   * script starts honours the run's AbortSignal, so 停止 / 删除 / quitting return promptly.
    */
   private async execute(active: Active): Promise<void> {
     const { run, controller } = active;
@@ -970,24 +1041,31 @@ export class PlanService {
       if (account.binding.index !== run.instanceIndex) throw new PlanOutcome('账号绑定的实例已变化，这一轮跳过', 'skipped');
       // ★ Scripts first (original plan rule 1): the instance's gather scheduler yields (polite wait of preemptGraceMs,
       // then abort of its in-flight sample / dispatch) before the script takes the lease; it gets it back in `finally`.
-      giveBack = await this.suspendGather(run.gameId, run.instanceIndex, `执行脚本计划「${task.scriptId}」`, config.preemptGraceMs);
-      if (signal.aborted) throw signal.reason;
+      giveBack = await untilAborted(
+        this.suspendGather(run.gameId, run.instanceIndex, `执行脚本计划「${task.scriptId}」`, config.preemptGraceMs),
+        signal, (late) => this.giveBackGather(late));
       // The lease wait uses what is left of the queue budget (never twice queueWaitMs in total).
-      const waitMs = Math.max(1_000, active.deadline - this.now());
-      const outcome = await withLabelledLease(this.home, run.instanceIndex, '运行脚本计划',
-        () => this.runInLease(run, task, account, config, signal), { timeoutMs: waitMs });
-      retry = await this.settle(run, outcome.result, task, signal);
+      const lease = await this.waitForLease(run.instanceIndex, '运行脚本计划', Math.max(1_000, active.deadline - this.now()), signal);
+      let result: ScriptRunSnapshot;
+      try {
+        active.leased = true;
+        this.publish(run.gameId);
+        result = await this.runInLease(run, task, account, config, signal);
+      } finally {
+        await lease.release();
+      }
+      retry = await this.settle(run, result, task, signal);
     } catch (error) {
-      retry = await this.settleError(run, error, signal);
+      retry = await this.settleError(run, error, signal, active.releaseClaim);
     } finally {
       // After the lease is released: the scheduler re-reads its queue 15 s later.
-      try { giveBack?.(); } catch (error) { console.error('[plan] 恢复自动采集失败', error); }
+      this.giveBackGather(giveBack);
     }
     if (retry) this.scheduleRetry(run, config);
   }
 
   /** Inside the instance lease: last checks, then the script runs in its worker thread. */
-  private async runInLease(run: PlanRun, task: PlanTask, account: GameAccount, config: PlanConfig, signal: AbortSignal): Promise<{ result: ScriptRunSnapshot }> {
+  private async runInLease(run: PlanRun, task: PlanTask, account: GameAccount, config: PlanConfig, signal: AbortSignal): Promise<ScriptRunSnapshot> {
     if (signal.aborted) throw signal.reason;
     const plugin = gamePlugin(run.gameId);
     const pkg = plugin.packageName;
@@ -1022,13 +1100,12 @@ export class PlanService {
     const matchDefaults = await this.defaultMatch();
     // Script defaults < the account's saved params for this script < the task's params (original mergeParams).
     const params = mergeParams(script, account.scriptParams?.[script.id], task.params);
-    const result = await this.runner.run({
+    return this.runner.run({
       runId: run.runId, gameId: run.gameId, packageName: pkg, instanceIndex: run.instanceIndex, instanceIdentity: identity,
       script, params, accountId: account.id, accountName: account.name, source: 'plan', taskId: run.taskId,
       templateDir: dir || null, shotPolicy, maxRunMs: task.maxRunMinutes > 0 ? task.maxRunMinutes * this.minuteMs : null,
       signal, assertOwnership: assertAccount, aiAssist: config.aiAssist, ...(matchDefaults ? { matchDefaults } : {}),
     });
-    return { result };
   }
 
   /** Bookkeeping of a run that executed. Returns whether the failure may be retried. */
@@ -1064,9 +1141,9 @@ export class PlanService {
   }
 
   /** Bookkeeping of a round that could not run (or was stopped before it did). Returns whether to retry. */
-  private async settleError(run: PlanRun, error: unknown, signal: AbortSignal): Promise<boolean> {
+  private async settleError(run: PlanRun, error: unknown, signal: AbortSignal, releaseClaim = false): Promise<boolean> {
     if (signal.aborted) {
-      await this.finish(run, 'cancelled', signal.reason instanceof Error ? signal.reason.message : '脚本已取消');
+      await this.finish(run, 'cancelled', signal.reason instanceof Error ? signal.reason.message : '脚本已取消', releaseClaim);
       return false;
     }
     if (error instanceof PlanOutcome) {
@@ -1160,6 +1237,11 @@ export class PlanService {
     }
   }
 
+  /** Gives the instance back to the gather scheduler (a null hold is a no-op); never throws. */
+  private giveBackGather(giveBack: (() => void) | null): void {
+    try { giveBack?.(); } catch (error) { console.error('[plan] 恢复自动采集失败', error); }
+  }
+
   /** Instances running (or admitted to run) a script right now; gather rounds do not count. */
   private scriptSlotsInUse(): number {
     return new Set([...this.active.keys(), ...this.manual.keys(), ...this.runner.busyIndices()]).size;
@@ -1213,16 +1295,38 @@ export class PlanService {
    * lock carries `label` in owner.json and the holder shows in the occupancy table meanwhile).
    */
   private async acquireLease(index: number, timeoutMs: number, label: string): Promise<Lease> {
+    try { return await this.holdLease(index, timeoutMs, label); }
+    catch (error) {
+      if (errorCode(error) === 'LOCK_TIMEOUT') throw new Error(`实例 #${index} 正被登录、采集或脚本计划占用，请稍后再试`);
+      throw error;
+    }
+  }
+
+  /** `acquireLease` with core's errors unchanged (a busy instance fails with `LOCK_TIMEOUT`). */
+  private async holdLease(index: number, timeoutMs: number, label: string): Promise<Lease> {
     let entered!: () => void;
     let exit!: () => void;
     const acquired = new Promise<void>((resolve) => { entered = resolve; });
     const held = new Promise<void>((resolve) => { exit = resolve; });
     const lockDone = withLabelledLease(this.home, index, label, async () => { entered(); await held; }, { timeoutMs });
-    try { await Promise.race([acquired, lockDone]); }
-    catch (error) {
-      if (errorCode(error) === 'LOCK_TIMEOUT') throw new Error(`实例 #${index} 正被登录、采集或脚本计划占用，请稍后再试`);
-      throw error;
-    }
+    await Promise.race([acquired, lockDone]);
     return { release: async () => { exit(); await lockDone.catch(() => undefined); } };
+  }
+
+  /**
+   * A plan run's wait for the instance lease (up to `waitMs`, then core's `LOCK_TIMEOUT` → 「这一轮跳过」). Core's file
+   * lock takes no AbortSignal, so the wait is sliced (`LEASE_POLL_MS`) and `signal` is checked in between: stopping,
+   * deleting the task or quitting ends the wait within a slice instead of blocking for the rest of `queueWaitMs`.
+   */
+  private async waitForLease(index: number, label: string, waitMs: number, signal: AbortSignal): Promise<Lease> {
+    // Real time, like the file lock itself (the planner clock may be moved in tests).
+    const until = Date.now() + waitMs;
+    for (;;) {
+      if (signal.aborted) throw signal.reason;
+      try { return await this.holdLease(index, Math.min(LEASE_POLL_MS, Math.max(0, until - Date.now())), label); }
+      catch (error) {
+        if (errorCode(error) !== 'LOCK_TIMEOUT' || Date.now() >= until) throw error;
+      }
+    }
   }
 }
