@@ -273,12 +273,20 @@ export class AutomationHost {
    * The instance's settings as automation uses them: its template set, and the gather config of the account bound to
    * this AVD when that account holds one (original Account.scriptParams.gather, `configAccount` says whose), else the
    * instance's own config (DECISIONS B「采集配置跟随绑定的账号」).
+   * An account copy that cannot be read (corrupt JSON) shows the instance's config instead of failing: the page that
+   * shows it is where the user re-saves a fresh copy (saving writes to the account). Runs never fall back like this.
    */
   async settings(gameId: string, index: number): Promise<AutomationSettings> {
     gamePlugin(gameId);
     const i = asIndex(index);
     const stored = await this.store.get(gameId, i);
-    const owned = gameId === GATHER_GAME_ID ? await this.ports.accountGatherConfig?.(i) : null;
+    if (gameId !== GATHER_GAME_ID || !this.ports.accountGatherConfig) return stored;
+    let owned: Awaited<ReturnType<NonNullable<AutomationHostPorts['accountGatherConfig']>>>;
+    try { owned = await this.ports.accountGatherConfig(i); }
+    catch (error) {
+      this.logLine('warn', `[实例 #${i}] 读不出绑定账号里的采集配置，先显示实例上的那份（重新保存即可修复）：${messageOf(error)}`);
+      return stored;
+    }
     return owned ? { ...stored, config: owned.config, configAccount: { id: owned.accountId, name: owned.accountName } } : stored;
   }
 

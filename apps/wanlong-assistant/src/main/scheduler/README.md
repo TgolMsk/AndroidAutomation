@@ -82,7 +82,7 @@ ScheduleCompat (compat.ts)              旧 AutomationSchedule 视图（渲染�
   `AutomationHost.settings()` 与每一轮先读账号那份（`configAccount` 标明是谁的），没有账号 / 账号里没有才用实例文件；
   `saveSettings({ config })` 在有绑定账号时写进账号（`saveAccountGatherConfig`），实例文件不动；绑定时账号模块经
   `instanceGatherConfig`（`AutomationHost.instanceGatherConfig()`）把实例上的配置搬进还没有配置的账号。账号里那份损坏时这一轮失败并说明，
-  绝不悄悄换用别的配置。
+  绝不悄悄换用别的配置；采集配置页照样能打开（显示实例那份），重新保存一次就把账号里的那份修好。
 - **脚本优先**（DECISIONS A.4）：`PlanHostPort.suspendForScript` = `eta.suspendForScript(i, SCRIPT_PREEMPT_GRACE_MS = 8 s, reason)`，
   计划运行与临时运行都在拿租约前调用、结束（成功 / 失败 / 跳过）后在 `finally` 里归还；开着自动采集从不阻止脚本。
 - **截图留痕**：采集失败现场跟随应用设置 `shotPolicy`（`AutomationHostHooks.shotPolicy`，原版 `saveAlertShot`）：`never` 不存、`onFail` 只存失败现场、
