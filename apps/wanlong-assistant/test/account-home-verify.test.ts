@@ -10,7 +10,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RawFrame } from '@avdm/automation';
 import { decideHome, WANLONG_HOME_TEMPLATES } from '../src/main/automation/accounts/drivers';
 import { matchHomeTemplates } from '../src/main/automation/accounts/home-match';
-import { HOME_TEMPLATE_SET_MISSING, HOME_TEMPLATES_MISSING, HomeVerifier } from '../src/main/automation/accounts/home-verify';
+import {
+  HOME_TEMPLATE_SET_MISSING, HOME_TEMPLATE_SET_REQUIRED, HOME_TEMPLATES_MISSING, HomeVerifier,
+} from '../src/main/automation/accounts/home-verify';
 
 const PKG = 'com.lilithgames.samo.android.cn';
 const W = 160;
@@ -91,11 +93,16 @@ describe('login home proof', () => {
     const capture = vi.fn(async () => ({ frame: noise(3), foregroundPackage: PKG }));
     const verifier = new HomeVerifier({ capture, templateDir: async () => '', runWorker: async (input) => ({ ok: true, ...(await matchHomeTemplates(input)) }) });
     await expect(verifier.verify('wanlong', 1)).rejects.toThrow(HOME_TEMPLATE_SET_MISSING);
+    // The wizard holds the instance lease, so the way out starts with ending it.
+    expect(HOME_TEMPLATE_SET_MISSING).toContain('稍后继续');
+    // Before the wizard takes the instance, the same gap is reported as something to fix first.
+    expect(await verifier.precheck('wanlong', 1)).toBe(HOME_TEMPLATE_SET_REQUIRED);
     expect(capture).not.toHaveBeenCalled();
     const withSet = new HomeVerifier({ capture, templateDir: async () => dir, runWorker: async (input) => {
       try { return { ok: true, ...(await matchHomeTemplates(input)) }; }
       catch (error) { return { ok: false, error: (error as Error).message }; }
     } });
+    expect(await withSet.precheck('wanlong', 1)).toBeNull();
     await expect(withSet.verify('wanlong', 1)).rejects.toThrow('缺少城内／世界地图模板');
     await expect(withSet.verify('unknown-game', 1)).rejects.toThrow();
   }, 60_000);

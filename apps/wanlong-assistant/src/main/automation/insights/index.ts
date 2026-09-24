@@ -109,6 +109,19 @@ export class InsightsService {
     });
   }
 
+  /**
+   * A schedule paused by a gate that is not a failure (the bound account needs a login check, a login is running,
+   * the base instance). A warning, at most once a day per instance, never counted as a failed cycle.
+   */
+  async recordSchedulePause(gameId: string, index: number, reason: string): Promise<void> {
+    const at = Date.now();
+    await this.raise({
+      id: `${gameId}:${index}:schedulePaused:gate:${cstDateKey(at)}`,
+      gameId, index, kind: 'schedulePaused', severity: 'warning', at,
+      message: `自动续跑已暂停（不计为失败）：${safeMessage(reason)}`, runId: null,
+    });
+  }
+
   /** Read-only monitor findings use the same durable ledger and opt-in channels as run alerts. */
   async recordMonitorAlert(alert: MonitorAlert): Promise<void> {
     await this.raise({

@@ -518,3 +518,117 @@ describe('accounts: binding, takeover and the automation readiness gate', () => 
     expect(await h.accounts.list('wanlong')).toEqual([]);
   });
 });
+
+describe('accounts: review fixes (gather after bind, cancel during boot, edits under a lease, legacy import)', () => {
+  it('switches off gather on the target instance when a bind leaves the account pending, and says so', async () => {
+    const h = harness();
+    const a = await account(h, '甲');
+    const bound = await h.accounts.bind(a.id, 1);
+    // Unowned instance with gather on: without this the gate would refuse every wake until 8 failures.
+    expect(h.records).toEqual(['schedule:1:false']);
+    expect(bound.notice).toContain('实例 #1 的自动采集已关闭');
+    const session = await ready(h, a.id);
+    await h.accounts.verifyLogin(session.id, true);
+    h.records.length = 0;
+    // The identical binding of a verified account stays verified: nothing to switch off.
+    const same = await h.accounts.bind(a.id, 1);
+    expect(same.account.login.status).toBe('ready');
+    expect(same.notice).toBeUndefined();
+    expect(h.records).toEqual([]);
+    // Moving it: the old instance's gather goes off with the move, the new one because the account is pending again.
+    h.automation.schedules!.mockResolvedValue([
+      { gameId: 'wanlong', index: 1, enabled: true, nextWakeAt: null, failureCount: 0 },
+      { gameId: 'wanlong', index: 2, enabled: true, nextWakeAt: null, failureCount: 0 },
+    ]);
+    const moved = await h.accounts.bind(a.id, 2);
+    expect(h.records).toEqual(['schedule:1:false', 'schedule:2:false']);
+    expect(moved.notice).toContain('原实例 #1');
+    expect(moved.notice).toContain('实例 #2 的自动采集已关闭');
+    h.records.length = 0;
+    // No schedule on the target: no switch, no notice. Inline creation takes the same path.
+    h.automation.schedules!.mockResolvedValue([]);
+    const created = await h.accounts.createAndBind('wanlong', 1, NEW_ID, { name: '新号' });
+    expect(created.notice).toBeUndefined();
+    expect(h.records).toEqual([]);
+  });
+
+  it('refuses a login before taking the instance when the home check could never run', async () => {
+    const h = harness({ homeCheckIssue: async () => '该实例还没有模板集，请先到模板库为该实例选择模板集，再开始登录。' });
+    const a = await account(h);
+    h.accounts.beginLogin('wanlong', 1, a.id);
+    await until(() => h.accounts.loginSession(1)?.phase === 'failed');
+    expect(h.accounts.loginSession(1)?.message).toContain('模板集');
+    expect(h.records).toEqual([]); // no schedule switched, no boot, no launch
+    expect((await h.accounts.store.get(a.id))?.binding).toBeNull();
+    expect(await leaseFree(1)).toBe(true);
+  });
+
+  it('lands a cancel during the instance boot at once, without waiting for the boot', async () => {
+    const h = harness();
+    h.state.status = 'stopped';
+    const boot = gate();
+    h.manager.start!.mockImplementationOnce(async (index: number) => {
+      await boot.promise;
+      return { ...structuredClone(h.state), status: 'running', record: { ...h.state.record, index } };
+    });
+    const a = await account(h);
+    const session = h.accounts.beginLogin('wanlong', 1, a.id);
+    await until(() => h.accounts.loginSession(1)?.phase === 'starting');
+    const slow = new Promise<'slow'>((resolve) => setTimeout(() => resolve('slow'), 1000));
+    expect(await Promise.race([h.accounts.cancelLogin(session.id).then(() => 'cancelled' as const), slow])).toBe('cancelled');
+    expect(h.accounts.loginSession(1)?.phase).toBe('cancelled');
+    expect(await leaseFree(1)).toBe(true);
+    boot.release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(h.device.startApp).not.toHaveBeenCalled(); // the boot finishing later never launches the game
+    expect(h.accounts.loginSession(1)?.phase).toBe('cancelled');
+  });
+
+  it('edits details and the default script while another task holds the instance lease, but not during a login', async () => {
+    const h = harness();
+    const a = await account(h);
+    await h.accounts.bind(a.id, 1);
+    const held = gate();
+    const entered = gate();
+    const gather = withFileLock(leasePath(1), async () => { entered.release(); await held.promise; });
+    await entered.promise;
+    const edited = await h.accounts.update(a.id, { name: '主号改', note: '备注', defaultScriptId: 'daily' });
+    expect(edited).toMatchObject({ name: '主号改', note: '备注', defaultScriptId: 'daily' });
+    // Binding changes still need the device lease.
+    await expect(h.accounts.bind(a.id, null)).rejects.toThrow('正被登录、采集或脚本计划占用');
+    held.release();
+    await gather;
+    await ready(h, a.id);
+    await expect(h.accounts.update(a.id, { note: '登录中' })).rejects.toThrow('正在登录');
+  });
+
+  it('imports a legacy accounts.json only once and explains unreadable paths in Chinese', async () => {
+    const h = harness();
+    const file = path.join(home, 'legacy-accounts.json');
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    await writeFile(file, JSON.stringify({ version: 1, accounts: [
+      { id: 'acc_1', name: '旧号一', instanceIndex: 3, enabled: true },
+      { id: 'acc_2', name: '旧号二', instanceIndex: null, enabled: false, note: '备注' },
+    ] }));
+    const preview = await h.accounts.importLegacyAccounts('wanlong', file, { apply: false });
+    expect(preview).toMatchObject({ applied: false, created: 0, idMap: {} });
+    expect(await h.accounts.list('wanlong')).toEqual([]);
+    const first = await h.accounts.importLegacyAccounts('wanlong', file, { apply: true });
+    expect(first.created).toBe(2);
+    expect(Object.keys(first.idMap)).toEqual(['acc_1', 'acc_2']);
+    const again = await h.accounts.importLegacyAccounts('wanlong', file, { apply: false });
+    expect(again.entries.map((entry) => entry.importable)).toEqual([false, false]);
+    expect(again.entries[0]).toMatchObject({ reason: expect.stringContaining('已导入过'), importedAs: first.idMap.acc_1 });
+    const second = await h.accounts.importLegacyAccounts('wanlong', file, { apply: true });
+    expect(second).toMatchObject({ applied: true, created: 0, idMap: first.idMap });
+    const accounts = await h.accounts.list('wanlong');
+    expect(accounts.map((item) => item.name)).toEqual(['旧号一', '旧号二']);
+    expect(accounts.every((item) => !item.enabled && item.binding === null && item.login.status === 'pending')).toBe(true);
+    await expect(h.accounts.importLegacyAccounts('wanlong', path.join(home, 'missing.json'), { apply: false }))
+      .rejects.toThrow('找不到旧账号文件');
+    const folder = path.join(home, 'legacy-dir');
+    await mkdir(folder);
+    await expect(h.accounts.importLegacyAccounts('wanlong', folder, { apply: false })).rejects.toThrow('不是文件');
+    await expect(h.accounts.importLegacyAccounts('wanlong', 'relative.json', { apply: false })).rejects.toThrow('绝对路径');
+  });
+});

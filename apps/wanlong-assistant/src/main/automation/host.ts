@@ -24,6 +24,7 @@ const PROBE_TIMEOUT_MS = 120_000;
 const TEMPLATE_JOB_TIMEOUT_MESSAGES: Record<TemplateJob['kind'], string> = {
   test: '模板测试超时', compile: '模板编译检查超时', alphaPreview: '去底预览超时', diffAlpha: '透明底计算超时',
 };
+const NOT_READY = '该实例暂不能运行自动任务，请在账号管理中检查账号登录状态';
 const MAX_RUN_HISTORY = 100;
 const RUN_HISTORY_VERSION = 1;
 const MAX_RUN_HISTORY_BYTES = 256 * 1024;
@@ -55,8 +56,13 @@ export interface AutomationHostHooks {
   onCycle?: (run: AutomationRun, result: GatherCycleResult, source: 'manual' | 'scheduled') => Promise<void>;
   onFailure?: (run: AutomationRun, error: unknown, source: 'manual' | 'scheduled') => Promise<void>;
   onScheduleStop?: (gameId: string, index: number, failureCount: number) => Promise<void>;
-  /** Accounts gate: refuses the base instance, an active login and a pending / stale bound account (throws the reason). */
-  ensureAutomationReady?: (gameId: string, index: number) => Promise<void>;
+  /**
+   * Accounts gate: the base instance, an active login and a pending / stale bound account are refused with a Chinese
+   * reason. A refusal is a verdict, not a failure; a rejected promise (the gate could not decide) is a failure.
+   */
+  automationReadiness?: (gameId: string, index: number) => Promise<{ ready: boolean; reason?: string }>;
+  /** A scheduled wake the accounts gate refused: the schedule is paused (not a failure) and `reason` is user-facing. */
+  onSchedulePause?: (gameId: string, index: number, reason: string) => Promise<void>;
 }
 
 interface ActiveAutomationRun {
@@ -82,6 +88,8 @@ export class AutomationHost {
   private readonly templateChanges = new TemplateChangeFeed();
   /** Replaces the one-shot template worker (tests run `runTemplateJob` in-process); unset in the app. */
   templateJobRunner?: (job: TemplateJob) => Promise<TemplateJobOutput>;
+  /** Gate refusals of scheduled wakes, reported once the scheduler has persisted the pause. */
+  private readonly pauseReasons = new Map<string, string>();
   private readonly historyFile: string;
   private readonly historyReady: Promise<void>;
   private historyWrite: Promise<void> = Promise.resolve();
@@ -104,7 +112,13 @@ export class AutomationHost {
     this.scheduler = new AutomationScheduler(home, (context) => this.runScheduledCycle(context), {
       onStateChange: (state) => {
         broadcast('automation-schedule', state);
-        if (!state.enabled && state.failureCount > 0) {
+        const pauseKey = `${state.gameId}:${state.index}`;
+        const pauseReason = this.pauseReasons.get(pauseKey);
+        this.pauseReasons.delete(pauseKey);
+        if (!state.enabled && pauseReason !== undefined && state.failureCount === 0) {
+          void this.hooks.onSchedulePause?.(state.gameId, state.index, pauseReason).catch((error: unknown) =>
+            console.error('[avdm] 调度暂停提醒无法保存', error));
+        } else if (!state.enabled && state.failureCount > 0) {
           void this.hooks.onScheduleStop?.(state.gameId, state.index, state.failureCount).catch((error: unknown) =>
             console.error('[avdm] 调度暂停告警无法保存', error));
         }
@@ -405,7 +419,8 @@ export class AutomationHost {
     return this.withControlLock(i, async () => {
       if (!enabled) return this.scheduler.disable(gameId, i);
       if (this.activeByIndex.has(i) || this.gatherRunner.isRunning(i)) throw new Error(`实例 #${i} 已有自动化任务在运行`);
-      await this.hooks.ensureAutomationReady?.(gameId, i);
+      const readiness = await this.hooks.automationReadiness?.(gameId, i);
+      if (readiness && !readiness.ready) throw new Error(readiness.reason || NOT_READY);
       const manager = await this.host.get();
       const [instance, settings] = await Promise.all([manager.getState(i), this.store.get(gameId, i)]);
       if (instance.status !== 'running') throw new Error(`实例 #${i} 尚未就绪`);
@@ -521,7 +536,15 @@ export class AutomationHost {
     if (gameId !== 'wanlong' || task.id !== 'gather-once') throw new Error('该自动化任务尚未接入');
     const i = asIndex(index);
     if (this.activeByIndex.has(i) || this.gatherRunner.isRunning(i)) throw new Error(`实例 #${i} 已有自动化任务在运行`);
-    await this.hooks.ensureAutomationReady?.(gameId, i);
+    const readiness = await this.hooks.automationReadiness?.(gameId, i);
+    if (readiness && !readiness.ready) {
+      const reason = readiness.reason || NOT_READY;
+      if (source !== 'scheduled') throw new Error(reason);
+      // Not a device failure (original alert rule 1): a scheduled wake pauses at once instead of backing off
+      // eight times into a 「连续失败」 alert.
+      this.pauseReasons.set(`${gameId}:${i}`, reason);
+      throw new SchedulePauseError(reason, { countsAsFailure: false });
+    }
 
     const manager = await this.host.get();
     const [instance, settings] = await Promise.all([manager.getState(i), this.store.get(gameId, i)]);

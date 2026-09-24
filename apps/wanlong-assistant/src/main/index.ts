@@ -39,7 +39,8 @@ bootstrapApp({
         await monitoring.recordFailure(run, error);
       },
       onScheduleStop: (gameId, index, count) => insights.recordScheduleStop(gameId, index, count),
-      ensureAutomationReady: (gameId, index): Promise<void> => accounts.assertInstanceAutomationReady(gameId, index),
+      automationReadiness: (gameId, index) => accounts.readiness(gameId, index),
+      onSchedulePause: (gameId, index, reason) => insights.recordSchedulePause(gameId, index, reason),
     });
     // Template edits (save / delete / import) make compiled templates stale: tell the renderer; cache owners
     // (vision workers, sampler, resources, AI harvest) subscribe through automation.onTemplatesChanged too.
@@ -55,6 +56,7 @@ bootstrapApp({
     const accounts: AccountManager = new AccountManager(services.host, automation, home, {
       base: (gameId) => provisioner.baseIdentity(gameId),
       verifyHome: (gameId, index) => homeVerifier.verify(gameId, index),
+      homeCheckIssue: (gameId, index) => homeVerifier.precheck(gameId, index),
       // `instanceGatherConfig` (move the instance's gather config into a newly bound account) is wired by the
       // scheduler port together with gather settings that read `accounts.gatherConfigFor()` first; until then
       // the instance file stays the only copy.

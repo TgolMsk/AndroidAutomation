@@ -24,7 +24,15 @@ export interface ScheduledRunContext {
 export type ScheduledRunOnce = (context: ScheduledRunContext) => Promise<{ nextWakeAt: number | null }>;
 
 /** A game safety gate requires the schedule to stop immediately, without retry backoff. */
-export class SchedulePauseError extends Error {}
+export class SchedulePauseError extends Error {
+  /** False for a refusal that is not a device failure (the accounts readiness gate): the failure counter is cleared. */
+  readonly countsAsFailure: boolean;
+
+  constructor(message: string, options: { countsAsFailure?: boolean } = {}) {
+    super(message);
+    this.countsAsFailure = options.countsAsFailure ?? true;
+  }
+}
 
 export interface AutomationSchedulerOptions {
   now?: () => number;
@@ -308,7 +316,8 @@ export class AutomationScheduler {
         try {
           await this.mutate(async () => {
             if (this.disposed || this.entries.get(run.key) !== state) return;
-            const failureCount = Math.min(32, state.failureCount + 1);
+            const counted = !(error instanceof SchedulePauseError) || error.countsAsFailure;
+            const failureCount = counted ? Math.min(32, state.failureCount + 1) : 0;
             const disabled = error instanceof SchedulePauseError || failureCount >= this.maxConsecutiveFailures;
             const delay = Math.min(this.backoffMaxMs, this.backoffBaseMs * 2 ** Math.min(20, failureCount - 1));
             const next: ScheduledAutomation = {

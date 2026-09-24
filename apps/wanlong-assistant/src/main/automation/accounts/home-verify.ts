@@ -3,11 +3,14 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RawFrame } from '@avdm/automation';
 import { decideHome, gameLoginDriver } from './drivers';
-import { HOME_TEMPLATE_SET_MISSING, type HomeVerifyWorkerInput, type HomeVerifyWorkerOutput } from './home-verify-contract';
+import {
+  HOME_TEMPLATE_SET_MISSING, HOME_TEMPLATE_SET_REQUIRED, type HomeVerifyWorkerInput, type HomeVerifyWorkerOutput,
+} from './home-verify-contract';
 import type { HomeVerdict } from './types';
 
 export {
-  HOME_TEMPLATE_SET_MISSING, HOME_TEMPLATES_MISSING, type HomeVerifyMatch, type HomeVerifyWorkerInput, type HomeVerifyWorkerOutput,
+  HOME_TEMPLATE_SET_MISSING, HOME_TEMPLATE_SET_REQUIRED, HOME_TEMPLATES_MISSING, type HomeVerifyMatch, type HomeVerifyWorkerInput,
+  type HomeVerifyWorkerOutput,
 } from './home-verify-contract';
 
 const WORKER_TIMEOUT_MS = 120_000;
@@ -30,6 +33,15 @@ export class HomeVerifier {
   private disposed = false;
 
   constructor(private readonly ports: HomeVerifyPorts) {}
+
+  /**
+   * Checked before the wizard takes the instance (`AccountManagerPorts.homeCheckIssue`): without a template set the
+   * home proof can never pass, and choosing one needs the device lease the wizard would then hold.
+   */
+  async precheck(gameId: string, index: number): Promise<string | null> {
+    if (!gameLoginDriver(gameId)) return null;
+    return (await this.ports.templateDir(gameId, index)) ? null : HOME_TEMPLATE_SET_REQUIRED;
+  }
 
   async verify(gameId: string, index: number): Promise<HomeVerdict> {
     const driver = gameLoginDriver(gameId);

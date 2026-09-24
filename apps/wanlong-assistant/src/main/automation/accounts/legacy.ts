@@ -55,10 +55,12 @@ function legacyParams(value: unknown, map: Record<string, string>): ScriptParams
  * script and script parameters are carried over: MuMu instance indices do not map to AVDs and the old login
  * check proves nothing about a new device, so every imported account starts unbound, 「待登录」 and disabled.
  * With `scriptIdMap` (from importing the old scripts first), the default script and the parameter keys follow
- * the ids the scripts were saved under.
+ * the ids the scripts were saved under. Rows whose old id is in `imported` (accounts a previous import created)
+ * are skipped: an import only adds, it never duplicates or modifies.
  */
 export function previewLegacyAccounts(
   raw: unknown, packageName: string, scriptIdMap?: Record<string, string>,
+  imported: ReadonlyMap<string, { id: string; name: string }> = new Map(),
 ): { entries: LegacyAccountPreview[]; rows: LegacyAccountRow[] } {
   const map = checkScriptIdMap(scriptIdMap);
   if (!record(raw) || raw.version !== 1 || !Array.isArray(raw.accounts)) {
@@ -75,10 +77,17 @@ export function previewLegacyAccounts(
     const entry: LegacyAccountPreview = { oldId, name, note, importable: false, scriptParamCount: 0 };
     entries.push(entry);
     if (!record(item) || !oldId || !name) { entry.reason = '缺少账号编号或名称'; continue; }
+    if (/[\0-\x1f\x7f]/.test(oldId)) { entry.reason = '账号编号无效'; continue; }
     if (seen.has(oldId)) { entry.reason = '账号编号重复'; continue; }
     seen.add(oldId);
     if (typeof item.packageName === 'string' && item.packageName.trim() && item.packageName.trim() !== packageName) {
       entry.reason = `属于其他游戏（${oneLine(item.packageName, 80)}）`;
+      continue;
+    }
+    const previous = imported.get(oldId);
+    if (previous) {
+      entry.reason = `已导入过（账号「${previous.name}」），不会重复导入`;
+      entry.importedAs = previous.id;
       continue;
     }
     const row: LegacyAccountRow = { oldId, details: { name, note } };

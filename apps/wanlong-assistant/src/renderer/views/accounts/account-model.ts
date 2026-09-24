@@ -122,6 +122,15 @@ export function acceptSession(current: AccountLoginSession | null, next: Account
   return next;
 }
 
+/**
+ * Whether a rejected 「检查登录」 already shows its reason: main puts a failed home check into a newer snapshot of
+ * the same session (back to awaitingLogin, carrying the message). Any other rejection needs a toast.
+ */
+export function verifyReasonShown(fresh: AccountLoginSession | null, sessionId: string, before: number, message: string): boolean {
+  return Boolean(fresh && fresh.id === sessionId && fresh.updatedAt > before && fresh.phase === 'awaitingLogin' &&
+    fresh.message === message);
+}
+
 export function defaultScriptLabel(account: GameAccount, scripts: ReadonlyArray<{ id: string; name: string }>): { label: string; missing: boolean } | null {
   if (!account.defaultScriptId) return null;
   const script = scripts.find((item) => item.id === account.defaultScriptId);

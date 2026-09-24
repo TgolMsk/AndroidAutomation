@@ -9,6 +9,7 @@ import { useAvdmEvent } from '../../hooks/useAvdmEvent';
 import { useSelection } from '../../state/selection';
 import {
   NEW_ACCOUNT, acceptSession, accountOfIndex, isBaseInstance, loginAccountChoices, loginIsActive, loginStep, newRequestId,
+  verifyReasonShown,
 } from './account-model';
 import { LoginPreview } from './LoginPreview';
 import { useAccounts, useBaseInstance } from './useAccounts';
@@ -148,11 +149,16 @@ function LoginContent({ gameId, index, setLocked, closeRef, onClose, onNext }: {
   async function verify(): Promise<void> {
     if (!session) return;
     setBusy(true);
+    const before = sessionRef.current?.updatedAt ?? 0;
     try {
       accept(await avdm.accountVerifyLogin(session.id, confirmed));
       toast.push({ kind: 'success', title: '账号已检查并启用', detail: '自动采集不会自动开启，可前往采集总览设置。' });
-    } catch {
-      /* The session message keeps the reason (pushed through login-changed). */
+    } catch (error) {
+      // A failed home check comes back as a newer session snapshot carrying the reason; anything else (the wizard
+      // ended, wrong phase, IPC failure) would otherwise do nothing visible.
+      const fresh = await avdm.accountLoginSession(index).catch(() => null);
+      if (fresh?.gameId === gameId) accept(fresh);
+      if (!verifyReasonShown(fresh, session.id, before, errMsg(error))) toast.error('检查登录未完成', errMsg(error));
     } finally {
       setBusy(false);
     }

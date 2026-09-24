@@ -2,7 +2,7 @@
  * The accounts readiness gate wired into gather (original `assertInstanceAutomationReady` + scheduler section of
  * `login-offline-check.ts`) and the accounts / instances IPC chain (instances-offline-check IPC section).
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path, { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -31,19 +31,19 @@ describe('gather refuses what the accounts gate refuses', () => {
   let home: string;
   let host: AutomationHost;
   const screencapRaw = vi.fn(async () => ({ width: 1, height: 1, data: new Uint8Array(4) }));
-  const ensureAutomationReady = vi.fn<(gameId: string, index: number) => Promise<void>>();
+  const automationReadiness = vi.fn<(gameId: string, index: number) => Promise<{ ready: boolean; reason?: string }>>();
   const runner = { runOnce: vi.fn(), stop: vi.fn(async () => undefined), dispose: vi.fn(async () => undefined), isRunning: vi.fn(() => false) };
 
   beforeEach(async () => {
     home = await mkdtemp(path.join(tmpdir(), 'avdm-account-gate-'));
-    ensureAutomationReady.mockReset();
+    automationReadiness.mockReset();
     screencapRaw.mockClear();
     runner.runOnce.mockClear();
     const manager = {
       getState: async () => ({ status: 'running', record: { createdAt: 'c1' } }),
       device: async () => ({ foregroundPackage: async () => wanlongPlugin.packageName, screencapRaw }),
     };
-    host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner as never, undefined, { ensureAutomationReady });
+    host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner as never, undefined, { automationReadiness });
     await host.saveSettings('wanlong', 1, { templateDir: home, config: { version: 2, enabled: true } });
   });
 
@@ -53,10 +53,10 @@ describe('gather refuses what the accounts gate refuses', () => {
   });
 
   it('refuses to enable the schedule or start a manual run before any device read', async () => {
-    ensureAutomationReady.mockRejectedValue(new Error('基础实例用于克隆，请在副本中配置自动任务。'));
+    automationReadiness.mockResolvedValue({ ready: false, reason: '基础实例用于克隆，请在副本中配置自动任务。' });
     await expect(host.setSchedule('wanlong', 1, true)).rejects.toThrow('基础实例用于克隆');
     await expect(host.run('wanlong', 'gather-once', 1)).rejects.toThrow('基础实例用于克隆');
-    expect(ensureAutomationReady).toHaveBeenCalledWith('wanlong', 1);
+    expect(automationReadiness).toHaveBeenCalledWith('wanlong', 1);
     expect(screencapRaw).not.toHaveBeenCalled();
     expect(runner.runOnce).not.toHaveBeenCalled();
     expect(await host.runs()).toEqual([]);
@@ -64,9 +64,57 @@ describe('gather refuses what the accounts gate refuses', () => {
     await expect(host.setSchedule('wanlong', 1, false)).resolves.toMatchObject({ enabled: false });
   });
 
+  it('pauses a scheduled wake the gate refuses at once, without counting a failure', async () => {
+    // A schedule enabled before this gate existed (or before a bind) meets a pending bound account at its next wake.
+    const file = join(home, 'automation', 'scheduler', 'wanlong', '1.json');
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify({ version: 1, gameId: 'wanlong', index: 1, enabled: true, nextWakeAt: 0, failureCount: 2 }));
+    const reason = '账号「主号」尚未完成登录检查，或绑定实例已改变。请在账号登录向导中继续。';
+    automationReadiness.mockResolvedValue({ ready: false, reason });
+    const onScheduleStop = vi.fn(async () => undefined);
+    const onSchedulePause = vi.fn(async () => undefined);
+    const manager = {
+      getState: async () => ({ status: 'running', record: { createdAt: 'c1' } }),
+      device: async () => ({ foregroundPackage: async () => wanlongPlugin.packageName, screencapRaw }),
+    };
+    const scheduled = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner as never, undefined,
+      { automationReadiness, onScheduleStop, onSchedulePause });
+    try {
+      await scheduled.restoreSchedules();
+      await vi.waitFor(() => expect(onSchedulePause).toHaveBeenCalledWith('wanlong', 1, reason));
+      expect((await scheduled.schedules()).find((item) => item.index === 1)).toMatchObject({ enabled: false, failureCount: 0, nextWakeAt: null });
+      expect(onScheduleStop).not.toHaveBeenCalled(); // no 「连续失败」 alert
+      expect(automationReadiness).toHaveBeenCalledTimes(1); // no backoff retries
+      expect(runner.runOnce).not.toHaveBeenCalled();
+      expect(screencapRaw).not.toHaveBeenCalled();
+      expect(await scheduled.runs()).toEqual([]);
+    } finally {
+      await scheduled.dispose();
+    }
+  });
+
+  it('still counts a gate that could not decide as a failure with backoff', async () => {
+    const file = join(home, 'automation', 'scheduler', 'wanlong', '1.json');
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify({ version: 1, gameId: 'wanlong', index: 1, enabled: true, nextWakeAt: 0, failureCount: 0 }));
+    automationReadiness.mockRejectedValue(new Error('账号文件无法读取'));
+    const onSchedulePause = vi.fn(async () => undefined);
+    const manager = { getState: async () => ({ status: 'running', record: { createdAt: 'c1' } }), device: async () => ({}) };
+    const scheduled = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner as never, undefined,
+      { automationReadiness, onSchedulePause });
+    try {
+      await scheduled.restoreSchedules();
+      await vi.waitFor(async () => expect((await scheduled.schedules()).find((item) => item.index === 1)?.failureCount).toBe(1));
+      expect((await scheduled.schedules()).find((item) => item.index === 1)?.enabled).toBe(true);
+      expect(onSchedulePause).not.toHaveBeenCalled();
+    } finally {
+      await scheduled.dispose();
+    }
+  });
+
   it('lets a disable issued during the readiness check win', async () => {
     const approval = gate();
-    ensureAutomationReady.mockImplementationOnce(async () => { await approval.promise; throw new Error('账号「主号」尚未完成登录检查'); });
+    automationReadiness.mockImplementationOnce(async () => { await approval.promise; return { ready: false, reason: '账号「主号」尚未完成登录检查' }; });
     const enable = host.setSchedule('wanlong', 1, true).catch((error: unknown) => error as Error);
     const disable = host.setSchedule('wanlong', 1, false);
     approval.release();

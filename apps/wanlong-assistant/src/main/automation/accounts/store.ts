@@ -20,6 +20,8 @@ const STORED_ID_RE = /^[0-9a-f-]{36}$/i;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Same id rule as scripts, plans and plan task parameters. */
 const SCRIPT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$/;
+/** Old wanlong-panel account ids (`acc_…`), kept only to recognise a second import of the same file. */
+const LEGACY_ID_RE = /^[^\0-\x1f\x7f]{1,120}$/;
 
 interface AccountFile { version: 2; accounts: GameAccount[] }
 
@@ -162,6 +164,10 @@ function parseAccount(value: unknown): GameAccount {
   if (value.defaultScriptId !== undefined && value.defaultScriptId !== null) account.defaultScriptId = scriptId(value.defaultScriptId);
   const params = normalizeScriptParams(value.scriptParams);
   if (params) account.scriptParams = params;
+  if (value.legacyId !== undefined) {
+    if (typeof value.legacyId !== 'string' || !LEGACY_ID_RE.test(value.legacyId)) throw new Error('账号导入来源无效');
+    account.legacyId = value.legacyId;
+  }
   return account;
 }
 
@@ -455,29 +461,41 @@ export class AccountStore {
     });
   }
 
-  /** Create legacy accounts in one transaction: unbound, pending and disabled. Returns old id → new id. */
-  async importLegacy(gameId: string, packageName: string, rows: LegacyAccountRow[]): Promise<Record<string, string>> {
+  /**
+   * Create legacy accounts in one transaction: unbound, pending and disabled, each remembering its old id. Rows
+   * imported before (same game, same old id) are not touched and map to that account. Returns old id → new id.
+   */
+  async importLegacy(gameId: string, packageName: string, rows: LegacyAccountRow[]):
+    Promise<{ idMap: Record<string, string>; created: number }> {
     if (!GAME_ID_RE.test(gameId) || !PACKAGE_RE.test(packageName)) throw new Error('游戏标识无效');
-    const prepared = rows.map((row) => ({
-      oldId: row.oldId, names: details(row.details),
-      defaultScriptId: row.defaultScriptId === undefined ? undefined : scriptId(row.defaultScriptId),
-      scriptParams: normalizeScriptParams(row.scriptParams),
-    }));
+    const prepared = rows.map((row) => {
+      if (typeof row.oldId !== 'string' || !LEGACY_ID_RE.test(row.oldId)) throw new Error('旧账号编号无效');
+      return {
+        oldId: row.oldId, names: details(row.details),
+        defaultScriptId: row.defaultScriptId === undefined ? undefined : scriptId(row.defaultScriptId),
+        scriptParams: normalizeScriptParams(row.scriptParams),
+      };
+    });
     return this.change((data) => {
-      if (data.accounts.length + prepared.length > MAX_ACCOUNTS) throw new Error('账号数量将超过上限，未导入');
-      const now = Date.now();
       const map: Record<string, string> = {};
-      for (const row of prepared) {
+      const fresh = prepared.filter((row) => {
+        const previous = data.accounts.find((item) => item.gameId === gameId && item.legacyId === row.oldId);
+        if (previous) map[row.oldId] = previous.id;
+        return !previous;
+      });
+      if (data.accounts.length + fresh.length > MAX_ACCOUNTS) throw new Error('账号数量将超过上限，未导入');
+      const now = Date.now();
+      for (const row of fresh) {
         const account: GameAccount = {
           id: randomUUID(), gameId, packageName, ...row.names, enabled: false, binding: null,
-          login: { status: 'pending', attemptId: null, verifiedAt: null }, createdAt: now, updatedAt: now,
+          login: { status: 'pending', attemptId: null, verifiedAt: null }, legacyId: row.oldId, createdAt: now, updatedAt: now,
         };
         if (row.defaultScriptId) account.defaultScriptId = row.defaultScriptId;
         if (row.scriptParams) account.scriptParams = row.scriptParams;
         data.accounts.push(account);
         map[row.oldId] = account.id;
       }
-      return map;
+      return { idMap: map, created: fresh.length };
     });
   }
 }

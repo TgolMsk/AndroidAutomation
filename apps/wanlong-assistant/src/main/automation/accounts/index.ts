@@ -33,6 +33,9 @@ const INPUT_FAILED = '登录输入未完成，请检查设备连接后重试。'
 const COMMAND_FAILED = '登录操作未完成，请检查实例连接后重试。';
 const FRAME_FAILED = '画面读取失败，请检查实例连接后重试。';
 
+/** A legacy-file refusal whose message is already the Chinese reason. */
+class AccountFileError extends Error {}
+
 interface Lease {
   release(): Promise<void>;
 }
@@ -56,6 +59,11 @@ export interface AccountManagerPorts {
   base?(gameId: string): Promise<{ index: number; createdAt: string } | null>;
   /** Read-only home proof of the game (city / world-map templates). Required to finish a login. */
   verifyHome?(gameId: string, index: number): Promise<HomeVerdict>;
+  /**
+   * Why the home proof cannot run on this instance (no template set), or null. Checked before the wizard takes the
+   * instance: choosing a template set needs the same device lease the wizard holds until it ends.
+   */
+  homeCheckIssue?(gameId: string, index: number): Promise<string | null>;
   /**
    * The gather config saved on the instance, moved into an account when it is bound (original afterAccountBind).
    * ★ Wire it only together with gather settings that read the bound account first and fall back to the instance
@@ -121,6 +129,22 @@ export function toDevicePoint(point: { x: number; y: number }, size: { width: nu
     x: Math.min(size.width - 1, Math.max(0, Math.round(point.x * size.width / REF_WIDTH))),
     y: Math.min(size.height - 1, Math.max(0, Math.round(point.y * size.height / REF_HEIGHT))),
   };
+}
+
+/**
+ * Resolves with `work`, or rejects as soon as the wizard is cancelled (original prepare polled with an abortable
+ * sleep). The work itself keeps running: a boot that was already requested is not undone.
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    work.catch(() => undefined);
+    return Promise.reject(new LoginUserError('登录向导已结束。'));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new LoginUserError('登录向导已结束。'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }
 
 function bindResult(result: BindOutcome & { notice?: string }): AccountBindResult {
@@ -312,8 +336,15 @@ export class AccountManager {
     return account;
   }
 
+  /**
+   * Details and the default script never touch a device, so (like the original `account:save`) only a running
+   * login blocks them, not a gather cycle or plan run holding the instance lease. Binding changes keep the lease.
+   */
   async update(accountId: string, patch: AccountPatch): Promise<GameAccount> {
-    const account = await this.withAccountMutation(accountId, [], () => this.store.update(accountId, patch));
+    const current = await this.store.get(accountId);
+    if (!current) throw new Error('账号不存在');
+    this.assertEditable(accountId, [current.binding?.index]);
+    const account = await this.store.update(accountId, patch);
     this.notifyAccounts(account.gameId);
     return account;
   }
@@ -398,14 +429,27 @@ export class AccountManager {
     }
     const owner = (await this.store.list(gameId)).find((item) => item.id !== accountId && item.binding?.index === index);
     if (owner && !takeOver) throw slotTakenError(index, owner.name);
+    const scheduled = new Set((await this.automation.schedules())
+      .filter((entry) => entry.gameId === gameId && entry.enabled).map((entry) => entry.index));
+    const notices: string[] = [];
     if (account?.binding && account.binding.index !== index) {
       await this.automation.setSchedule(gameId, account.binding.index, false);
+      if (scheduled.has(account.binding.index)) notices.push(`原实例 #${account.binding.index} 的自动采集已随改绑关闭。`);
     }
-    if (owner) await this.automation.setSchedule(gameId, index, false);
+    // ★ Unless this is the identical binding of a verified account, the bind leaves the account 「待登录」 and the
+    // readiness gate would refuse every scheduled wake on this instance: switch its gather off now, say so.
+    const pending = !(account && account.login.status === 'ready' && account.binding?.index === index &&
+      account.binding.instanceCreatedAt === state.record.createdAt);
+    if (owner || (pending && scheduled.has(index))) await this.automation.setSchedule(gameId, index, false);
+    if (pending && scheduled.has(index)) {
+      notices.push(`实例 #${index} 的自动采集已关闭：账号需要先在登录向导中完成登录检查，之后可在采集总览重新开启。`);
+    }
     const binding = { index, instanceCreatedAt: state.record.createdAt };
     const outcome = await this.store.bind(accountId, binding,
       { takeOver, ...(create ? { create: { gameId, packageName: game.packageName, details: create } } : {}) });
-    return { ...outcome, notice: await this.moveGatherConfig(outcome.account, index) };
+    const gatherNotice = await this.moveGatherConfig(outcome.account, index);
+    if (gatherNotice) notices.push(gatherNotice);
+    return { ...outcome, ...(notices.length ? { notice: notices.join(' ') } : {}) };
   }
 
   /**
@@ -487,16 +531,32 @@ export class AccountManager {
   async importLegacyAccounts(gameId: string, file: string,
     opts: { apply: boolean; scriptIdMap?: Record<string, string> }): Promise<LegacyAccountImport> {
     const game = gamePlugin(gameId);
-    if (!path.isAbsolute(file)) throw new Error('旧账号文件路径必须是绝对路径');
-    if ((await stat(file)).size > MAX_LEGACY_FILE_BYTES) throw new Error('旧账号文件超过 4 MB，未导入');
+    if (typeof file !== 'string' || !path.isAbsolute(file)) throw new Error('旧账号文件路径必须是绝对路径');
+    let json: string;
+    try {
+      const info = await stat(file);
+      if (!info.isFile()) throw new AccountFileError(`所选路径不是文件，请选择旧版数据目录里的 accounts.json：${file}`);
+      if (info.size > MAX_LEGACY_FILE_BYTES) throw new AccountFileError('旧账号文件超过 4 MB，未导入');
+      json = await readFile(file, 'utf8');
+    } catch (error) {
+      if (error instanceof AccountFileError) throw new Error(error.message);
+      const code = (error as NodeJS.ErrnoException).code;
+      throw new Error(code === 'ENOENT' ? `找不到旧账号文件，请确认选择的是旧版数据目录里的 accounts.json：${file}`
+        : code === 'EACCES' || code === 'EPERM' ? `没有权限读取旧账号文件，请检查文件权限：${file}`
+          : `无法读取旧账号文件，请确认文件可以打开：${file}`);
+    }
     let raw: unknown;
-    try { raw = JSON.parse(await readFile(file, 'utf8')); }
+    try { raw = JSON.parse(json); }
     catch { throw new Error(`旧账号文件不是合法 JSON：${file}`); }
-    const { entries, rows } = previewLegacyAccounts(raw, game.packageName, opts?.scriptIdMap);
-    if (!opts?.apply || rows.length === 0) return { entries, idMap: {}, applied: false };
-    const idMap = await this.store.importLegacy(gameId, game.packageName, rows);
-    this.notifyAccounts(gameId);
-    return { entries, idMap, applied: true };
+    // ★ Import only adds (DECISIONS B「导入旧版数据」): rows imported before are skipped and mapped to that account.
+    const imported = new Map((await this.store.list(gameId)).filter((item) => item.legacyId)
+      .map((item) => [item.legacyId!, { id: item.id, name: item.name }]));
+    const { entries, rows } = previewLegacyAccounts(raw, game.packageName, opts?.scriptIdMap, imported);
+    const known = Object.fromEntries(entries.filter((entry) => entry.importedAs).map((entry) => [entry.oldId, entry.importedAs!]));
+    if (!opts?.apply) return { entries, idMap: {}, applied: false, created: 0 };
+    const result = rows.length ? await this.store.importLegacy(gameId, game.packageName, rows) : { idMap: {}, created: 0 };
+    if (result.created > 0) this.notifyAccounts(gameId);
+    return { entries, idMap: { ...known, ...result.idMap }, applied: true, created: result.created };
   }
 
   loginSession(index: number): AccountLoginSession | null {
@@ -588,6 +648,10 @@ export class AccountManager {
     }
     const owner = (await this.store.list(gameId)).find((item) => item.id !== accountId && item.binding?.index === index);
     if (owner) throw new Error(`实例已绑定「${owner.name}」，请使用该账号继续登录，或先解除原绑定。`);
+    // Before the lease: once the wizard holds the instance, a template set can no longer be chosen for it.
+    const issue = await this.ports.homeCheckIssue?.(gameId, index).catch(() => null);
+    if (issue) throw new Error(issue);
+    this.check(task);
     task.view.accountName = account?.name ?? newAccountName ?? '';
     // Pausing every game scheduled on this AVD avoids a background task changing the login screen; never auto-resumed.
     const schedules = await this.automation.schedules();
@@ -611,7 +675,8 @@ export class AccountManager {
     this.updateSession(task, 'starting', '正在启动实例和游戏，首次开机可能需要一两分钟…');
     if (state.status !== 'running') {
       // Core admission control (maxRunning / memory) refuses with its own Chinese message; the account stays pending.
-      state = await manager.start(index, { wait: true, timeoutMs: 120_000 });
+      // A cancel (「稍后继续」, closing the drawer, quitting) lands at once instead of after the boot.
+      state = await untilAborted(manager.start(index, { wait: true, timeoutMs: 120_000 }), task.controller.signal);
     }
     this.check(task);
     if (state.record.createdAt !== task.instanceCreatedAt) throw new Error('实例已被替换，请重新开始登录。');

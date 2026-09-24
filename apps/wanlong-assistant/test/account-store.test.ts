@@ -176,9 +176,18 @@ describe('legacy wanlong-panel accounts.json', () => {
 
   it('imports unbound, pending and disabled accounts and returns the old → new id map', async () => {
     const { rows } = previewLegacyAccounts(legacy, PKG);
-    const map = await store.importLegacy('wanlong', PKG, rows);
+    const { idMap: map, created } = await store.importLegacy('wanlong', PKG, rows);
+    expect(created).toBe(2);
     const imported = await store.list('wanlong');
     expect(imported).toHaveLength(2);
+    expect(imported.map((account) => account.legacyId)).toEqual(['acc_main', 'acc_bad_params']);
+    // ★ Only adds: the same rows again create nothing and map to the accounts made the first time.
+    expect(await store.importLegacy('wanlong', PKG, rows)).toEqual({ idMap: map, created: 0 });
+    expect(await store.list('wanlong')).toHaveLength(2);
+    const known = new Map(imported.map((account) => [account.legacyId!, { id: account.id, name: account.name }]));
+    const again = previewLegacyAccounts(legacy, PKG, undefined, known);
+    expect(again.rows).toEqual([]);
+    expect(again.entries[0]).toMatchObject({ importable: false, importedAs: map['acc_main'], reason: expect.stringContaining('已导入过') });
     for (const account of imported) expect(account).toMatchObject({ binding: null, enabled: false, login: { status: 'pending' } });
     expect(imported.find((account) => account.id === map['acc_main'])).toMatchObject({
       name: '主号', defaultScriptId: 'daily', scriptParams: { daily: { rounds: 2 } },

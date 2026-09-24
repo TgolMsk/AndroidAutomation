@@ -5,7 +5,7 @@ import type { AccountLoginSession, GameAccount } from '../src/main/automation/ac
 import type { BaseInstanceView } from '../src/main/instances/types';
 import {
   NEW_ACCOUNT, acceptSession, accountCellDisabledReason, accountCellOptions, accountStatus, defaultScriptLabel,
-  gestureInput, instanceOptions, isBaseInstance, loginAccountChoices, loginCheck, loginStep, toRefPoint,
+  gestureInput, instanceOptions, isBaseInstance, loginAccountChoices, loginCheck, loginStep, toRefPoint, verifyReasonShown,
 } from '../src/renderer/views/accounts/account-model';
 
 const instance = (index: number, status = 'running', createdAt = `c${index}`, extra: Partial<InstanceState['record']> = {}) =>
@@ -98,6 +98,17 @@ describe('login drawer model', () => {
     expect(acceptSession(newer, session('preparing', 5, 's2'))?.id).toBe('s2'); // a new session always replaces
     expect(acceptSession(newer, null)).toBe(newer);
     expect(acceptSession(session('cancelled', 20), null)).toBeNull();
+  });
+
+  it('toasts a rejected login check unless a newer snapshot of the session carries the reason', () => {
+    const failed = { ...session('awaitingLogin', 30), message: '尚未识别到游戏主界面' };
+    expect(verifyReasonShown(failed, failed.id, 20, '尚未识别到游戏主界面')).toBe(true);
+    // The wizard ended, the phase was wrong or the IPC call failed: nothing on screen explains it.
+    expect(verifyReasonShown(failed, failed.id, 30, '尚未识别到游戏主界面')).toBe(false);
+    expect(verifyReasonShown(failed, failed.id, 20, '登录向导已结束，请重新打开')).toBe(false);
+    expect(verifyReasonShown({ ...failed, phase: 'cancelled' }, failed.id, 20, '尚未识别到游戏主界面')).toBe(false);
+    expect(verifyReasonShown(failed, 'other', 20, '尚未识别到游戏主界面')).toBe(false);
+    expect(verifyReasonShown(null, failed.id, 20, '主进程未响应')).toBe(false);
   });
 
   it('turns pointer gestures into reference-space taps and swipes', () => {

@@ -77,6 +77,17 @@ describe('automation insights', () => {
     expect((await service.alerts('wanlong', 1)).map((alert) => alert.kind)).toEqual(['schedulePaused', 'runFailed']);
   });
 
+  it('records a gate pause as a daily warning, not a failed cycle', async () => {
+    const service = new InsightsService(home);
+    await service.recordSchedulePause('wanlong', 2, '账号「主号」尚未完成登录检查');
+    await service.recordSchedulePause('wanlong', 2, '账号「主号」尚未完成登录检查');
+    await service.dispose();
+    expect((await service.days('wanlong', 2, 1))[0]).toMatchObject({ cycles: 0, failed: 0, alerts: 1 });
+    expect((await service.alerts('wanlong', 2))[0]).toMatchObject({
+      kind: 'schedulePaused', severity: 'warning', message: expect.stringContaining('不计为失败'),
+    });
+  });
+
   it('persists a read-only monitor finding with evidence only once', async () => {
     const service = new InsightsService(home);
     const finding = {

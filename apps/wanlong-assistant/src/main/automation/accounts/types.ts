@@ -36,6 +36,8 @@ export interface GameAccount {
   defaultScriptId?: string;
   /** Per-script parameter overrides (merged: script defaults < account < plan task < one-off request). */
   scriptParams?: ScriptParams;
+  /** Id of the wanlong-panel account this one was imported from; importing the same file again skips it. */
+  legacyId?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -135,18 +137,25 @@ export interface LegacyAccountPreview {
   oldId: string;
   name: string;
   note: string;
-  /** False when the row is skipped (other game package, duplicate, invalid). */
+  /** False when the row is skipped (other game package, duplicate, invalid, imported before). */
   importable: boolean;
   reason?: string;
+  /** The account a previous import created from this row (the row is skipped and mapped to it). */
+  importedAs?: string;
   defaultScriptId?: string;
   scriptParamCount: number;
 }
 
 export interface LegacyAccountImport {
   entries: LegacyAccountPreview[];
-  /** Old account id → new account id, filled only when applied. Feed it to the legacy plan importer. */
+  /**
+   * Old account id → new account id, filled only when applied (rows imported before map to that account). Feed it
+   * to the legacy plan importer.
+   */
   idMap: Record<string, string>;
   applied: boolean;
+  /** Accounts this call created (0 for a preview, or when every row was imported before). */
+  created: number;
 }
 
 export function loginActive(phase: LoginPhase): boolean {
