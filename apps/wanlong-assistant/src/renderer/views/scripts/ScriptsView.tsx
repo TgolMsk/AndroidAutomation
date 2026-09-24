@@ -14,7 +14,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TemplateSet } from '@avdm/automation';
-import { SCRIPT_LIMITS, countBlocks, findPathById, getAt, isBuiltinScriptId, type ScriptDef, type ScriptIssue, type ScriptMeta } from '@avdm/automation/script';
+import { SCRIPT_LIMITS, findPathById, getAt, type ScriptDef, type ScriptIssue, type ScriptMeta } from '@avdm/automation/script';
 import { avdm, errMsg } from '../../api';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Icon } from '../../components/Icon';
@@ -35,7 +35,7 @@ import { CaptureBlockModal, type CaptureSaved } from './CaptureBlockModal';
 import { NumberInput, Segmented } from './fields';
 import { VisualGuard } from './VisualGuard';
 import {
-  insertCapturedBlock, isUnreadableMeta, mergeTemplateSets, newScriptDef, overwriteClash, parseScriptObject, parseScriptText, prettyScript, readEditMode,
+  draftView, insertCapturedBlock, isUnreadableMeta, mergeTemplateSets, newScriptDef, overwriteClash, parseScriptObject, parseScriptText, prettyScript, readEditMode,
   saveGate, scriptListDetail, scriptToSave, stepIdRange, summarizeIssues, templatesOfSet, withSavedTemplate, writeEditMode,
   type CaptureRequest, type EditMode, type InsertTarget,
 } from './script-editor';
@@ -88,12 +88,13 @@ function ScriptLibrary({ gameId, gameName, packageName, visible }: { gameId: str
   const loadSeq = useRef(0);
   const autoLoaded = useRef(false);
 
-  const parsed = useMemo(() => parseScriptText(text), [text]);
-  const def = parsed.def;
+  // Everything the page derives from the text goes through `draftView`, which never throws: the JSON mode accepts
+  // any text (a missing id, a loop without steps, a pasted fragment) and the page must not go blank on it.
+  const draft = useMemo(() => draftView(text, currentId), [text, currentId]);
+  const { def, builtin, blockCount } = draft;
   const dirty = text !== savedText;
   const sets = useMemo(() => mergeTemplateSets(managedSets, [instanceSet, ...pinnedSets]), [managedSets, instanceSet, pinnedSets]);
   const templates = useMemo(() => templatesOfSet(sets, def?.templateSetId), [sets, def?.templateSetId]);
-  const builtin = def ? isBuiltinScriptId(def.id) : currentId !== null && isBuiltinScriptId(currentId);
   const summary = summarizeIssues(issues);
 
   const setMode = (next: EditMode): void => {
@@ -293,8 +294,9 @@ function ScriptLibrary({ gameId, gameName, packageName, visible }: { gameId: str
   // ── 从画面截取 ──
   const scriptSet = def?.templateSetId ? sets.find((set) => set.id === def.templateSetId) : undefined;
   const captureBlocked = !def ? null
-    : !def.templateSetId ? '先给脚本选一个模板集'
-      : !scriptSet ? '脚本绑定的模板集在本机找不到，先换一个模板集' : null;
+    : typeof def.id !== 'string' || !def.id ? '脚本缺少 id，先在 JSON 模式里补上'
+      : !def.templateSetId ? '先给脚本选一个模板集'
+        : !scriptSet ? '脚本绑定的模板集在本机找不到，先换一个模板集' : null;
   const openCapture = (target: InsertTarget): void => {
     if (!def?.templateSetId || captureBlocked) return;
     setCapture({ id: crypto.randomUUID(), scriptId: def.id, templateSetId: def.templateSetId, target });
@@ -350,8 +352,7 @@ function ScriptLibrary({ gameId, gameName, packageName, visible }: { gameId: str
     }
   }
 
-  const blockCount = def ? countBlocks(def.steps) : 0;
-  const shownParseError = parseError ?? (mode === 'json' ? parsed.error : null);
+  const shownParseError = parseError ?? (mode === 'json' ? draft.error : null);
 
   return (
     <section className="scriptlib" aria-label="脚本">
@@ -460,7 +461,7 @@ function ScriptLibrary({ gameId, gameName, packageName, visible }: { gameId: str
           ) : (
             <div className="scriptlib-banner is-warning" role="alert">
               <strong>这份脚本的 JSON 现在读不出来，可视化模式帮不上忙</strong>
-              <span>{parsed.error} —— 先切到 JSON 模式把语法修好，再回来。</span>
+              <span>{draft.error} —— 先切到 JSON 模式把它修好，再回来。</span>
             </div>
           )}
 

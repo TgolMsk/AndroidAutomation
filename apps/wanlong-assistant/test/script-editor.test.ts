@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { TemplateDefinition, TemplateSet } from '@avdm/automation';
 import {
-  SCRIPT_ID, fatalIssues, getAt, updateAt, validateScript,
+  BLOCK_CATALOG, SCRIPT_ID, fatalIssues, getAt, makeBlock, updateAt, validateScript,
   type ScriptDef, type ScriptIssue, type ScriptMeta, type ScriptStep,
 } from '@avdm/automation/script';
 import {
-  CAPTURE_KINDS, CAPTURE_NOTE, EDIT_MODE_KEY, captureDraft, captureIdPrefix, captureProblem, collectLabels, insertCapturedBlock,
+  CAPTURE_KINDS, CAPTURE_NOTE, EDIT_MODE_KEY, blockShapeProblem, captureDraft, captureIdPrefix, captureProblem, collectLabels, draftView, insertCapturedBlock,
   isUnreadableMeta, makeScriptId, mergeTemplateSets, newScriptDef, normRect, overwriteClash, parseScriptObject, parseScriptText, placeBlock,
   prettyScript, readEditMode, saveGate, scriptListDetail, scriptToSave, stepIdRange, summarizeIssues, targetAfter, templatesOfSet,
-  withSavedTemplate, writeEditMode, type CaptureRequest,
+  treeShapeProblem, withSavedTemplate, writeEditMode, type CaptureRequest,
 } from '../src/renderer/views/scripts/script-editor';
 
 const PKG = 'com.lilithgames.samo.android.cn';
@@ -43,6 +43,51 @@ describe('the JSON text is the single source of truth (iron rule 1)', () => {
     expect(parseScriptObject('{"id":"x"}')).toEqual({ value: { id: 'x' }, error: null });
     expect(parseScriptObject('[]').error).toBe('顶层必须是一个 JSON 对象');
     expect(parseScriptObject('{').error).toMatch(/^JSON 解析失败：/);
+  });
+
+  it('accepts any JSON in the JSON mode: the page\'s derived values never throw (no blank page, no lost draft)', () => {
+    // No id / an id that is not a string: still a script for the visual mode, just not a built-in example.
+    const noId: Partial<ScriptDef> = script();
+    delete noId.id;
+    const withoutId = draftView(prettyScript(noId), 'builtin_wait_tap');
+    expect(withoutId.def?.name).toBe('示例');
+    expect(withoutId).toMatchObject({ error: null, builtin: false, blockCount: 6 });
+    expect(draftView(prettyScript({ ...script(), id: 42 }), null)).toMatchObject({ error: null, builtin: false, blockCount: 6 });
+    expect(draftView(prettyScript(script(tree(), { id: 'builtin_wait_tap' })), null).builtin).toBe(true);
+
+    // Trees the block walkers cannot handle get no def (so nothing walks them) and a Chinese reason instead.
+    const broken: Array<[unknown[], string]> = [
+      [[{ id: 'l', kind: 'loop', repeat: 2 }], '第 1 块（l）是「循环」块，缺少 steps 数组'],
+      [[{ id: 'a', kind: 'tap', at: { x: 1, y: 1 } }, { id: 'x', kind: 'if', cond: { kind: 'always' } }], '第 2 块（x）是「条件分支」块，缺少 then 数组'],
+      [[null], '第 1 块不是一个 JSON 对象'],
+      [[{ id: 'k', at: { x: 1, y: 1 } }], '第 1 块（k）缺少 kind（块类型）'],
+      [[{ id: 'x', kind: 'if', cond: { kind: 'always' }, then: [], else: {} }], '第 1 块（x）的 else 必须是一个数组'],
+      [[{ id: 'l', kind: 'loop', steps: [{ id: 'x', kind: 'if', cond: { kind: 'always' }, then: [{ id: 'y', kind: 'loop' }] }] }],
+        '第 1 块（l）循环体里的第 1 块（x）「成立时」分支里的第 1 块（y）是「循环」块，缺少 steps 数组'],
+    ];
+    for (const [steps, reason] of broken) {
+      const text = JSON.stringify({ id: 'demo', name: '示例', steps });
+      const view = draftView(text, 'builtin_wait_tap');
+      expect(view, reason).toEqual({ def: null, error: `结构不完整：${reason}`, builtin: true, blockCount: 0 });
+      expect(draftView(text, 'demo').builtin).toBe(false);
+      // The JSON mode keeps the text: validate / save / format still get the object.
+      expect(parseScriptObject(text).value?.steps).toEqual(steps);
+    }
+    // `else: null` is just "no 否则 branch".
+    expect(draftView(JSON.stringify({ id: 'demo', steps: [{ id: 'x', kind: 'if', cond: { kind: 'always' }, then: [], else: null }] }), null).blockCount).toBe(1);
+
+    // Absurd nesting (a pasted fragment gone wrong) is refused without a stack overflow reaching the page.
+    const depth = 50_000;
+    const deep = `{"id":"d","steps":${'[{"id":"l","kind":"loop","steps":'.repeat(depth)}[]${'}]'.repeat(depth)}}`;
+    expect(() => draftView(deep, null)).not.toThrow();
+    expect(draftView(deep, null).def).toBeNull();
+  });
+
+  it('checks one block the same way before the per-block JSON editor applies it', () => {
+    for (const { kind } of BLOCK_CATALOG) expect(blockShapeProblem(makeBlock(kind, `${kind}-1`)), kind).toBeNull();
+    expect(blockShapeProblem({ id: 'loop-1', kind: 'loop', repeat: 3 })).toBe('这一块（loop-1）是「循环」块，缺少 steps 数组');
+    expect(blockShapeProblem({ id: 'if-1', kind: 'if', cond: { kind: 'always' }, then: [null] })).toBe('这一块（if-1）「成立时」分支里的第 1 块不是一个 JSON 对象');
+    expect(treeShapeProblem(tree())).toBeNull();
   });
 
   it('never loses an edit when switching between the visual and the JSON mode', () => {

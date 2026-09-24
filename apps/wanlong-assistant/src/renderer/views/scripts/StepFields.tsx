@@ -5,6 +5,7 @@ import {
   type AndroidKey, type FailPolicy, type LogLevel, type ScriptDef, type ScriptStep,
 } from '@avdm/automation/script';
 import { CaptureButton, CondEditor, Field, NumberInput, PointInput, TemplatePicker } from './fields';
+import { blockShapeProblem } from './script-editor';
 
 const LOG_LEVEL_TEXT: Readonly<Record<LogLevel, string>> = { debug: '调试', info: '信息', warn: '警告', error: '错误' };
 
@@ -256,7 +257,8 @@ function sameBlock(value: unknown, current: ScriptStep): value is ScriptStep {
 /**
  * The Assistant's per-block JSON escape hatch (kept from its old step editor): edit one block's fields — a
  * composite condition, an ROI — without leaving the visual mode. Only valid JSON with the same id and kind is
- * applied, so a half-typed text never reaches the script; everything else is checked by validation as usual.
+ * applied, so a half-typed text never reaches the script; an if / loop must keep its child arrays (the tree walkers
+ * of the page need them, see `blockShapeProblem`). Everything else is checked by validation as usual.
  */
 function BlockJson({ step, onPatch }: { step: ScriptStep; onPatch: (next: ScriptStep) => void }) {
   const [raw, setRaw] = useState(() => JSON.stringify(step, null, 2));
@@ -277,6 +279,8 @@ function BlockJson({ step, onPatch }: { step: ScriptStep; onPatch: (next: Script
           try {
             const parsed: unknown = JSON.parse(text);
             if (!sameBlock(parsed, step)) { setProblem('id 和 kind 不能在这里改；要换块类型请删掉重加'); return; }
+            const shape = blockShapeProblem(parsed);
+            if (shape) { setProblem(`${shape}（改动暂不生效）`); return; }
             setProblem(null);
             onPatch(parsed);
           } catch (error) {

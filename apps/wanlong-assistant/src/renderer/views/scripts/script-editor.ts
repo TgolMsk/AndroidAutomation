@@ -6,8 +6,8 @@
 import type { Rect, TemplateDefinition, TemplateDraft, TemplateSet } from '@avdm/automation';
 import { MIN_TEMPLATE_CROP } from '@avdm/automation/constants';
 import {
-  appendToBranch, blockMeta, builtinCopyId, childrenOf, findPathById, getAt, insertAfter, isBuiltinScriptId, makeBlock, nextStepId,
-  walkSteps, type BlockPath, type Branch, type ScriptDef, type ScriptIssue, type ScriptMeta, type ScriptStep,
+  BRANCH_TEXT, appendToBranch, blockMeta, builtinCopyId, childrenOf, countBlocks, findPathById, getAt, insertAfter, isBuiltinScriptId, makeBlock,
+  nextStepId, walkSteps, type BlockPath, type Branch, type ScriptDef, type ScriptIssue, type ScriptMeta, type ScriptStep,
 } from '@avdm/automation/script';
 
 // ── Edit mode (visual / JSON) ──────────────────────────────────────────────
@@ -54,18 +54,90 @@ function jsonError(error: unknown): string {
 }
 
 /**
+ * Why one block cannot be walked as part of a block tree, or null. The tree helpers (count, ids, paths, insert) and
+ * the cards need every block to be an object with a kind, and every if / loop to carry its child arrays; JSON that
+ * parses but breaks this (a deleted "steps" / "then" key, a null step, a pasted fragment) must never reach them.
+ * Missing leaf fields are not checked here: the visual mode's `VisualGuard` and the validation report those.
+ */
+export function blockShapeProblem(step: unknown, name = '这一块'): string | null {
+  if (typeof step !== 'object' || step === null || Array.isArray(step)) return `${name}不是一个 JSON 对象`;
+  const block = step as Record<string, unknown>;
+  const label = typeof block.id === 'string' && block.id ? `${name}（${block.id}）` : name;
+  if (typeof block.kind !== 'string' || !block.kind) return `${label}缺少 kind（块类型）`;
+  if (block.kind === 'if') {
+    if (!Array.isArray(block.then)) return `${label}是「${blockMeta('if').label}」块，缺少 then 数组`;
+    if (block.else !== undefined && block.else !== null && !Array.isArray(block.else)) return `${label}的 else 必须是一个数组`;
+    return treeShapeProblem(block.then, `${label}「${BRANCH_TEXT.then}」分支里的`)
+      ?? (Array.isArray(block.else) ? treeShapeProblem(block.else, `${label}「${BRANCH_TEXT.else}」分支里的`) : null);
+  }
+  if (block.kind === 'loop') {
+    if (!Array.isArray(block.steps)) return `${label}是「${blockMeta('loop').label}」块，缺少 steps 数组`;
+    return treeShapeProblem(block.steps, `${label}${BRANCH_TEXT.steps}里的`);
+  }
+  return null;
+}
+
+/** The first block of `steps` (at any depth) that `blockShapeProblem` refuses, as a Chinese sentence, or null. */
+export function treeShapeProblem(steps: readonly unknown[], where = ''): string | null {
+  for (let i = 0; i < steps.length; i++) {
+    const problem = blockShapeProblem(steps[i], `${where}第 ${i + 1} 块`);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+/**
  * text → script for the visual mode. It must never throw: on failure the visual mode falls back to
- * 「先切到 JSON 模式把语法修好」.
+ * 「先切到 JSON 模式把语法修好」. A tree that parses but cannot be walked (see `blockShapeProblem`) gets no `def`
+ * either, so nothing on the page walks it; the JSON mode keeps accepting any text (save / validate go through
+ * `parseScriptObject`).
  */
 export function parseScriptText(text: string): ParsedScript {
   if (!text.trim()) return { def: null, error: null };
+  let value: unknown;
   try {
-    const value: unknown = JSON.parse(text);
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return { def: null, error: '顶层必须是一个 JSON 对象' };
-    if (!Array.isArray((value as { steps?: unknown }).steps)) return { def: null, error: 'steps 必须是一个数组' };
-    return { def: value as ScriptDef, error: null };
+    value = JSON.parse(text);
   } catch (error) {
     return { def: null, error: jsonError(error) };
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return { def: null, error: '顶层必须是一个 JSON 对象' };
+  const steps = (value as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return { def: null, error: 'steps 必须是一个数组' };
+  let shape: string | null;
+  try {
+    shape = treeShapeProblem(steps);
+  } catch {
+    shape = '块嵌套的层数太多'; // stack overflow on absurd nesting
+  }
+  if (shape) return { def: null, error: `结构不完整：${shape}` };
+  return { def: value as ScriptDef, error: null };
+}
+
+/** What the page derives from the text, above the editor in both modes. Never throws, whatever the text holds. */
+export interface DraftView extends ParsedScript {
+  /** A built-in example: 「保存」 stores a copy. */
+  builtin: boolean;
+  /** 「共 N 块」, children included (0 when the text cannot drive the visual mode). */
+  blockCount: number;
+}
+
+/**
+ * The page's derived values. The id may be missing or not a string (the JSON mode accepts any text): it is then
+ * not a built-in example. Without a usable script the opened script's id decides, as before the edit.
+ */
+export function draftView(text: string, openedId: string | null): DraftView {
+  const parsed = parseScriptText(text);
+  const { def } = parsed;
+  const builtin = def ? typeof def.id === 'string' && isBuiltinScriptId(def.id) : openedId !== null && isBuiltinScriptId(openedId);
+  return { ...parsed, builtin, blockCount: def ? safeBlockCount(def.steps) : 0 };
+}
+
+function safeBlockCount(steps: ScriptStep[]): number {
+  // The shape check already rules out missing child arrays and null blocks; this only guards the stack.
+  try {
+    return countBlocks(steps);
+  } catch {
+    return 0;
   }
 }
 
