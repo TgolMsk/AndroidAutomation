@@ -130,7 +130,7 @@ export function AccountsView(_props: ViewProps) {
       </header>
 
       <div className="notice info"><Icon name="info" />
-        <span><strong>一个实例同时只能绑一个账号。</strong>把已被占用的实例绑给另一个账号时需要确认，原账号会解除绑定并需重新登录。账号通过登录检查（进入城内或世界地图）后才能启用；采集配置跟随绑定的账号。</span>
+        <span><strong>一个实例同时只能绑一个账号。</strong>把已被占用的实例绑给另一个账号时需要确认，原账号会解除绑定并需重新登录。账号通过登录检查（进入城内或世界地图）后才能启用。</span>
       </div>
 
       <BaseInstanceCard gameId={gameId} base={base.view} baseError={base.error} instances={instances}

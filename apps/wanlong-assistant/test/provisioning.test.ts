@@ -124,6 +124,32 @@ describe('base instance selection', () => {
     expect(await service.baseIdentity('wanlong')).toBeNull();
   });
 
+  it('reports a clear only from the call that made it, and never clears a base set meanwhile', async () => {
+    const service = provisioner();
+    await service.setBase('wanlong', 0);
+    events.length = 0;
+    list[0]!.createdAt = 'c0-replaced';
+    const views = await Promise.all([service.view('wanlong'), service.view('wanlong'), service.baseIdentity('wanlong')]);
+    expect(views.slice(0, 2).filter((view) => typeof view === 'object' && view && 'cleared' in view && view.cleared)).toHaveLength(1);
+    expect(events.filter((event) => event.view.cleared)).toHaveLength(1);
+    expect(events[0]?.view.cleared).toMatchObject({ index: 0, setAt: expect.any(Number) });
+
+    // A stale check that loses the race to a new selection returns the new base and emits nothing.
+    list[0]!.createdAt = 'c0';
+    await service.setBase('wanlong', 1);
+    events.length = 0;
+    const stale = { index: 0, name: '基础', createdAt: 'gone', setAt: 1 };
+    const write = service.store.write.bind(service.store);
+    const spy = vi.spyOn(service.store, 'read').mockResolvedValueOnce(stale);
+    const view = await service.view('wanlong');
+    spy.mockRestore();
+    expect(view).toMatchObject({ base: { index: 1 } });
+    expect(view.cleared).toBeUndefined();
+    expect(events).toEqual([]);
+    expect(await write('wanlong', null, stale)).toBe(false);
+    expect((await service.store.read('wanlong'))?.index).toBe(1);
+  });
+
   it('never overwrites a corrupt selection file and recovers once it is fixed', async () => {
     const service = provisioner();
     await service.setBase('wanlong', 0);
@@ -149,8 +175,9 @@ describe('clone from base', () => {
     expect(clones).toEqual([{ from: 0, opts: { count: 3, namePrefix: '基础', identity: 'random' } }]);
     expect(saved).toEqual([10, 11, 12].map((index) => ({ index, patch: { templateDir: '/templates/set-a', config: { version: 2 } } })));
     expect(result.warnings).toEqual([]);
+    // ★ The opt-out must reach core explicitly: omitted, core rotates a managed source anyway.
     await service.cloneFromBase('wanlong', { count: 1, expectedBaseIndex: 0, rotateIdentity: false });
-    expect(clones.at(-1)?.opts).toEqual({ count: 1, namePrefix: '基础' });
+    expect(clones.at(-1)?.opts).toEqual({ count: 1, namePrefix: '基础', identity: 'system' });
   });
 
   it('validates count, the expected base, the source state and identity before any clone call', async () => {

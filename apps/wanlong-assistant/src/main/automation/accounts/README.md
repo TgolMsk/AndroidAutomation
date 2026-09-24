@@ -11,13 +11,17 @@
 | `native-ui.ts` | UIAutomator 读取与万龙 SDK 手机号 / 验证码控件驱动；`LoginUserError` = 可以原样展示的错误 |
 | `drivers.ts` | 每个游戏的登录适配器：SDK 命令 + 主界面判定模板（城内 A/B + 世界地图 A/B + 放大镜） |
 | `home-verify.ts` / `home-match.ts` / `home-verify-worker.ts` | 登录检查：一帧只读截图，在工作线程里匹配主界面模板，任一在自身阈值上命中即通过 |
-| `legacy.ts` | 旧版 `accounts.json` 预览；导入由 `AccountManager.importLegacyAccounts` 完成 |
+| `login-preview.ts` / `login-preview-worker.ts` | 登录抽屉内嵌画面的 JPEG 编码：常驻工作线程（首帧启动、空闲 20 秒退出），主线程不做 sharp 缩放 |
+| `legacy.ts` | 旧版 `accounts.json` 预览；导入由 `AccountManager.importLegacyAccounts` 完成（可带脚本编号对照表） |
 
 ## 规则（照原版，目标仓库的加固全部保留）
 
 - 一个实例（每个游戏）只绑一个账号；绑定记录实例的创建时间，编号被新实例复用时绑定作废、需重新登录。
 - **改绑必须显式确认**：目标实例已有账号时 `accountBind` 返回 `ACCOUNT_SLOT_TAKEN`，界面确认后带 `takeOver: true` 重发；
   被顶掉的账号解除绑定、改为待登录并停用，该实例的采集调度关闭。原版是静默抢占，这里改为确认后抢占。
+  ★ 占用检查在任何副作用之前：被拒绝（或用户在确认框取消）的改绑不会关掉任何实例的采集调度。
+- 实例行「新建账号并绑定」走 `accountCreateAndBind`：一次事务里创建并绑定，编号由界面生成并在重试时复用；
+  绑定被拒时不留下空账号，回复丢失后重试也不会多建一个（原版 `account:save` 带实例编号）。
 - 普通编辑不能伪造登录状态；只有登录向导「检查主界面」通过后才启用账号；启用不会自动打开采集。
 - 登录向导：`preparing → starting → awaitingLogin → verifying → completed / cancelled / failed`。开始时同步占住实例
   （同进程内的采集 / 计划 / 基础实例操作立即看到「正在登录」），随后取得跨进程实例租约并一直持有到结束。
@@ -29,7 +33,11 @@
   只有 `LoginUserError` 原样返回。登录画面不保存、不发给 AI。
 - 就绪闸门 `assertInstanceAutomationReady(gameId, index)`：基础实例、登录进行中、绑定账号待登录或实例已替换时拒绝；
   未绑定账号的实例放行。`AutomationHost` 在启用自动续跑与每次开跑前调用它，关闭调度永远不经过它。
-- 绑定时把实例上保存的采集配置搬进账号（`scriptParams.gather.configJson`），账号已有配置时不覆盖并提示；解绑时提示配置留在账号里。
+- 采集配置跟随账号（DECISIONS B「调度器」）的接口：`gatherConfigFor(gameId, index)` 读绑定账号（按实例身份校验）里的
+  `scriptParams.gather.configJson`，`saveGatherConfig(accountId, config | null)` 写回。★ 跨模块要求：只有当采集设置
+  （`AutomationHost.settings` / `saveSettings` 与各开跑路径）改为「先读绑定账号、没有再回落到实例文件」时，才在组合根接上
+  `instanceGatherConfig` 端口；接上后绑定会把实例上的配置搬进账号（账号已有配置时不覆盖并提示），解绑时提示配置留在账号里。
+  端口没接时绑定不复制、不提示，实例文件是唯一一份，避免出现没人读的第二份配置。
 
 ## 与原版的差异
 

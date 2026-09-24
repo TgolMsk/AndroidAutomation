@@ -19,8 +19,12 @@ export interface BaseInstanceView {
   status: InstanceStatus | null;
   /** Why cloning is not possible right now (running, busy, still provisioning), or null. */
   cloneBlocked: string | null;
-  /** Set once when a stored base was cleared because its AVD was deleted or replaced. */
-  cleared?: { index: number; name: string; reason: string };
+  /**
+   * Set only in the reply (and the event) of the one call that cleared a stored base because its AVD was deleted
+   * or replaced. `setAt` identifies that selection, so a renderer that sees the same clear twice (reply + event)
+   * shows it once.
+   */
+  cleared?: { index: number; name: string; setAt: number; reason: string };
 }
 
 export interface CloneFromBaseRequest {
@@ -30,8 +34,8 @@ export interface CloneFromBaseRequest {
   expectedBaseIndex: number;
   /**
    * Default true: every copy gets new random device identifiers (serial, MAC, Android ID), so the game treats it
-   * as a new device and the login wizard follows. False keeps the emulator default, which may carry over the
-   * source's login state.
+   * as a new device and the login wizard follows. False passes `identity: 'system'` to core: the copies keep the
+   * emulator defaults and the copied data, which may carry over the source's login state.
    */
   rotateIdentity?: boolean;
 }

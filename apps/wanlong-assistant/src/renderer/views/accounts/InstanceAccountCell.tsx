@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { InstanceState } from '@avdm/core';
 import type { AccountLoginSession, GameAccount } from '../../../main/automation/accounts/types';
 import { avdm, errMsg, errorCodeOf } from '../../api';
+import { useSelection } from '../../state/selection';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Modal } from '../../components/Modal';
 import { Spinner } from '../../components/StatusBadge';
@@ -15,6 +16,8 @@ const CREATE = '__create__';
 export interface InstanceAccountCellProps {
   gameId: string;
   instance: InstanceState;
+  /** Every instance, to name the one an account would be moved from; defaults to the selection's list. */
+  instances?: readonly InstanceState[];
   /** Accounts of the game (from `useAccounts`), shared by every row of the table. */
   accounts: GameAccount[];
   /** Chinese reason the cell is read-only (e.g. from `accountCellDisabledReason`), or null. */
@@ -25,6 +28,8 @@ export interface InstanceAccountCellProps {
   onChanged?(index: number): void;
   /** Opens the login wizard for this instance (shown for a pending account). */
   onLogin?(index: number): void;
+  /** True once gather settings read the bound account first (DECISIONS B「调度器」); only changes the hint. */
+  gatherFollowsAccount?: boolean;
 }
 
 /**
@@ -32,13 +37,19 @@ export interface InstanceAccountCellProps {
  * instance, or create one and bind it on the spot. Taking an instance from its current account is confirmed
  * explicitly; whether an edit is allowed right now (login, gather, plans) is decided by the main process.
  */
-export function InstanceAccountCell({ gameId, instance, accounts, disabledReason = null, loginSession, onChanged, onLogin }: InstanceAccountCellProps) {
+export function InstanceAccountCell({
+  gameId, instance, instances, accounts, disabledReason = null, loginSession, onChanged, onLogin, gatherFollowsAccount = false,
+}: InstanceAccountCellProps) {
   const toast = useToast();
+  const selection = useSelection();
+  const allInstances = instances ?? selection.instances;
   const index = instance.record.index;
   const account = accountOfIndex(accounts, index) ?? null;
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
+  /** Client id of the account being created, kept across retries so a lost reply never creates a second one. */
+  const [pendingId, setPendingId] = useState('');
   const [takeover, setTakeover] = useState<{ accountId: string; ownerName: string } | null>(null);
   const loggingIn = loginIsActive(loginSession?.phase);
   const stale = account && !boundTo(account, instance);
@@ -70,6 +81,7 @@ export function InstanceAccountCell({ gameId, instance, accounts, disabledReason
     }
     if (value === CREATE) {
       setNewName('');
+      setPendingId(crypto.randomUUID());
       setCreating(true);
       return;
     }
@@ -78,6 +90,7 @@ export function InstanceAccountCell({ gameId, instance, accounts, disabledReason
   }
 
   async function createAndBind(): Promise<void> {
+    if (busy || !pendingId) return;
     const name = newName.trim();
     if (!name) {
       toast.push({ kind: 'warn', title: '给账号起个名字，比如「主号-王朝A区」。' });
@@ -85,12 +98,16 @@ export function InstanceAccountCell({ gameId, instance, accounts, disabledReason
     }
     setBusy(true);
     try {
-      const created = await avdm.accountCreate(gameId, { name });
+      // One transaction under a stable client id: a refused bind creates nothing, a retry never duplicates.
       // The user saw the current owner in the dialog, so creating here is the confirmed takeover.
-      const result = await avdm.accountBind(created.id, index, { takeOver: Boolean(account) });
+      const result = await avdm.accountCreateAndBind(gameId, index, pendingId, { name }, { takeOver: Boolean(account) });
       setCreating(false);
-      toast.push({ kind: 'success', title: `账号「${created.name}」已创建并绑定到实例 #${index}`,
-        detail: [result.notice, '接下来可点「登录」完成游戏登录检查。'].filter(Boolean).join('') });
+      setPendingId('');
+      toast.push({ kind: 'success', title: `账号「${result.account.name}」已创建并绑定到实例 #${index}`,
+        detail: [
+          result.displaced ? `「${result.displaced.name}」已解除绑定，需重新登录。` : '', result.notice ?? '',
+          '接下来可点「登录」完成游戏登录检查。',
+        ].filter(Boolean).join('') });
       onChanged?.(index);
     } catch (error) {
       toast.error('新建账号未完成', errMsg(error));
@@ -101,15 +118,15 @@ export function InstanceAccountCell({ gameId, instance, accounts, disabledReason
 
   const reason = disabledReason ?? (loggingIn ? '该实例正在登录，请在登录向导中完成或结束后再改绑' : null);
   const hint = reason ?? (account
-    ? `采集配置跟随账号「${account.name}」。${instance.status === 'stopped' ? '实例没开机也能改绑。' : ''}`
-    : '未绑定账号的实例使用实例上保存的采集配置；账号需通过登录检查后才能用于脚本计划。');
+    ? `${gatherFollowsAccount ? `采集配置跟随账号「${account.name}」。` : `已绑定账号「${account.name}」。`}${instance.status === 'stopped' ? '实例没开机也能改绑。' : ''}`
+    : `${gatherFollowsAccount ? '未绑定账号的实例使用实例上保存的采集配置；' : ''}账号需通过登录检查后才能用于脚本计划。`);
 
   return (
     <div className="accounts-cell" title={hint}>
       <select value={account ? account.id : NONE} disabled={reason !== null || busy} aria-label={`实例 #${index} 的账号`}
         onChange={(event) => onSelect(event.target.value)}>
         <option value={NONE}>{account ? '解除绑定' : '未绑定'}</option>
-        {accountCellOptions(accounts, index, [instance]).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        {accountCellOptions(accounts, index, allInstances).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         <option value={CREATE}>＋ 新建账号并绑定…</option>
       </select>
       {busy && <Spinner size={12} />}
@@ -123,7 +140,7 @@ export function InstanceAccountCell({ gameId, instance, accounts, disabledReason
         <Modal title={`新建账号并绑定到实例 #${index}`} onClose={() => setCreating(false)} busy={busy} width={440}
           footer={<>
             <button type="button" className="btn" onClick={() => setCreating(false)} disabled={busy}>取消</button>
-            <button type="button" className="btn primary" onClick={() => void createAndBind()} disabled={busy || !newName.trim()}>
+            <button type="button" className="btn primary" onClick={() => void createAndBind()} disabled={busy || !newName.trim() || !pendingId}>
               {busy && <Spinner size={12} />}创建并绑定
             </button>
           </>}>

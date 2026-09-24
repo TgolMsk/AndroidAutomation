@@ -31,6 +31,11 @@ export class AccountError extends Error {
   }
 }
 
+/** The refusal of binding an instance another account owns; the renderer offers a confirmed takeover. */
+export function slotTakenError(index: number, ownerName: string): AccountError {
+  return new AccountError('ACCOUNT_SLOT_TAKEN', `实例 #${index} 已绑定「${ownerName}」。改绑后「${ownerName}」将解除绑定并需要重新登录。`);
+}
+
 export interface BindOutcome {
   account: GameAccount;
   displaced: GameAccount | null;
@@ -67,6 +72,11 @@ function text(value: unknown, label: string, max: number, required: boolean): st
     throw new Error(`${label}长度或内容无效`);
   }
   return clean;
+}
+
+/** Validated, trimmed account details (throws the Chinese reason). */
+export function accountDetails(value: AccountDetails): Required<AccountDetails> {
+  return details(value);
 }
 
 function details(value: AccountDetails): Required<AccountDetails> {
@@ -325,25 +335,47 @@ export class AccountStore {
    * caller passes `takeOver` after the user confirmed it; the displaced account is then unbound, reset to
    * pending and disabled in the same transaction. Rebinding to a different instance (or a replaced AVD) resets
    * this account's login; re-binding the identical binding keeps it verified.
+   *
+   * With `create`, a missing account is created under `id` (a client UUID) and bound in the same transaction
+   * (original account:save with an instance): a refused bind leaves no orphan account behind.
    */
-  async bind(id: string, binding: GameAccount['binding'], opts: { takeOver?: boolean } = {}): Promise<BindOutcome> {
+  async bind(id: string, binding: GameAccount['binding'], opts: {
+    takeOver?: boolean;
+    create?: { gameId: string; packageName: string; details: AccountDetails };
+  } = {}): Promise<BindOutcome> {
+    const create = opts.create;
+    const names = create ? details(create.details) : null;
+    if (create && (!isNewAccountId(id) || !GAME_ID_RE.test(create.gameId) || !PACKAGE_RE.test(create.packageName))) {
+      throw new Error('账号编号或游戏标识无效');
+    }
     return this.change((data) => {
-      const account = data.accounts.find((item) => item.id === id);
-      if (!account) throw new Error('账号不存在');
+      let account = data.accounts.find((item) => item.id === id);
+      if (account && create && account.gameId !== create.gameId) {
+        throw new AccountError('ACCOUNT_ID_TAKEN', '账号编号已被其他游戏的账号占用');
+      }
+      if (!account && (!create || !names || !binding)) throw new Error('账号不存在');
       if (binding && (!Number.isInteger(binding.index) || binding.index < 0 || binding.index > 63 || !binding.instanceCreatedAt)) {
         throw new Error('实例绑定无效');
       }
-      const owner = binding ? data.accounts.find((item) => item.id !== id && item.gameId === account.gameId &&
+      const gameId = account?.gameId ?? create!.gameId;
+      const owner = binding ? data.accounts.find((item) => item.id !== id && item.gameId === gameId &&
         item.binding?.index === binding.index) : undefined;
       let displaced: GameAccount | null = null;
       if (owner) {
-        if (!opts.takeOver) {
-          throw new AccountError('ACCOUNT_SLOT_TAKEN', `实例 #${binding!.index} 已绑定「${owner.name}」。改绑后「${owner.name}」将解除绑定并需要重新登录。`);
-        }
+        if (!opts.takeOver) throw slotTakenError(binding!.index, owner.name);
         owner.binding = null;
         resetLogin(owner);
         owner.updatedAt = Date.now();
         displaced = structuredClone(owner);
+      }
+      if (!account) {
+        if (data.accounts.length >= MAX_ACCOUNTS) throw new Error('账号数量已达上限');
+        const now = Date.now();
+        account = {
+          id, gameId: create!.gameId, packageName: create!.packageName, ...names!, enabled: false, binding: null,
+          login: { status: 'pending', attemptId: null, verifiedAt: null }, createdAt: now, updatedAt: now,
+        };
+        data.accounts.push(account);
       }
       if (!sameBinding(account.binding, binding)) resetLogin(account);
       account.binding = binding;

@@ -8,8 +8,9 @@ import type { AutomationHost } from '../host';
 import { gamePlugin } from '../games';
 import { gameLoginDriver } from './drivers';
 import { previewLegacyAccounts } from './legacy';
+import { LoginPreviewEncoder, type EncodedPreview } from './login-preview';
 import { inputLoginDigits, LoginUserError } from './native-ui';
-import { AccountStore, isAccountId, isNewAccountId } from './store';
+import { AccountError, AccountStore, accountDetails, isAccountId, isNewAccountId, slotTakenError, type BindOutcome } from './store';
 import {
   GATHER_PARAM_KEY, GATHER_PARAM_SCOPE, LOGIN_INPUT_KEYS, loginActive,
   type AccountBindOptions, type AccountBindResult, type AccountDetails, type AccountLoginCommand,
@@ -22,11 +23,11 @@ export type {
   AccountsChangedEvent, AutomationReadiness, GameAccount, LegacyAccountImport, LoginFrame, LoginInput,
 } from './types';
 export { AccountError } from './store';
+export { LoginPreviewEncoder } from './login-preview';
 
 /** Reference space of login preview coordinates (the game's 2560×1440 layout). */
 const REF_WIDTH = 2560;
 const REF_HEIGHT = 1440;
-const PREVIEW_WIDTH = 960;
 const MAX_LEGACY_FILE_BYTES = 4 * 1024 * 1024;
 const INPUT_FAILED = '登录输入未完成，请检查设备连接后重试。';
 const COMMAND_FAILED = '登录操作未完成，请检查实例连接后重试。';
@@ -55,10 +56,15 @@ export interface AccountManagerPorts {
   base?(gameId: string): Promise<{ index: number; createdAt: string } | null>;
   /** Read-only home proof of the game (city / world-map templates). Required to finish a login. */
   verifyHome?(gameId: string, index: number): Promise<HomeVerdict>;
-  /** The gather config saved on the instance, moved into an account when it is bound (original afterAccountBind). */
+  /**
+   * The gather config saved on the instance, moved into an account when it is bound (original afterAccountBind).
+   * ★ Wire it only together with gather settings that read the bound account first and fall back to the instance
+   * (DECISIONS B「调度器」, see `gatherConfigFor` / `saveGatherConfig`). Unwired, binding copies nothing and says
+   * nothing about the gather config, so there is never a second copy that nothing reads.
+   */
   instanceGatherConfig?(gameId: string, index: number): Promise<Record<string, unknown> | null>;
-  /** Preview encoder; defaults to a sharp JPEG at 960 px width. */
-  encodePreview?(frame: RawFrame): Promise<{ jpeg: Uint8Array; width: number; height: number }>;
+  /** Preview encoder; defaults to a JPEG at 960 px width from the long-lived `login-preview-worker`. */
+  encodePreview?(frame: RawFrame): Promise<EncodedPreview>;
   onAccountsChanged?(event: AccountsChangedEvent): void;
   onLoginChanged?(session: AccountLoginSession): void;
 }
@@ -117,13 +123,12 @@ export function toDevicePoint(point: { x: number; y: number }, size: { width: nu
   };
 }
 
-async function defaultEncodePreview(frame: RawFrame): Promise<{ jpeg: Uint8Array; width: number; height: number }> {
-  const { default: sharp } = await import('sharp');
-  const width = Math.min(PREVIEW_WIDTH, frame.width);
-  const { data, info } = await sharp(Buffer.from(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength),
-    { raw: { width: frame.width, height: frame.height, channels: 4 } })
-    .resize({ width }).jpeg({ quality: 70 }).toBuffer({ resolveWithObject: true });
-  return { jpeg: new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)), width: info.width, height: info.height };
+function bindResult(result: BindOutcome & { notice?: string }): AccountBindResult {
+  return {
+    account: result.account,
+    displaced: result.displaced ? { id: result.displaced.id, name: result.displaced.name } : null,
+    ...(result.notice ? { notice: result.notice } : {}),
+  };
 }
 
 /** A long-held lease stops a second process from running automation during account login. */
@@ -164,6 +169,7 @@ export class AccountManager {
   readonly store: AccountStore;
   private readonly tasks = new Map<number, Task>();
   private closing = false;
+  private previewEncoder: LoginPreviewEncoder | null = null;
 
   constructor(
     private readonly host: Pick<ManagerHost, 'get'>,
@@ -263,8 +269,22 @@ export class AccountManager {
   ): Promise<T> {
     const before = await this.store.get(accountId);
     if (!before) throw new Error('账号不存在');
-    const indices = [...new Set([before.binding?.index, ...extraIndices]
-      .filter((index): index is number => index !== null && index !== undefined))].sort((a, b) => a - b);
+    const indices = [before.binding?.index, ...extraIndices]
+      .filter((index): index is number => index !== null && index !== undefined);
+    return this.withLeases(accountId, indices, async () => {
+      const current = await this.store.get(accountId);
+      if (!current) throw new Error('账号已被其他进程删除，请刷新后重试');
+      if (current.binding?.index !== before.binding?.index ||
+          current.binding?.instanceCreatedAt !== before.binding?.instanceCreatedAt) {
+        throw new Error('账号绑定已被其他进程修改，请刷新后重试');
+      }
+      return action(current);
+    });
+  }
+
+  /** Take the device leases of `indices` in ascending order (no deadlock), re-checking the login guard inside. */
+  private async withLeases<T>(accountId: string, list: number[], action: () => Promise<T>): Promise<T> {
+    const indices = [...new Set(list)].sort((a, b) => a - b);
     this.assertEditable(accountId, indices);
     const enter = async (position: number): Promise<T> => {
       if (position < indices.length) {
@@ -280,13 +300,7 @@ export class AccountManager {
         }
       }
       this.assertEditable(accountId, indices);
-      const current = await this.store.get(accountId);
-      if (!current) throw new Error('账号已被其他进程删除，请刷新后重试');
-      if (current.binding?.index !== before.binding?.index ||
-          current.binding?.instanceCreatedAt !== before.binding?.instanceCreatedAt) {
-        throw new Error('账号绑定已被其他进程修改，请刷新后重试');
-      }
-      return action(current);
+      return action();
     };
     return enter(0);
   }
@@ -338,30 +352,60 @@ export class AccountManager {
         if (account.binding) await this.automation.setSchedule(account.gameId, account.binding.index, false);
         const outcome = await this.store.bind(accountId, null);
         const hasGather = typeof outcome.account.scriptParams?.[GATHER_PARAM_SCOPE]?.[GATHER_PARAM_KEY] === 'string';
-        return { ...outcome, notice: hasGather ? `已解除绑定。采集配置仍留在账号「${outcome.account.name}」里，绑回它就会回来。` : undefined };
+        const notice = hasGather && this.ports.instanceGatherConfig
+          ? `已解除绑定。采集配置仍留在账号「${outcome.account.name}」里，绑回它就会回来。` : undefined;
+        return { ...outcome, notice };
       }
-      const state = await (await this.host.get()).getState(index);
-      if (state.status === 'error' || state.record.provisioning) throw new Error(`实例 #${index} 未准备好（正在创建或处于错误状态）`);
-      if (account.gameId !== gamePlugin(account.gameId).id) throw new Error('账号游戏不存在');
-      if (await this.isBase(account.gameId, index, state.record.createdAt)) {
-        throw new Error('基础实例只用于克隆，不需要绑定账号。请在克隆出的副本中绑定并登录。');
-      }
-      if (account.binding && account.binding.index !== index) {
-        await this.automation.setSchedule(account.gameId, account.binding.index, false);
-      }
-      if (takeOver) {
-        const owner = (await this.store.list(account.gameId)).find((item) => item.id !== accountId && item.binding?.index === index);
-        if (owner) await this.automation.setSchedule(account.gameId, index, false);
-      }
-      const outcome = await this.store.bind(accountId, { index, instanceCreatedAt: state.record.createdAt }, { takeOver });
-      return { ...outcome, notice: await this.moveGatherConfig(outcome.account, index) };
+      return this.bindInstance(account.gameId, account.id, account, index, takeOver);
     });
     this.notifyAccounts(result.account.gameId);
-    return {
-      account: result.account,
-      displaced: result.displaced ? { id: result.displaced.id, name: result.displaced.name } : null,
-      ...(result.notice ? { notice: result.notice } : {}),
-    };
+    return bindResult(result);
+  }
+
+  /**
+   * Create an account and bind it in one transaction (original account:save with an instance). `accountId` is a
+   * renderer-generated UUID kept across retries: a refused bind leaves no orphan account, and a retry after a lost
+   * reply finds the account and binds (or keeps) it instead of creating a second one.
+   */
+  async createAndBind(gameId: string, index: number, accountId: string, details: AccountDetails,
+    opts: AccountBindOptions = {}): Promise<AccountBindResult> {
+    gamePlugin(gameId);
+    if (!isNewAccountId(accountId)) throw new Error('账号编号无效');
+    if (!Number.isInteger(index) || index < 0 || index > 63) throw new Error('实例编号无效');
+    const names = accountDetails(details); // before any side effect (a takeover switches schedules off)
+    const existing = await this.store.get(accountId);
+    if (existing) {
+      if (existing.gameId !== gameId) throw new AccountError('ACCOUNT_ID_TAKEN', '账号编号已被其他游戏的账号占用');
+      return this.bind(accountId, index, opts);
+    }
+    const result = await this.withLeases(accountId, [index], () =>
+      this.bindInstance(gameId, accountId, null, index, opts?.takeOver === true, names));
+    this.notifyAccounts(gameId);
+    return bindResult(result);
+  }
+
+  /**
+   * The bind itself, inside the leases. ★ An owned instance is refused before any side effect, so a refused or
+   * cancelled takeover leaves every schedule as it was; schedules are switched off only once the bind will happen.
+   */
+  private async bindInstance(gameId: string, accountId: string, account: GameAccount | null, index: number, takeOver: boolean,
+    create?: AccountDetails): Promise<BindOutcome & { notice?: string }> {
+    const game = gamePlugin(gameId);
+    const state = await (await this.host.get()).getState(index);
+    if (state.status === 'error' || state.record.provisioning) throw new Error(`实例 #${index} 未准备好（正在创建或处于错误状态）`);
+    if (await this.isBase(gameId, index, state.record.createdAt)) {
+      throw new Error('基础实例只用于克隆，不需要绑定账号。请在克隆出的副本中绑定并登录。');
+    }
+    const owner = (await this.store.list(gameId)).find((item) => item.id !== accountId && item.binding?.index === index);
+    if (owner && !takeOver) throw slotTakenError(index, owner.name);
+    if (account?.binding && account.binding.index !== index) {
+      await this.automation.setSchedule(gameId, account.binding.index, false);
+    }
+    if (owner) await this.automation.setSchedule(gameId, index, false);
+    const binding = { index, instanceCreatedAt: state.record.createdAt };
+    const outcome = await this.store.bind(accountId, binding,
+      { takeOver, ...(create ? { create: { gameId, packageName: game.packageName, details: create } } : {}) });
+    return { ...outcome, notice: await this.moveGatherConfig(outcome.account, index) };
   }
 
   /**
@@ -391,6 +435,34 @@ export class AccountManager {
     }
   }
 
+  /**
+   * The gather config of the account bound to this instance (identity-checked), or null when the instance has no
+   * current account or the account holds none. For gather settings: account first, instance config as fallback
+   * (DECISIONS B「调度器」). A corrupt copy throws instead of silently falling back to the instance config.
+   */
+  async gatherConfigFor(gameId: string, index: number): Promise<{ accountId: string; accountName: string; config: Record<string, unknown> } | null> {
+    const account = await this.accountForInstance(gameId, index);
+    const json = account?.scriptParams?.[GATHER_PARAM_SCOPE]?.[GATHER_PARAM_KEY];
+    if (!account || typeof json !== 'string' || !json.trim()) return null;
+    let config: unknown;
+    try { config = JSON.parse(json); } catch { config = null; }
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      throw new Error(`账号「${account.name}」里保存的采集配置已损坏，请打开采集配置重新保存。`);
+    }
+    return { accountId: account.id, accountName: account.name, config: config as Record<string, unknown> };
+  }
+
+  /** Replace (or with `null` remove) the gather config stored on an account (`scriptParams.gather.configJson`). */
+  async saveGatherConfig(accountId: string, config: Record<string, unknown> | null): Promise<GameAccount> {
+    if (config !== null && (typeof config !== 'object' || Array.isArray(config))) throw new Error('采集配置无效');
+    const account = await this.store.get(accountId);
+    if (!account) throw new Error('账号不存在');
+    const next: Record<string, ScriptParamValue> = { ...(account.scriptParams?.[GATHER_PARAM_SCOPE] ?? {}) };
+    if (config === null) delete next[GATHER_PARAM_KEY];
+    else next[GATHER_PARAM_KEY] = JSON.stringify(config);
+    return this.setScriptParams(accountId, GATHER_PARAM_SCOPE, Object.keys(next).length > 0 ? next : null);
+  }
+
   async setEnabled(accountId: string, enabled: boolean): Promise<GameAccount> {
     const account = await this.withAccountMutation(accountId, [], async (current) => {
       if (enabled) {
@@ -408,16 +480,19 @@ export class AccountManager {
 
   /**
    * Preview (and with `apply`, import) a wanlong-panel accounts.json. Imported accounts are unbound, pending and
-   * disabled; the returned id map lets the legacy plan importer point old plans at the new accounts.
+   * disabled; the returned id map lets the legacy plan importer point old plans at the new accounts. Import the
+   * old scripts first and pass their old → new id map as `scriptIdMap`, so default scripts and parameter keys
+   * point at the imported scripts (order: scripts, accounts, plans).
    */
-  async importLegacyAccounts(gameId: string, file: string, opts: { apply: boolean }): Promise<LegacyAccountImport> {
+  async importLegacyAccounts(gameId: string, file: string,
+    opts: { apply: boolean; scriptIdMap?: Record<string, string> }): Promise<LegacyAccountImport> {
     const game = gamePlugin(gameId);
     if (!path.isAbsolute(file)) throw new Error('旧账号文件路径必须是绝对路径');
     if ((await stat(file)).size > MAX_LEGACY_FILE_BYTES) throw new Error('旧账号文件超过 4 MB，未导入');
     let raw: unknown;
     try { raw = JSON.parse(await readFile(file, 'utf8')); }
     catch { throw new Error(`旧账号文件不是合法 JSON：${file}`); }
-    const { entries, rows } = previewLegacyAccounts(raw, game.packageName);
+    const { entries, rows } = previewLegacyAccounts(raw, game.packageName, opts?.scriptIdMap);
     if (!opts?.apply || rows.length === 0) return { entries, idMap: {}, applied: false };
     const idMap = await this.store.importLegacy(gameId, game.packageName, rows);
     this.notifyAccounts(gameId);
@@ -653,7 +728,7 @@ export class AccountManager {
       return Promise.reject(new LoginUserError('游戏启动后才能显示画面'));
     }
     if (task.frameInFlight) return task.frameInFlight;
-    const encode = this.ports.encodePreview ?? defaultEncodePreview;
+    const encode = this.ports.encodePreview ?? ((raw: RawFrame) => (this.previewEncoder ??= new LoginPreviewEncoder()).encode(raw));
     const frame = (async (): Promise<LoginFrame> => {
       try {
         const device = await this.currentDevice(task);
@@ -722,5 +797,6 @@ export class AccountManager {
   async shutdown(): Promise<void> {
     this.closing = true;
     await Promise.allSettled([...this.tasks.values()].map((task) => this.cancelLogin(task.view.id)));
+    await this.previewEncoder?.dispose();
   }
 }

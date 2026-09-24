@@ -415,6 +415,46 @@ describe('accounts: binding, takeover and the automation readiness gate', () => 
     await vi.waitFor(() => expect(h.accountEvents.at(-1)?.accounts.find((item) => item.id === a.id)?.binding).toBeNull());
   });
 
+  it('refuses a rebind onto an owned instance before switching off any schedule', async () => {
+    const h = harness();
+    const a = await account(h, '甲');
+    const b = await account(h, '乙');
+    await h.accounts.bind(a.id, 1);
+    await h.accounts.bind(b.id, 2);
+    h.records.length = 0;
+    // Refused (and then cancelled at the takeover dialog): 乙 keeps instance 2 and its gather schedule.
+    await expect(h.accounts.bind(b.id, 1)).rejects.toMatchObject({ code: 'ACCOUNT_SLOT_TAKEN' });
+    expect(h.records).toEqual([]);
+    expect((await h.accounts.store.get(b.id))?.binding?.index).toBe(2);
+    const moved = await h.accounts.bind(b.id, 1, { takeOver: true });
+    expect(moved.displaced?.name).toBe('甲');
+    expect(h.records).toEqual(['schedule:2:false', 'schedule:1:false']);
+  });
+
+  it('creates and binds in one step under the client id: a refusal leaves no account, a retry no duplicate', async () => {
+    const h = harness();
+    const a = await account(h, '甲');
+    await h.accounts.bind(a.id, 1);
+    h.records.length = 0;
+    await expect(h.accounts.createAndBind('wanlong', 1, NEW_ID, { name: '新号' })).rejects.toMatchObject({ code: 'ACCOUNT_SLOT_TAKEN' });
+    h.base.value = { index: 2, createdAt: CREATED };
+    await expect(h.accounts.createAndBind('wanlong', 2, NEW_ID, { name: '新号' })).rejects.toThrow('基础实例只用于克隆');
+    expect((await h.accounts.list('wanlong')).map((item) => item.name)).toEqual(['甲']);
+    expect(h.records).toEqual([]);
+    const created = await h.accounts.createAndBind('wanlong', 1, NEW_ID, { name: '新号' }, { takeOver: true });
+    expect(created).toMatchObject({ account: { id: NEW_ID, name: '新号', binding: { index: 1 } }, displaced: { id: a.id, name: '甲' } });
+    expect(h.records).toEqual(['schedule:1:false']);
+    const retried = await h.accounts.createAndBind('wanlong', 1, NEW_ID, { name: '新号' });
+    expect(retried.account.id).toBe(NEW_ID);
+    expect(await h.accounts.list('wanlong')).toHaveLength(2);
+    await expect(h.accounts.createAndBind('wanlong', 1, 'plain-id', { name: 'x' })).rejects.toThrow('账号编号无效');
+    h.records.length = 0;
+    await expect(h.accounts.createAndBind('wanlong', 1, '33333333-2222-4333-8444-555555555555', { name: ' ' }, { takeOver: true }))
+      .rejects.toThrow('账号名称');
+    expect(h.records).toEqual([]);
+    await vi.waitFor(() => expect(h.accountEvents.at(-1)?.accounts.find((item) => item.id === NEW_ID)?.binding?.index).toBe(1));
+  });
+
   it('refuses to bind the base instance and gates automation on base, pending and replaced instances', async () => {
     const h = harness();
     const a = await account(h);
@@ -447,6 +487,23 @@ describe('accounts: binding, takeover and the automation readiness gate', () => 
     expect(again.notice).toContain('没有用实例上的那份覆盖');
     expect((await h.accounts.scriptParams(a.id, 'gather')).configJson).toBe('{"version":2,"enabled":false}');
     expect((await h.accounts.bind(a.id, null)).notice).toContain('采集配置仍留在账号');
+  });
+
+  it('keeps the instance file the only gather config while nothing reads the account copy', async () => {
+    const h = harness();
+    const a = await account(h);
+    const bound = await h.accounts.bind(a.id, 2);
+    expect(bound.notice).toBeUndefined();
+    expect(bound.account.scriptParams).toBeUndefined();
+    expect(await h.accounts.gatherConfigFor('wanlong', 2)).toBeNull();
+    await h.accounts.saveGatherConfig(a.id, { version: 2, enabled: true });
+    expect(await h.accounts.gatherConfigFor('wanlong', 2)).toEqual({ accountId: a.id, accountName: '主号', config: { version: 2, enabled: true } });
+    expect((await h.accounts.bind(a.id, null)).notice).toBeUndefined();
+    expect(await h.accounts.gatherConfigFor('wanlong', 2)).toBeNull();
+    await h.accounts.bind(a.id, 2);
+    await h.accounts.setScriptParams(a.id, 'gather', { configJson: '[1]' });
+    await expect(h.accounts.gatherConfigFor('wanlong', 2)).rejects.toThrow('采集配置已损坏');
+    expect((await h.accounts.saveGatherConfig(a.id, null)).scriptParams).toBeUndefined();
   });
 
   it('switches off the schedule of an account that is removed or disabled', async () => {

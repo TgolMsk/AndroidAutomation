@@ -55,10 +55,9 @@ bootstrapApp({
     const accounts: AccountManager = new AccountManager(services.host, automation, home, {
       base: (gameId) => provisioner.baseIdentity(gameId),
       verifyHome: (gameId, index) => homeVerifier.verify(gameId, index),
-      instanceGatherConfig: async (gameId, index) => {
-        const { config } = await automation.settings(gameId, index);
-        return Object.keys(config).length > 0 ? config : null;
-      },
+      // `instanceGatherConfig` (move the instance's gather config into a newly bound account) is wired by the
+      // scheduler port together with gather settings that read `accounts.gatherConfigFor()` first; until then
+      // the instance file stays the only copy.
       onAccountsChanged: (event) => broadcast('account-changed', event),
       onLoginChanged: (session) => broadcast('login-changed', session),
     });

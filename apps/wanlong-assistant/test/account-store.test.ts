@@ -185,4 +185,40 @@ describe('legacy wanlong-panel accounts.json', () => {
     });
     expect(imported.find((account) => account.id === map['acc_bad_params'])?.scriptParams).toBeUndefined();
   });
+
+  it('points the default script and parameter keys at the ids the old scripts were imported under', () => {
+    const file = {
+      version: 1,
+      accounts: [{ id: 'acc_main', name: '主号', defaultScriptId: 'daily', enabled: true,
+        scriptParams: { daily: { rounds: 2 }, 'daily-import-abc123': { rounds: 9 }, weekly: { on: true }, gather: { configJson: '{}' } } }],
+    };
+    const { rows } = previewLegacyAccounts(file, PKG, { daily: 'daily-import-abc123', gather: 'gather-import-x' });
+    expect(rows[0]?.defaultScriptId).toBe('daily-import-abc123');
+    // The renamed old `daily` wins over an old key that happens to equal its new id; gather is not a script id.
+    expect(rows[0]?.scriptParams).toEqual({ 'daily-import-abc123': { rounds: 2 }, weekly: { on: true }, gather: { configJson: '{}' } });
+    expect(previewLegacyAccounts(file, PKG).rows[0]?.defaultScriptId).toBe('daily');
+    expect(() => previewLegacyAccounts(file, PKG, { daily: '../x' })).toThrow('脚本编号对照表无效');
+  });
+});
+
+describe('atomic create-and-bind', () => {
+  const ID = '11111111-2222-4333-8444-555555555555';
+  const binding = { index: 3, instanceCreatedAt: 'c3' };
+  const create = { gameId: 'wanlong', packageName: PKG, details: { name: '新号' } };
+
+  it('creates the account inside the bind transaction, and a refused bind leaves nothing behind', async () => {
+    const owner = await store.create('wanlong', PKG, { name: '甲' });
+    await store.bind(owner.id, binding);
+    await expect(store.bind(ID, binding, { create })).rejects.toMatchObject({ code: 'ACCOUNT_SLOT_TAKEN' });
+    expect((await store.list('wanlong')).map((item) => item.name)).toEqual(['甲']);
+    const { account, displaced } = await store.bind(ID, binding, { create, takeOver: true });
+    expect(account).toMatchObject({ id: ID, name: '新号', binding, enabled: false, login: { status: 'pending' } });
+    expect(displaced?.name).toBe('甲');
+    // A retry under the same id binds the existing account instead of creating a second one.
+    await store.bind(ID, binding, { create });
+    expect(await store.list('wanlong')).toHaveLength(2);
+    await expect(store.bind(ID, binding, { create: { ...create, gameId: 'other-game' } })).rejects.toMatchObject({ code: 'ACCOUNT_ID_TAKEN' });
+    await expect(store.bind('not-a-uuid', binding, { create })).rejects.toThrow('账号编号或游戏标识无效');
+    await expect(store.bind('22222222-2222-4333-8444-555555555555', null, { create })).rejects.toThrow('账号不存在');
+  });
 });

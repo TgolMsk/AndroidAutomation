@@ -42,7 +42,11 @@ export function LoginPreview({ sessionId, index, packageName, disabled, height =
   const drag = useRef<{ x: number; y: number; t: number } | null>(null);
   const image = useRef<HTMLImageElement>(null);
 
-  useEffect(() => () => { alive.current = false; }, []);
+  // Set in the body too: StrictMode (dev) runs this cleanup once right after mount, then mounts again.
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
   useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
 
   const capture = useCallback(async () => {

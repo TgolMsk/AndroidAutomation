@@ -77,11 +77,16 @@ export class InstanceProvisioner {
     }
   }
 
-  /** Clear a stored base whose AVD disappeared or was replaced (only if nobody changed the selection meanwhile). */
-  private async autoClear(gameId: string, base: BaseInstanceSelection, reason: string): Promise<BaseInstanceView> {
-    await this.store.write(gameId, null, base);
+  /**
+   * Clear a stored base whose AVD disappeared or was replaced, only if nobody changed the selection meanwhile.
+   * Only the call that actually cleared it emits and reports `cleared`; a caller that lost the race (another
+   * check cleared it first, or the user set a new base) gets the current view instead.
+   */
+  private async autoClear(gameId: string, base: BaseInstanceSelection, reason: string, attempts: number): Promise<BaseInstanceView> {
+    if (!(await this.store.write(gameId, null, base))) return this.validate(gameId, attempts - 1);
     const view: BaseInstanceView = {
-      gameId, base: null, status: null, cloneBlocked: null, cleared: { index: base.index, name: base.name, reason },
+      gameId, base: null, status: null, cloneBlocked: null,
+      cleared: { index: base.index, name: base.name, setAt: base.setAt, reason },
     };
     this.emit(view);
     return view;
@@ -102,13 +107,20 @@ export class InstanceProvisioner {
    * The base of a game, validated against the live instance. A base whose AVD was deleted, or whose index now
    * holds a different AVD, is cleared automatically and reported once through `cleared`.
    */
-  async view(gameId: string): Promise<BaseInstanceView> {
+  view(gameId: string): Promise<BaseInstanceView> {
+    return this.validate(gameId, 3);
+  }
+
+  private async validate(gameId: string, attempts: number): Promise<BaseInstanceView> {
     const base = await this.store.read(gameId);
     if (!base) return { gameId, base: null, status: null, cloneBlocked: null };
     const state = await this.stateOf(base.index);
-    if (!state) return this.autoClear(gameId, base, '基础实例已被删除');
-    if (state.record.createdAt !== base.createdAt) return this.autoClear(gameId, base, '该编号已被新的实例使用，原基础实例已不存在');
-    return this.describe(gameId, base, state);
+    const gone = !state ? '基础实例已被删除'
+      : state.record.createdAt !== base.createdAt ? '该编号已被新的实例使用，原基础实例已不存在' : null;
+    if (!gone) return this.describe(gameId, base, state!);
+    // The selection kept changing under us: report no base without claiming a clear this call did not make.
+    if (attempts <= 0) return { gameId, base: null, status: null, cloneBlocked: null };
+    return this.autoClear(gameId, base, gone, attempts);
   }
 
   /** Index + identity of a valid base (for the login / bind / automation guards), or null. */
@@ -163,11 +175,11 @@ export class InstanceProvisioner {
       if (request.expectedBaseIndex !== base.index) throw new Error('基础实例已改变，请重新打开克隆窗口确认。');
       const state = await this.stateOf(base.index);
       if (!state) {
-        await this.autoClear(gameId, base, '基础实例已被删除');
+        await this.autoClear(gameId, base, '基础实例已被删除', 1);
         throw new Error(`源实例 #${base.index} 已不存在，请重新设置基础实例。`);
       }
       if (state.record.createdAt !== base.createdAt) {
-        await this.autoClear(gameId, base, '该编号已被新的实例使用，原基础实例已不存在');
+        await this.autoClear(gameId, base, '该编号已被新的实例使用，原基础实例已不存在', 1);
         throw new Error(`实例 #${base.index} 已被替换，请重新设置基础实例后再克隆。`);
       }
       if (state.record.provisioning) throw new Error(`源实例 #${base.index} 仍在创建或克隆中，请稍后再试。`);
@@ -211,7 +223,9 @@ export class InstanceProvisioner {
     const manager = await this.host.get();
     try {
       return await manager.clone(index, {
-        count, namePrefix: name.trim().slice(0, 40) || undefined, ...(rotate ? { identity: 'random' as const } : {}),
+        // ★ Explicit either way: core defaults to 'random' for a source with managed identifiers, so leaving it
+        // out would ignore the user's 「不更换设备标识」. 'system' keeps the emulator defaults (and the copied data).
+        count, namePrefix: name.trim().slice(0, 40) || undefined, identity: rotate ? 'random' : 'system',
       });
     } catch (error) {
       if (isAvdmError(error, 'INSTANCE_RUNNING')) {

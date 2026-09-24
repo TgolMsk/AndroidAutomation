@@ -12,6 +12,11 @@ export interface AccountsApi {
   accountDelete(id: string): Promise<void>;
   /** Bind to any instance (or `null` to unbind); an owned instance needs `{ takeOver: true }` after confirmation. */
   accountBind(id: string, index: number | null, options?: AccountBindOptions): Promise<AccountBindResult>;
+  /**
+   * Create an account and bind it to the instance in one transaction. `id` is a renderer-generated UUID reused on
+   * retry: a refused bind creates nothing, and a retry after a lost reply never creates a second account.
+   */
+  accountCreateAndBind(gameId: string, index: number, id: string, details: AccountDetails, options?: AccountBindOptions): Promise<AccountBindResult>;
   accountSetEnabled(id: string, enabled: boolean): Promise<GameAccount>;
   /** Replace (or with `null` remove) the account's parameter overrides for one script. */
   accountSetScriptParams(id: string, scriptId: string, params: Record<string, ScriptParamValue> | null): Promise<GameAccount>;
@@ -35,7 +40,7 @@ export interface AccountsApi {
 }
 
 export const ACCOUNTS_METHODS = [
-  'accountList', 'accountCreate', 'accountUpdate', 'accountDelete', 'accountBind', 'accountSetEnabled',
+  'accountList', 'accountCreate', 'accountUpdate', 'accountDelete', 'accountBind', 'accountCreateAndBind', 'accountSetEnabled',
   'accountSetScriptParams', 'accountInstanceReadiness',
   'accountBeginLogin', 'accountLoginSession', 'accountLoginSessions', 'accountLoginCommand', 'accountLoginInput',
   'accountLoginFrame', 'accountVerifyLogin', 'accountCancelLogin',

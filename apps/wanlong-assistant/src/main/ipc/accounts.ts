@@ -7,6 +7,12 @@ export interface AccountsServices {
   accounts: AccountManager;
 }
 
+function takeOverOption(options: { takeOver?: unknown } | undefined | null): boolean {
+  if (options === undefined || options === null) return false;
+  const value = patchObject(options, '绑定选项');
+  return value.takeOver === undefined ? false : flag(value.takeOver, '改绑确认');
+}
+
 /** Arguments are untrusted: shapes are checked here, contents again (strictly) in the store and the manager. */
 export const accountsHandlers: DomainHandlers<AccountsApi, AccountsServices> = {
   async accountList({ accounts }, gameId) { return accounts.list(game(gameId)); },
@@ -18,9 +24,11 @@ export const accountsHandlers: DomainHandlers<AccountsApi, AccountsServices> = {
   },
   async accountDelete({ accounts }, id) { await accounts.remove(text(id, '账号 ID')); },
   async accountBind({ accounts }, id, index, options) {
-    if (options !== undefined && options !== null) patchObject(options, '绑定选项');
-    const takeOver = options?.takeOver === undefined ? false : flag(options.takeOver, '改绑确认');
-    return accounts.bind(text(id, '账号 ID'), optionalIndex(index), { takeOver });
+    return accounts.bind(text(id, '账号 ID'), optionalIndex(index), { takeOver: takeOverOption(options) });
+  },
+  async accountCreateAndBind({ accounts }, gameId, index, id, details, options) {
+    return accounts.createAndBind(game(gameId), asIndex(index), text(id, '账号 ID'), patchObject(details, '账号资料'),
+      { takeOver: takeOverOption(options) });
   },
   async accountSetEnabled({ accounts }, id, enabled) {
     return accounts.setEnabled(text(id, '账号 ID'), flag(enabled, '账号开关'));

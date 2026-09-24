@@ -99,20 +99,30 @@ export function useBaseInstance(gameId: string | undefined, onCleared?: (view: B
   const sequence = useRef(0);
   const clearedRef = useRef(onCleared);
   clearedRef.current = onCleared;
+  const announced = useRef(new Set<string>());
+
+  /** The clearing call's reply and its push event carry the same clear: tell the user once. */
+  const noteCleared = useCallback((next: BaseInstanceView) => {
+    if (!next.cleared) return;
+    const key = `${next.gameId}:${next.cleared.index}:${next.cleared.setAt}`;
+    if (announced.current.has(key)) return;
+    announced.current.add(key);
+    clearedRef.current?.(next);
+  }, []);
 
   const reload = useCallback(async () => {
     if (!gameId) return;
     const mine = ++sequence.current;
     try {
       const next = await avdm.instanceBase(gameId);
+      noteCleared(next); // even when a newer push already replaced the view
       if (mine !== sequence.current) return;
       setView(next);
       setError(undefined);
-      if (next.cleared) clearedRef.current?.(next);
     } catch (cause) {
       if (mine === sequence.current) setError(errMsg(cause));
     }
-  }, [gameId]);
+  }, [gameId, noteCleared]);
 
   useEffect(() => { setView(null); void reload(); }, [reload]);
   useAvdmEvent('instance-base-changed', (event) => {
@@ -120,7 +130,7 @@ export function useBaseInstance(gameId: string | undefined, onCleared?: (view: B
     sequence.current += 1;
     setView(event.view);
     setError(undefined);
-    if (event.view.cleared) clearedRef.current?.(event.view);
+    noteCleared(event.view);
   });
   useAvdmEvent('instances-changed', () => { void reload(); });
   // Start / stop of the base changes whether cloning is possible.
