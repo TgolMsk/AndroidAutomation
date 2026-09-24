@@ -92,11 +92,17 @@ export interface AutomationApi {
   automationRuns(): Promise<AutomationRun[]>;
   automationSchedules(): Promise<AutomationSchedule[]>;
   setAutomationSchedule(gameId: string, index: number, enabled: boolean): Promise<AutomationSchedule>;
+  /**
+   * 「重启游戏」: force-stop the game and launch it again inside the instance lock (refused while a script or login holds
+   * the instance). `foreground` = it reached the foreground within 60 s.
+   */
+  automationRestartGame(gameId: string, index: number): Promise<{ foreground: boolean; elapsedMs: number }>;
 }
 
 export const AUTOMATION_METHODS = [
   'automationGames', 'pickAutomationTemplateSet', 'getAutomationSettings', 'saveAutomationSettings',
   'probeAutomation', 'runAutomation', 'stopAutomation', 'automationRuns', 'automationSchedules', 'setAutomationSchedule',
+  'automationRestartGame',
 ] as const satisfies readonly (keyof AutomationApi)[];
 
 /** An instance's settings (template set or gather config) were saved: pages showing them reload. */

@@ -26,6 +26,9 @@
 `AlertsService.raiseNeedsAttention`：**每条链路**都由告警中心**先暂停**（写暂停记录 → `setAuto(false)` → 落盘；关自动调度会中止正在跑的
 自动流程，那次唤醒随后静默结束），**再推送**（后台发，不占实例锁）；已被告警暂停、或同一实例的这条告警还在暂停途中时不重复告警——
 一段异常只有一条告警。脚本链路的前提是 AI 顾问启用且计划配置 `aiAssist` 不为 false（原版）。
+★ 「自动处理」开着、AI 以不低于置信度下限的把握认出画面是「被顶号」（`screen: 'kicked'`）且没动手时，不论它建议什么动作都当成需要人处理：
+`requiresAttention` + `screen` 随 `AI_RISK_BLOCKED` 的 `detail.screen` 带到 `AiAttentionInfo.screen`，组合根把它交给
+`AlertsService.raiseKickedByAi`（告警类型「疑似被顶号」：暂停、推送，「被顶号时关闭模拟器」开着时关掉模拟器），其余照旧走 `EtaScheduler.raiseAttention`。
 
 ★ 被告警暂停的实例（顶号、掉线、需要人处理……）在等人处理：`paused` 端口（`AlertCenter.pauseInfo`）有值时，三条自动链路都**不问 AI、
 不点更新确认、不点任何东西**，交回调用方；每次点击前再查一次（别的链路刚把它暂停时，这一下也不点）。端口读不出按已暂停处理。

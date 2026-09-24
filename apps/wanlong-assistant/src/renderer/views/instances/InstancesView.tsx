@@ -35,7 +35,10 @@ import { useGatherControls } from '../gather/useGatherControls';
 import { useGatherQueues } from '../gather/queue-store';
 import type { ScriptRunSnapshot } from '../../../main/plans/types';
 import type { ViewProps } from '../types';
-import { countUp, filterInstances, resolutionWarning, scriptRunProgress, type StatusFilter } from './instance-model';
+import { pauseTitle } from '../../../shared/alerts';
+import {
+  countUp, filterInstances, resolutionWarning, restartGameBlockReason, restartGameOutcome, scriptRunProgress, type StatusFilter,
+} from './instance-model';
 import './InstancesView.css';
 
 const MAX_INSTANCES = 64;
@@ -46,7 +49,8 @@ type Dialog =
   | { kind: 'cloneBase'; baseIndex: number; baseName: string }
   | { kind: 'clone'; index: number }
   | { kind: 'edit'; index: number }
-  | { kind: 'remove'; index: number };
+  | { kind: 'remove'; index: number }
+  | { kind: 'restartGame'; index: number };
 
 /** 当前执行 of a script run: status tag + script name, then a step progress bar (or rounds and steps in loop mode). */
 function ScriptRunCell({ run }: { run: ScriptRunSnapshot }) {
@@ -172,6 +176,21 @@ export function InstancesView({ visible }: ViewProps) {
   const remove = (i: number) => op(i, '删除', async () => {
     await guard({ action: 'remove', indices: [i], run: async () => toast.batch('删除实例', await avdm.remove([i]), nameOf) });
   });
+  // 「重启游戏」: the manual way out of an anomaly the AI could not handle (confirmed first; the main process refuses it
+  // while a script or login holds the instance and never queues behind a long gather step).
+  const restartGame = (i: number) => op(i, '重启游戏', async () => {
+    if (!gameId) return;
+    const result = await avdm.automationRestartGame(gameId, i);
+    const pause = pauseAt(i);
+    toast.push(restartGameOutcome(i, result, pause.paused ? { paused: true, title: pauseTitle(pause) } : null));
+  });
+  const restartGameBlocked = (instance: InstanceState): string | null => {
+    const i = instance.record.index;
+    return restartGameBlockReason({
+      gameLoaded: Boolean(gameId), running: isRunning(instance), scriptRunning: scriptRunByInstance.has(i),
+      loginActive: loginIsActive(sessions.get(i)?.phase), gatherRunning: runs.some((run) => run.index === i && isRunActive(run)),
+    });
+  };
 
   async function openLive(i: number): Promise<void> {
     try { await avdm.openLiveView(i); }
@@ -254,6 +273,8 @@ export function InstancesView({ visible }: ViewProps) {
         hint: isBase ? '基础实例只用于克隆，请在副本中登录账号' : gatherRun ? '这个实例上还有采集在跑' : scriptRun ? '这个实例上还有脚本在执行' : undefined,
         onClick: () => setLoginTargets([i]) },
       { label: '采集配置', icon: 'settings', disabled: !gameId, onClick: () => setConfigFor(i) },
+      { label: '重启游戏', icon: 'refresh', disabled: restartGameBlocked(instance) !== null, hint: restartGameBlocked(instance) ?? '强制停止游戏后重新拉起（AI 处理不了的卡界面、弹窗等）',
+        onClick: () => setDialog({ kind: 'restartGame', index: i }) },
       { label: '重启实例', icon: 'restart', disabled: !isRunning(instance), onClick: () => void restart(i) },
       { label: '编辑配置', icon: 'edit', divider: true, onClick: () => setDialog({ kind: 'edit', index: i }) },
       { label: isBase ? '取消基础实例' : '设为基础实例', icon: 'pin', disabled: !gameId || Boolean(instance.record.provisioning),
@@ -411,6 +432,13 @@ export function InstancesView({ visible }: ViewProps) {
                                   {busy[`${i}:启动`] ? <Spinner size={11} /> : <Icon name="play" size={13} />}启动
                                 </button>
                               )}
+                              {isRunning(instance) && (
+                                <button type="button" className="btn xs" disabled={isBusy(i) || restartGameBlocked(instance) !== null}
+                                  title={restartGameBlocked(instance) ?? '强制停止游戏后重新拉起。用于 AI 处理不了的异常（卡界面、弹窗、断线）；被顶号的实例会按设置直接关闭模拟器。'}
+                                  onClick={() => setDialog({ kind: 'restartGame', index: i })}>
+                                  {busy[`${i}:重启游戏`] ? <Spinner size={11} /> : <Icon name="refresh" size={13} />}重启游戏
+                                </button>
+                              )}
                               <button type="button" className="icon-btn small" onClick={() => void openLive(i)} disabled={!isRunning(instance)}
                                 title="打开实时画面" aria-label={`打开实例 #${i} 的实时画面`}><Icon name="screen" /></button>
                               <DropdownMenu title={`实例 #${i} 更多操作`} items={rowMenu(instance)} trigger={<Icon name="more" />} />
@@ -477,6 +505,14 @@ export function InstancesView({ visible }: ViewProps) {
         <ConfirmDialog title={`删除实例 #${removing.record.index}（${removing.record.name}）？`} confirmLabel="确认删除" danger
           message="实例数据会被永久删除，且无法恢复。请确认里面的账号数据已经不需要了（助手里的账号资料不会被删除，只是解除与它的对应）。"
           onClose={() => setDialog(null)} onConfirm={() => { const target = removing.record.index; setDialog(null); void remove(target); }} />
+      )}
+      {dialog?.kind === 'restartGame' && byIndex.get(dialog.index) && (
+        <ConfirmDialog title={`重启实例 #${dialog.index}（${nameOf(dialog.index)}）上的游戏？`} confirmLabel="重启游戏"
+          message={<>
+            <p>会强制停止游戏再用 monkey 重新拉起，并等它回到前台（最多 60 秒）。适合 AI 处理不了的卡界面、弹窗或断线；模拟器本身不重启。</p>
+            <p className="hint">正在进行的采样或采集步骤会先等它做完（最多 5 秒）；脚本或账号登录在用这个实例时不能重启。{pauseAt(dialog.index).paused ? '这个实例的自动采集处于暂停中，重启后确认画面正常再点「恢复」。' : ''}</p>
+          </>}
+          onClose={() => setDialog(null)} onConfirm={() => { const target = dialog.index; setDialog(null); void restartGame(target); }} />
       )}
       {loginTargets && gameId && (
         <AccountLoginDrawer gameId={gameId} indices={loginTargets} onClose={() => { setLoginTargets(null); void reloadAccounts(); }} />

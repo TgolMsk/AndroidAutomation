@@ -310,6 +310,8 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
           </div>
           <SwitchRow title="尝试精确识别「被顶号」" help="用模板集里的 tpl_dlg_kicked / tpl_login_screen / tpl_dlg_maintenance / tpl_dlg_update 判断；这些模板还没有时打开也只是空跑，不报错、不影响采集，顶号会被上面的通用兜底接住。"
             checked={draft.detect.kickedProbeEnabled} disabled={disabled} onChange={(kickedProbeEnabled) => changeDetect({ kickedProbeEnabled })} />
+          <SwitchRow title="被顶号时关闭模拟器" help="判定为被顶号（命中顶号提示框 / 登录界面模板、脚本失败后的检查，或开着「自动处理」时 AI 认出是顶号画面）后，先暂停并推送，再正常关闭这台模拟器，免得它反复重连把另一台设备上的号挤下线。确认账号安全后到「模拟器实例」重新启动、登录，再点「恢复」。其他异常（弹窗、卡界面等）不会关模拟器，可以在实例列表里用「重启游戏」。"
+            checked={draft.detect.stopOnKicked} disabled={disabled} onChange={(stopOnKicked) => changeDetect({ stopOnKicked })} />
         </section>
 
         <section className="alerts-section" aria-label="卡死自动重启">

@@ -19,6 +19,7 @@ import { assertRunId, KEEP_RUNS } from './run-logs';
 import { ScriptRunner } from './script-runner';
 import { ScriptStore, validateScript } from './scripts';
 import { PlanStore, type PlanData } from './store';
+import { SCRIPT_RUN_PRIORITIES } from './types';
 import type {
   AccountPlan, ImeStatus, LogEntry, PlanConfig, PlanHostPort, PlanOverview, PlanRun, PlanTask, RunLogQuery, ScriptDef, ScriptIssue,
   ScriptMatchDefaults, ScriptMeta, ScriptRunOptions, ScriptRunSnapshot,
@@ -70,7 +71,14 @@ const PUBLISH_DELAY_MS = 50;
 /** Manual runs: default and maximum whole-run limit. */
 const MANUAL_DEFAULT_MINUTES = 60;
 const MANUAL_MAX_MINUTES = 720;
-const MANUAL_LEASE_WAIT_MS = 200;
+/**
+ * A manual run waits this long for the instance lease: after the gather scheduler yielded, the lock may still be
+ * draining an aborted step (≤ 5 s) or a short exclusive action (screenshot, resource read). Longer holders (login
+ * wizard, another assistant process) still get a clear refusal.
+ */
+const MANUAL_LEASE_WAIT_MS = 20_000;
+/** The IME install is a quick device write: it never waits for the instance. */
+const IME_LEASE_WAIT_MS = 200;
 /**
  * A plan run waits for the instance lease in slices this long: core's file lock takes no AbortSignal, so the run's
  * signal (停止 / 删除 / quitting) is checked between slices and a stop never waits out the whole queue budget.
@@ -101,6 +109,8 @@ export interface PlanServiceOptions {
   busyRetryMs?: number;
   /** Wall clock of the planner (tests move it; timers still use real time). */
   now?: () => number;
+  /** How long a manual run waits for the instance lease (default 20 s; tests shrink it). */
+  manualLeaseWaitMs?: number;
 }
 
 const liveKey = (gameId: string, accountId: string, taskId: string): string => `${gameId}\n${accountId}\n${taskId}`;
@@ -143,6 +153,7 @@ function checkedRunOptions(options: ScriptRunOptions | undefined): Required<Pick
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error('运行选项无效');
   if (value.accountId !== undefined && (typeof value.accountId !== 'string' || !PLAN_ACCOUNT_RE.test(value.accountId))) throw new Error('账号 ID 无效');
   if (value.shotPolicy !== undefined && !SHOT_POLICIES.includes(value.shotPolicy)) throw new Error('截图留痕策略无效');
+  if (value.priority !== undefined && !SCRIPT_RUN_PRIORITIES.includes(value.priority)) throw new Error('执行优先级无效');
   const minutes = value.maxRunMinutes ?? MANUAL_DEFAULT_MINUTES;
   if (!Number.isInteger(minutes) || minutes < 0 || minutes > MANUAL_MAX_MINUTES) throw new Error(`运行时长上限应为 0–${MANUAL_MAX_MINUTES} 分钟（0 表示不限）`);
   if (value.params !== undefined) {
@@ -205,6 +216,7 @@ export class PlanService {
   private readonly minuteMs: number;
   private readonly busyRetryMs: number;
   private readonly now: () => number;
+  private readonly manualLeaseWaitMs: number;
   private closing = false;
 
   constructor(private readonly home: string, private readonly port: PlanHostPort, runner?: ScriptRunner, options: PlanServiceOptions = {}) {
@@ -215,6 +227,7 @@ export class PlanService {
     this.minuteMs = options.minuteMs ?? 60_000;
     this.busyRetryMs = options.busyRetryMs ?? BUSY_RETRY_MS;
     this.now = options.now ?? Date.now;
+    this.manualLeaseWaitMs = options.manualLeaseWaitMs ?? MANUAL_LEASE_WAIT_MS;
   }
 
   async start(gameId: string): Promise<void> {
@@ -486,8 +499,9 @@ export class PlanService {
     const options = checkedRunOptions(rawOptions);
     const config = await this.config(gameId);
     this.caps.set(gameId, config.maxConcurrentScripts);
-    // Admission is synchronous after the last await: two requests can never claim one instance.
-    if (this.isActiveForInstance(index)) throw new Error(`实例 #${index} 上已有脚本在运行或排队，请先停止后再试`);
+    // Admission is synchronous after the last await: two requests can never claim one instance. A plan task only
+    // waiting in this instance's queue does not block a manual run (highest priority): it waits behind it.
+    if (this.runIdOfInstance(index) !== null) throw new Error(`实例 #${index} 上已有脚本在运行，请先停止后再试`);
     const cap = config.maxConcurrentScripts;
     if (this.scriptSlotsInUse() >= cap) {
       throw new Error(`同时运行的脚本已达上限 ${cap} 个。请先停掉一个正在跑的脚本，或在「任务计划」页「计划设置」的「同时运行脚本上限」里调高（不建议超过 4 个）。`);
@@ -528,9 +542,11 @@ export class PlanService {
         const foreground = await device.foregroundPackage();
         if (foreground !== plugin.packageName) throw new Error(`${plugin.name}未处于前台（当前 ${foreground ?? '未知'}）。请先打开游戏，或让脚本以「启动游戏」开头（也可以先用「如果游戏不在前台 → 启动游戏」）。`);
       }
-      // ★ Scripts first (original plan rule 1): the instance's gather scheduler yields before the script takes it.
-      giveBack = await this.suspendGather(gameId, index, `临时运行脚本「${script.name}」`, config.preemptGraceMs);
-      lease = await this.acquireLease(index, MANUAL_LEASE_WAIT_MS, '运行脚本');
+      // ★ Scripts first (original plan rule 1): everything automatic on the instance yields before the script takes
+      // it — at once for 'highest' (the default), after the plan config's grace for 'normal'.
+      const graceMs = (options.priority ?? 'highest') === 'highest' ? 0 : config.preemptGraceMs;
+      giveBack = await this.suspendGather(gameId, index, `临时运行脚本「${script.name}」`, graceMs);
+      lease = await this.acquireLease(index, this.manualLeaseWaitMs, '运行脚本');
       const shotPolicy = options.shotPolicy ?? await this.defaultShotPolicy();
       const matchDefaults = await this.defaultMatch();
       // Script defaults < the account's saved params for this script < the request (original mergeParams).
@@ -601,7 +617,7 @@ export class PlanService {
     if (this.isActiveForInstance(index)) throw new Error(`实例 #${index} 正在运行脚本，请先停止后再安装输入法`);
     const state = await this.port.instance(index);
     if (state.status !== 'running') throw new Error(`实例 #${index} 尚未就绪，请先启动并等待 Android 启动完成`);
-    const lease = await this.acquireLease(index, MANUAL_LEASE_WAIT_MS, '安装中文输入法');
+    const lease = await this.acquireLease(index, IME_LEASE_WAIT_MS, '安装中文输入法');
     try {
       const current = await this.port.instance(index);
       if (current.status !== 'running' || current.record.createdAt !== state.record.createdAt) throw new Error(`实例 #${index} 已停止或被替换`);

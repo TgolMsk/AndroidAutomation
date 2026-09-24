@@ -165,11 +165,22 @@ bootstrapApp({
     // ── plans (task plans + script library) + runs (script executor, run monitor) ──
     // Scripts execute in script-worker threads; snapshots, log batches and debug matches are pushed to the monitor.
     // Device calls go through the instance's lane (DeviceLane) like every other service's.
+    const probedFailedRuns = new Set<string>();
     const scriptRunner = new ScriptRunner(home, {
       instance: async (index) => (await services.host.get()).getState(index),
       device: async (index) => (await deviceHost.get()).device(index),
     }, {
-      onSnapshot: (snapshot) => broadcast('plan-run', { kind: 'snapshot', snapshot }),
+      onSnapshot: (snapshot) => {
+        broadcast('plan-run', { kind: 'snapshot', snapshot });
+        // Scripts have no kicked probe of their own: a failed run reads one frame for the kicked dialog / login screen
+        // (a hit pauses the instance and, with「被顶号时关闭模拟器」, closes it). Once per run.
+        if (snapshot.status === 'failed' && snapshot.gameId === 'wanlong' && !probedFailedRuns.has(snapshot.runId)) {
+          probedFailedRuns.add(snapshot.runId);
+          if (probedFailedRuns.size > 200) probedFailedRuns.delete(probedFailedRuns.values().next().value!);
+          const index = snapshot.instanceIndex;
+          void alerts.probeAfterScript(index, async () => (await automation.captureReadOnly('wanlong', index)).frame);
+        }
+      },
       onLogs: (event) => broadcast('run-logs', event),
       onMatches: (event) => broadcast('run-matches', event),
       // Frame reuse window of the script worker = the app settings' capture interval (original worker/context.ts).
@@ -183,9 +194,14 @@ bootstrapApp({
       // ★ Scripts first (DECISIONS A.4, original plan rule 1): a plan or manual run makes the instance's gather
       // scheduler yield (polite wait of the plan config's preemptGraceMs, then abort) and gives it back afterwards;
       // gather auto never refuses a script.
-      suspendForScript: (gameId, index, reason, graceMs) => gameId === 'wanlong'
-        ? automation.eta.suspendForScript(index, graceMs, reason)
-        : Promise.resolve(() => undefined),
+      // Everything else automatic on the instance stands down too: a manual gather round is cancelled, and the freeze
+      // watchdog's evidence is dropped on both ends — a frame from before the script says nothing about a freeze after it.
+      suspendForScript: async (gameId, index, reason, graceMs) => {
+        if (gameId !== 'wanlong') return () => undefined;
+        alerts.forgetFreezeEvidence(index);
+        const release = await automation.suspendForScript(index, graceMs, reason);
+        return () => { alerts.forgetFreezeEvidence(index); release(); };
+      },
       onRun: (run) => broadcast('plan-run', { kind: 'plan', run }),
       onChanged: (overview) => broadcast('plan-changed', overview),
       onConfigChanged: (event) => broadcast('plan-config-changed', event),
@@ -246,6 +262,11 @@ bootstrapApp({
         dropLane: (i) => deviceLanes.drop(i),
         log: (level, message) => alertLog[level](`[卡死][实例 #${index}] ${message}`, undefined, index),
       }),
+      // 「被顶号时关闭模拟器」: a graceful stop (the Quick Boot snapshot is saved), then the old boot's device lane goes.
+      stopInstance: async (index) => {
+        await (await services.host.get()).stop(index);
+        deviceLanes.drop(index);
+      },
       matchTemplates: (index, raw, ids) => automation.matchTemplates(index, raw, ids),
       hasKickedTemplates: async (index) => Boolean((await automation.templateSet('wanlong', index))?.templates
         .some((template) => KICKED_TEMPLATE_IDS.includes(template.id))),
@@ -320,7 +341,10 @@ bootstrapApp({
       // wake uses — whose hook is the alerts module (`alerts.raiseNeedsAttention`): pause first (pause record,
       // setAuto(false), persisted), then notify in the background. The pause aborts the in-flight auto work, whose
       // wake then ends silently; an instance already paused (or being paused) is not alerted again: one alert, not two.
-      onNeedsAttention: (index, info) => automation.eta.raiseAttention(index, { code: info.code, message: info.message }),
+      // An AI reading of 「被顶号」 is the alerts module's kicked verdict (pause, push, close the emulator when set).
+      onNeedsAttention: (index, info) => info.screen === 'kicked'
+        ? alerts.raiseKickedByAi(index, info.message)
+        : automation.eta.raiseAttention(index, { code: info.code, message: info.message }),
       log: (level, message, index) => appLog.record(level, 'ai', message, undefined, index),
     });
     automation.setPorts({

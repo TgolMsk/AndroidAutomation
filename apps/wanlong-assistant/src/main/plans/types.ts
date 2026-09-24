@@ -91,8 +91,18 @@ export interface ScriptRunSnapshot extends RunSnapshot {
   maxRunMs: number | null;
 }
 
+/**
+ * How a manual run takes the instance. 'highest' (default): everything automatic on it stands down at once — in-flight
+ * gather work is aborted without the plan config's grace. 'normal': the in-flight gather step first gets
+ * `preemptGraceMs` to finish. Either way nothing automatic starts on the instance until the script ends.
+ */
+export type ScriptRunPriority = 'highest' | 'normal';
+export const SCRIPT_RUN_PRIORITIES: readonly ScriptRunPriority[] = ['highest', 'normal'];
+
 /** Options of a manual run of any script on one instance. */
 export interface ScriptRunOptions {
+  /** Default 'highest'. */
+  priority?: ScriptRunPriority;
   /** Optional account: its script params apply and it must be bound to the instance and logged in. */
   accountId?: string;
   params?: Record<string, ScriptParamValue>;

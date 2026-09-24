@@ -42,4 +42,7 @@ export const automationHandlers: DomainHandlers<AutomationApi, AutomationService
     // No plans-vs-gather exclusion any more: a plan run preempts the scheduler (`eta.suspendForScript`).
     return automation.setSchedule(game(gameId), asIndex(index), enabled);
   },
+  async automationRestartGame({ automation }, gameId, index) {
+    return automation.restartGame(game(gameId), asIndex(index));
+  },
 };

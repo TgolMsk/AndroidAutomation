@@ -18,7 +18,7 @@ import { broadcast } from '../events';
 import type { ManagerHost } from '../manager-host';
 import { asIndex, errorMessage } from '../util';
 import { ScheduleCompat, toAutomationSchedule } from '../scheduler/compat';
-import { SchedulerError, abortError, codeOf, isAttentionCode, isGateCode, messageOf } from '../scheduler/errors';
+import { SchedulerError, abortError, codeOf, isAttentionCode, isGateCode, messageOf, sleep, throwIfAborted } from '../scheduler/errors';
 import { InstanceLocks } from '../scheduler/instance-lock';
 import { EtaScheduler, type EtaSchedulerOptions } from '../scheduler/service';
 import { ShotStore } from '../scheduler/shots';
@@ -71,6 +71,9 @@ export type AutomationRunObserver = Pick<AutomationHostHooks, 'onCycleResult' | 
 
 /** A resource read waits this long for a short holder of the instance (a health probe) before calling it busy. */
 const RESOURCE_READ_LOCK_WAIT_MS = 5_000;
+/** 「重启游戏」: pause between force-stop and launch (the script engine's RESTART_GAP_MS), foreground wait after it. */
+const RESTART_GAME_GAP_MS = 2_000;
+const RESTART_GAME_FOREGROUND_MS = 60_000;
 
 /** A future durable scheduler may consume a completed cycle and return only a wake it actually stored. */
 export type CycleCompletionSink = (run: AutomationRun, result: GatherCycleResult) => Promise<number | null>;
@@ -327,6 +330,52 @@ export class AutomationHost {
       saveShot: (label, raw) => this.shots.save(i, label, raw),
       log: (level, message) => this.logLine(level, `[实例 #${i}][资源统计] ${message}`),
     }), options.signal);
+  }
+
+  /**
+   * 「重启游戏」 from the instance list — the manual way out of an anomaly the AI could not handle (a kicked account closes
+   * the emulator instead): force-stop the game, launch it cold (monkey — the only launch this game accepts) and wait up
+   * to 60 s for it to reach the foreground. A device writer like every other: inside the instance lock
+   * (`eta.exclusive`, refused while a script or login holds the instance), after a short wait for an in-flight sample
+   * or gather step instead of queueing behind it. Never touches the gather schedule or an alert pause.
+   */
+  async restartGame(gameId: string, index: number): Promise<{ foreground: boolean; elapsedMs: number }> {
+    const plugin = gamePlugin(gameId);
+    const i = asIndex(index);
+    if (this.disposed) throw new Error('应用正在退出');
+    const manager = await this.host.get();
+    const state = await manager.getState(i);
+    if (state.status !== 'running') throw new Error(`实例 #${i} 没有在运行，请先启动实例（被顶号关掉的实例也要先启动）`);
+    if (this.locks.busy(i) && !this.locks.held(i)) {
+      await Promise.race([this.locks.drain(i), new Promise((resolve) => setTimeout(resolve, RESOURCE_READ_LOCK_WAIT_MS).unref?.())]);
+      if (this.locks.busy(i)) {
+        const holder = this.locks.holder(i);
+        throw new SchedulerError('CONCURRENCY_LIMIT', `实例 #${i} 正在${holder ?? '执行其他操作'}，重启游戏稍后再试。`, { instanceIndex: i });
+      }
+    }
+    return this.eta.exclusive(i, '重启游戏', async ({ signal }) => {
+      const startedAt = Date.now();
+      const device = await manager.device(i);
+      const current = await manager.getState(i);
+      if (current.status !== 'running' || current.record.createdAt !== state.record.createdAt) throw new Error(`实例 #${i} 已停止或被替换`);
+      this.logLine('info', `[实例 #${i}] 手动重启游戏：强制停止 ${plugin.name} 后重新拉起。`);
+      await this.onLane(i, () => device.stopApp(plugin.packageName));
+      await sleep(RESTART_GAME_GAP_MS, signal);
+      throwIfAborted(signal);
+      await this.onLane(i, () => device.startApp(plugin.packageName));
+      const deadline = Date.now() + RESTART_GAME_FOREGROUND_MS;
+      for (;;) {
+        throwIfAborted(signal);
+        if (await this.onLane(i, () => device.foregroundPackage()) === plugin.packageName) {
+          this.logLine('info', `[实例 #${i}] ${plugin.name}已重新拉起。`);
+          return { foreground: true, elapsedMs: Date.now() - startedAt };
+        }
+        if (Date.now() >= deadline) break;
+        await sleep(1_000, signal);
+      }
+      this.logLine('warn', `[实例 #${i}] 重新拉起 ${plugin.name} 后 ${RESTART_GAME_FOREGROUND_MS / 1000} 秒仍未进入前台。`);
+      return { foreground: false, elapsedMs: Date.now() - startedAt };
+    });
   }
 
   /**
@@ -1269,6 +1318,24 @@ export class AutomationHost {
     const active: ActiveAutomationRun = { index: i, controller, source, result, done };
     this.activeRuns.set(runId, active);
     return { run: { ...run }, active };
+  }
+
+  /**
+   * ★ Scripts first: everything automatic on the instance yields to a script run (plan or manual). The scheduler
+   * stops new work and aborts its in-flight work after `graceMs`; a manual gather round (「运行一轮」, the same
+   * instance lock) is cancelled at that moment too, recorded as「为脚本让路」. See `EtaScheduler.suspendForScript`.
+   */
+  suspendForScript(index: number, graceMs: number, reason: string): Promise<() => void> {
+    return this.eta.suspendForScript(index, graceMs, reason, () => this.cancelManualRuns(index, `为脚本让路：${reason}`));
+  }
+
+  private cancelManualRuns(index: number, why: string): void {
+    for (const [runId, active] of this.activeRuns) {
+      if (active.index !== index || active.source !== 'manual' || active.controller.signal.aborted) continue;
+      this.logLine('warn', `[实例 #${index}] 手动采集 ${runId.slice(0, 8)} 已中止：${why}`);
+      active.controller.abort(new Error(why));
+      void this.gatherRunner.stop(index).catch(() => undefined);
+    }
   }
 
   async stop(runId: string): Promise<void> {

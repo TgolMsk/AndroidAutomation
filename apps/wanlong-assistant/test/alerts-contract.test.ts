@@ -60,7 +60,11 @@ describe('config: single defaults authority, normalize / merge / validate', () =
     expect(cfg.detect).toMatchObject({
       autoPauseEnabled: true, cycleFailThreshold: 3, recoveryFailThreshold: 2, sampleFailThreshold: 3,
       freezeRestartEnabled: false, freezeMinutes: 5, freezeRestartLimit: 3, freezeRestartWindowMin: 60,
+      // User request: a kicked account closes its emulator unless switched off.
+      stopOnKicked: true,
     });
+    expect(normalizeAlertsConfig({ detect: { stopOnKicked: 'no' } }).detect.stopOnKicked).toBe(true);
+    expect(normalizeAlertsConfig({ detect: { stopOnKicked: false } }).detect.stopOnKicked).toBe(false);
     expect(cfg.telegram).toMatchObject({ enabled: false, cooldownSeconds: 600, retryCount: 2, remoteControlEnabled: false, remoteReadOnlyEnabled: false });
     expect(cfg.local.enabled).toBe(false);
     // Every default lies inside its range.

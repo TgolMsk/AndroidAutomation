@@ -8,6 +8,7 @@ import { AccountsView } from './accounts/AccountsView';
 import { AiView } from './ai/AiView';
 import { GatherOverviewView } from './gather/GatherOverviewView';
 import { InstancesView } from './instances/InstancesView';
+import { ScriptConsoleView } from './console/ScriptConsoleView';
 import { PlansView } from './plans/PlansView';
 import { RunsView } from './runs/RunsView';
 import { ScriptsView } from './scripts/ScriptsView';
@@ -32,6 +33,7 @@ export const VIEW_REGISTRY: Readonly<Record<ViewKey, ViewEntry>> = {
   instances: { component: InstancesView },
   accounts: { component: AccountsView, needsGame: true },
   gatherOverview: { component: GatherOverviewView, needsGame: true, keepAlive: true },
+  scriptConsole: { component: ScriptConsoleView, needsGame: true, keepAlive: true },
   plans: { component: PlansView, needsGame: true, keepAlive: true },
   runs: { component: RunsView },
   stats: { component: StatsView, needsGame: true },

@@ -59,6 +59,11 @@ export interface AlertsServicePorts extends Omit<NotifyHubPorts, 'log' | 'onConf
   onRaised?(record: AlertRecord): void;
   /** After a save (the bot reloads here). */
   onConfigChanged?(view: AlertsConfigView): void;
+  /**
+   * Shut the emulator down (「被顶号时关闭模拟器」): a graceful stop of the whole instance. Called in the background,
+   * never inside the instance lock's await chain. Missing → kicked instances are only paused.
+   */
+  stopInstance?(index: number): Promise<void>;
   gamePackage: string;
 }
 
@@ -70,6 +75,8 @@ export class AlertsService {
   private readonly root: string;
   /** Instances whose 「需要人处理」 raise is still pausing (concurrent raises from two chains alert once). */
   private readonly attentionInFlight = new Set<number>();
+  /** Instances whose kicked shutdown is in flight (one stop per verdict). */
+  private readonly closingKicked = new Set<number>();
 
   constructor(home: string, private readonly ports: AlertsServicePorts) {
     if (!path.isAbsolute(home)) throw new Error('告警数据目录必须是绝对路径');
@@ -203,12 +210,63 @@ export class AlertsService {
   async onCycleResult(index: number, fact: GatherCycleFact, source: 'manual' | 'scheduled'): Promise<void> {
     // Update prompts and AI risk refusals raise their own 「需要人工介入」; a manual round is watched by the user.
     if (fact.errorCode && ATTENTION_CODES.has(fact.errorCode)) return;
-    if (source !== 'scheduled') return;
+    if (source !== 'scheduled') {
+      // Never counted — but a kicked account is paused and closed whoever started the round.
+      if (fact.kicked?.type === 'suspectedKicked' && !this.center.isPaused(index)) {
+        await this.center.raiseInLock(this.noteClose(makeAlertEvent({
+          type: 'suspectedKicked', instanceIndex: index, reason: `手动采集失败现场命中：${fact.kicked.reason}`, shotPath: fact.shotPath,
+          detail: {
+            ...(fact.kicked.templateId ? { 命中模板: fact.kicked.templateId } : {}),
+            ...(typeof fact.kicked.score === 'number' ? { 匹配分: Number(fact.kicked.score.toFixed(3)) } : {}),
+          },
+        })));
+        this.closeAfterKick(index, '手动采集失败现场');
+      }
+      return;
+    }
     const event = this.failures.noteCycle(index, fact);
     if (!event) return;
-    if (pausesInstance(event.type)) await this.center.raiseInLock(event);
+    if (pausesInstance(event.type)) await this.center.raiseInLock(this.noteClose(event));
     // A warning (dispatchStalled) need not hold the lock for a network request.
     else this.center.raiseQuietly(event);
+    if (event.type === 'suspectedKicked') this.closeAfterKick(index, '采集失败现场');
+  }
+
+  /**
+   * The AI read the screen as 「被顶号」 (any chain: gather G0, sampler, script runs): the same verdict as the kicked
+   * template — pause (even with 「自动暂停」 off: nothing may keep tapping past it), push, and close the emulator when
+   * 「被顶号时关闭模拟器」 is on. One alert per stretch, like `raiseNeedsAttention`. Never throws.
+   */
+  async raiseKickedByAi(index: number, message: string): Promise<void> {
+    if (this.center.isPaused(index) || this.attentionInFlight.has(index)) {
+      this.ports.log('info', `[告警] 实例 #${index} 已暂停（或正在暂停），AI 的「被顶号」判定不重复告警：${message}`, index);
+      return;
+    }
+    this.attentionInFlight.add(index);
+    try {
+      await this.center.raiseInLock(this.noteClose(makeAlertEvent({
+        type: 'suspectedKicked', instanceIndex: index, reason: `AI 把当前画面判定为「被顶号」：${message}`,
+        detail: { 阶段: 'AI 画面识别' },
+      })), { schedulerPaused: true });
+    } finally { this.attentionInFlight.delete(index); }
+    this.closeAfterKick(index, 'AI 判定');
+  }
+
+  /**
+   * A script run failed (scripts have no kicked probe of their own): read one frame and run the layer-2 probe on it.
+   * `capture` is a read-only screenshot; skipped when the probe is off, the templates are missing or the instance is
+   * already paused. Resolves whether a verdict was raised. Never throws.
+   */
+  async probeAfterScript(index: number, capture: () => Promise<RawFrame | null>): Promise<boolean> {
+    if (!this.center.detectConfig().kickedProbeEnabled || this.center.isPaused(index)) return false;
+    try {
+      if (this.ports.hasKickedTemplates && !await this.ports.hasKickedTemplates(index)) return false;
+      const raw = await capture();
+      return raw ? await this.probeFrame(index, raw, '脚本执行失败后') : false;
+    } catch (error) {
+      this.ports.log('debug', `[告警] 实例 #${index} 脚本失败后的顶号检查没做成：${error instanceof Error ? error.message : String(error)}`, index);
+      return false;
+    }
   }
 
   /**
@@ -236,6 +294,11 @@ export class AlertsService {
   /** IPC `resumeAlertPause` / the bot. ★ Never from inside the instance lock. @throws Chinese when not paused. */
   resume(index: number): Promise<InstancePauseState> {
     return this.center.resume(index);
+  }
+
+  /** A script took over the instance (or gave it back): frames from before say nothing about a freeze after. */
+  forgetFreezeEvidence(index: number): void {
+    this.freeze.guard.reset(index);
   }
 
   freezeStatus(): FreezeInstanceStatus[] {
@@ -281,10 +344,40 @@ export class AlertsService {
     const hit = await this.kickedHit(index, raw);
     if (!hit) return false;
     const shotPath = await this.saveShot(index, 'kicked', raw);
-    await this.center.raiseInLock(makeAlertEvent({
+    await this.center.raiseInLock(this.noteClose(makeAlertEvent({
       type: hit.type, instanceIndex: index, reason: `${where}命中：${hit.reason}`, shotPath, detail: hit.detail,
-    }));
+    })));
+    if (hit.type === 'suspectedKicked') this.closeAfterKick(index, where);
     return true;
+  }
+
+  private closesOnKick(): boolean {
+    return Boolean(this.ports.stopInstance) && this.center.detectConfig().stopOnKicked;
+  }
+
+  /** A kicked event says in its detail that the emulator is about to be closed (the push and the history show it). */
+  private noteClose(event: AlertEvent): AlertEvent {
+    if (event.type !== 'suspectedKicked' || !this.closesOnKick()) return event;
+    return { ...event, detail: { ...event.detail, 模拟器: '随后自动关闭（设置：被顶号时关闭模拟器）' } };
+  }
+
+  /**
+   * 「被顶号时关闭模拟器」: shut the emulator down after a kicked verdict. In the background — a graceful stop saves the
+   * Quick Boot snapshot for up to a minute and must not keep the instance lock (the instance is already paused, so
+   * nothing automatic touches it meanwhile). One stop per instance at a time; never throws.
+   */
+  private closeAfterKick(index: number, where: string): void {
+    if (!this.closesOnKick() || this.closingKicked.has(index)) return;
+    this.closingKicked.add(index);
+    const stop = this.ports.stopInstance!;
+    this.ports.log('warn', `[告警] 实例 #${index} 被顶号（${where}），按设置关闭这台模拟器。`, index);
+    void Promise.resolve()
+      .then(() => stop(index))
+      .then(
+        () => this.ports.log('info', `[告警] 实例 #${index} 的模拟器已关闭（被顶号）。确认账号安全后重新启动、登录，再点「恢复」。`, index),
+        (error: unknown) => this.ports.log('error', `[告警] 实例 #${index} 被顶号，但关闭模拟器失败：${error instanceof Error ? error.message : String(error)}`, index),
+      )
+      .finally(() => this.closingKicked.delete(index));
   }
 
   private async kickedHit(index: number, raw: RawFrame): Promise<Awaited<ReturnType<typeof probeKickedFrame>>> {

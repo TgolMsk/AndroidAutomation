@@ -107,11 +107,11 @@ export const ALERT_SPECS = {
     pauses: true,
     notifyByDefault: true,
     summary:
-      '精确识别命中了「账号在其他设备登录」提示框或登录界面。' +
-      '★ 相应模板（tpl_dlg_kicked / tpl_login_screen）不在模板集里时，这类事件永远不会产生，会自动降级成「需要人工介入」。',
+      '精确识别命中了「账号在其他设备登录」提示框或登录界面，或 AI 把画面判定为「被顶号」。' +
+      '★ 相应模板（tpl_dlg_kicked / tpl_login_screen）不在模板集里、AI 也没判出来时，会降级成「需要人工介入」。',
     advice:
-      '已暂停该实例的自动调度。账号很可能在别的设备上登录了，请先确认是不是自己在别处操作；' +
-      '确认安全后重新登录游戏，再回来点「恢复」。',
+      '已暂停该实例的自动调度；「被顶号时关闭模拟器」开着时，这台模拟器也已关闭。账号很可能在别的设备上登录了，' +
+      '请先确认是不是自己在别处操作；确认安全后重新启动实例、登录游戏，再回来点「恢复」。',
   },
   consecutiveFailures: {
     type: 'consecutiveFailures',
@@ -496,6 +496,12 @@ export interface AlertDetectConfig {
   /** Try the layer-2 templates (kicked / login / maintenance / update). Missing templates degrade silently. */
   kickedProbeEnabled: boolean;
   /**
+   * 「被顶号时关闭模拟器」 (user request, on by default): after a 疑似被顶号 verdict — the kicked / login template, or the AI
+   * reading the screen as kicked — the instance is paused and its emulator is shut down (graceful stop), so nothing
+   * keeps reconnecting and pushing the other device off again.
+   */
+  stopOnKicked: boolean;
+  /**
    * Freeze auto-restart (DECISIONS A.3: explicit opt-in, default off). Off: a freeze only raises 「疑似模拟器卡死」, and
    * sample failures still end in the offline pause.
    */
@@ -575,6 +581,7 @@ export function defaultAlertsConfig(): AlertsConfig {
       sampleFailThreshold: 3,
       stalledMinutes: 120,
       kickedProbeEnabled: true,
+      stopOnKicked: true,
       freezeRestartEnabled: false,
       freezeMinutes: 5,
       freezeRestartLimit: 3,
@@ -651,6 +658,7 @@ export function normalizeAlertsConfig(raw: unknown): AlertsConfig {
       sampleFailThreshold: intIn(d['sampleFailThreshold'], base.detect.sampleFailThreshold, ALERT_RANGE.sampleFailThreshold),
       stalledMinutes: intIn(d['stalledMinutes'], base.detect.stalledMinutes, ALERT_RANGE.stalledMinutes),
       kickedProbeEnabled: boolOr(d['kickedProbeEnabled'], base.detect.kickedProbeEnabled),
+      stopOnKicked: boolOr(d['stopOnKicked'], base.detect.stopOnKicked),
       freezeRestartEnabled: boolOr(d['freezeRestartEnabled'], base.detect.freezeRestartEnabled),
       freezeMinutes: intIn(d['freezeMinutes'], base.detect.freezeMinutes, ALERT_RANGE.freezeMinutes),
       freezeRestartLimit: intIn(d['freezeRestartLimit'], base.detect.freezeRestartLimit, ALERT_RANGE.freezeRestartLimit),
@@ -760,6 +768,7 @@ export const FIELD_LABEL: Record<string, string> = {
   sampleFailThreshold: '连续几次采样失败判掉线',
   stalledMinutes: '多久派不出队算停摆（分钟）',
   kickedProbeEnabled: '精确识别「被顶号」',
+  stopOnKicked: '被顶号时关闭模拟器',
   freezeRestartEnabled: '卡死自动重启',
   freezeMinutes: '多久不动判卡死（分钟）',
   freezeRestartLimit: '窗口内最多自动重启几次',

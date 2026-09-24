@@ -71,3 +71,29 @@ export function scriptRunProgress(run: { stepDone: number; stepTotal: number | n
   }
   return { percent: null, text: `第 ${run.iteration} 轮｜已执行 ${run.stepDone} 步` };
 }
+
+/**
+ * Why 「重启游戏」 cannot run on an instance now, or null. The main process re-checks (instance lock, script / login
+ * holders); this only keeps the button honest.
+ */
+export function restartGameBlockReason(input: {
+  gameLoaded: boolean; running: boolean; scriptRunning: boolean; loginActive: boolean; gatherRunning: boolean;
+}): string | null {
+  if (!input.gameLoaded) return '游戏模块尚未加载';
+  if (!input.running) return '实例没有开机，先启动实例';
+  if (input.scriptRunning) return '脚本正在执行（脚本最高优先），先在「执行监控」停止它';
+  if (input.loginActive) return '账号登录向导正在用这个实例';
+  if (input.gatherRunning) return '这一轮采集还在跑，等它做完（或在「执行监控」停止）再重启';
+  return null;
+}
+
+/** The toast after 「重启游戏」: whether the game came back, and what a paused instance still needs. */
+export function restartGameOutcome(
+  index: number, result: { foreground: boolean; elapsedMs: number }, pause: { paused: boolean; title: string } | null,
+): { kind: 'success' | 'warn'; title: string; detail: string } {
+  const seconds = Math.max(1, Math.round(result.elapsedMs / 1000));
+  const paused = pause?.paused ? `自动采集仍因「${pause.title}」暂停中，打开实时画面确认游戏正常后点「恢复」。` : '';
+  return result.foreground
+    ? { kind: 'success', title: `实例 #${index} 的游戏已重新拉起`, detail: `用时 ${seconds} 秒。${paused}`.trim() }
+    : { kind: 'warn', title: `实例 #${index} 的游戏 60 秒内没回到前台`, detail: `打开实时画面看看卡在哪（登录、更新或别的弹窗）。${paused}`.trim() };
+}

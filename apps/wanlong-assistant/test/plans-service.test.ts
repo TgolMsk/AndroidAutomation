@@ -61,7 +61,7 @@ describe('PlanService integration with fake device', () => {
       workerFactory: inProcessWorkers({ vision: fakeVision() }).factory, pacing: FAST_PACING, foregroundPollMs: 5,
       onSnapshot: (snapshot) => snapshots.push(snapshot),
     });
-    const service = new PlanService(home, port, runner);
+    const service = new PlanService(home, port, runner, { manualLeaseWaitMs: 300 });
     services.push(service);
     await service.start(GAME);
     await service.saveScript(GAME, script);
@@ -381,6 +381,20 @@ describe('PlanService integration with fake device', () => {
     await eventually(async () => service.listRuns(GAME).find((item) => item.runId === run.runId)?.status === 'succeeded');
     await eventually(async () => events.includes('resume'));
     expect(events[0]).toMatch(/^suspend:1:临时运行脚本/);
+  });
+
+  it('a manual run preempts at once by default (最高优先) and after the plan config grace for 「普通」', async () => {
+    const { service, port } = await setup();
+    const graces: number[] = [];
+    port.suspendForScript = async (_game, _index, _reason, graceMs) => { graces.push(graceMs); return () => undefined; };
+    const first = await service.runScript(GAME, 1, script.id);
+    await eventually(async () => service.listRuns(GAME).find((item) => item.runId === first.runId)?.status === 'succeeded');
+    await eventually(async () => service.runIdOfInstance(1) === null);
+    const second = await service.runScript(GAME, 1, script.id, { priority: 'normal' });
+    await eventually(async () => service.listRuns(GAME).find((item) => item.runId === second.runId)?.status === 'succeeded');
+    expect(graces).toEqual([0, (await service.config(GAME)).preemptGraceMs]);
+    await eventually(async () => service.runIdOfInstance(1) === null);
+    await expect(service.runScript(GAME, 1, script.id, { priority: 'urgent' as never })).rejects.toThrow('执行优先级无效');
   });
 
   it('runs the keep-alive example while the game is not in the foreground (its relaunch branch is reachable)', async () => {

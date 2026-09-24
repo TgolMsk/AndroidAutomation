@@ -15,10 +15,18 @@
 
 ## 计划的规则（原版铁律 + 目标加固）
 
-1. **★ 脚本优先级最高**（原版铁律 1，DECISIONS A.4）：计划运行（含「立即运行」与失败重试）与临时运行在拿实例租约**之前**调用
-   `PlanHostPort.suspendForScript(gameId, i, reason, graceMs)`，组合根接 `EtaScheduler.suspendForScript(i, preemptGraceMs, reason)`：
-   先等在飞的采样 / 派遣 `preemptGraceMs`（计划设置「抢占宽限」，默认 8 秒，0–120 秒），还不让开就中止；运行结束（成功 / 失败 /
-   跳过 / 取消）后在 `finally` 里归还，调度器 15 秒后重读队列。让路失败绝不挡住脚本。开着自动采集从不阻止脚本（不再互斥）。
+1. **★ 脚本优先级最高**（原版铁律 1，DECISIONS A.4；用户诉求「执行脚本期间其他所有自动功能暂时避让」）：计划运行（含「立即运行」与失败重试）
+   与临时运行在拿实例租约**之前**调用 `PlanHostPort.suspendForScript(gameId, i, reason, graceMs)`，组合根接 `AutomationHost.suspendForScript`
+   （→ `EtaScheduler.suspendForScript(i, graceMs, reason, onPreempt)`）：
+   - 调度器立刻不再起新活（唤醒、健康探针 / 卡死看门狗、`exclusive` 里的读资源统计、机器人截图 / 重启游戏都被拒）；
+   - 在飞的活先给 `graceMs` 做完 —— **自动采集关着也等**（手动刷新、读资源统计、机器人操作、手动「运行一轮」都占着实例锁）；
+     还不让开就中止调度器的活，`onPreempt` 同时中止这台实例上的手动采集（记「为脚本让路」），再等锁排空 ≤ 5 秒；
+   - 卡死看门狗的证据在让路与归还时各清一次（脚本之前的一帧说明不了脚本之后卡没卡）；
+   - 运行结束（成功 / 失败 / 跳过 / 取消）后在 `finally` 里归还，调度器 15 秒后重读队列。让路失败绝不挡住脚本。开着自动采集从不阻止脚本。
+   - `graceMs`：计划运行用计划设置「抢占宽限」（默认 8 秒，0–120 秒）；**临时运行默认「最高优先」`priority: 'highest'`，宽限为 0，当场抢占**，
+     选「普通」`'normal'` 才用抢占宽限（「启动执行」弹窗与「脚本控制台」都能选）。
+   - 临时运行等实例租约最多 20 秒（`manualLeaseWaitMs`，原来 200 ms：被中止的采集步骤还在收尾时会误报「被占用」）；安装输入法仍是 200 ms。
+   - 同一实例上**只在排队**的计划任务不挡临时运行（临时运行最高优先，排队的往后等，照常受 `queueWaitMs` 约束）；真正在跑的脚本仍然拒绝。
 2. **每实例串行 + 全局上限**：每实例一条队列（优先级大的先、同优先级按入队先后），同一时刻只发一个；同一任务不会重复入队
    （「立即运行」重复点会得到「已经在队列里了」）。`maxConcurrentScripts`（默认 4，1–16，采集不计入）撞上时**原地排队、15 秒后
    再试**，不算执行、不算失败、也不会先去抢采集。
@@ -77,7 +85,10 @@
   `hasEnabledPlanForInstance(gameId, i)`；宿主端口 `PlanHostPort.onChanged` / `onConfigChanged` / `suspendForScript(gameId, i, reason, graceMs)`。
 - `ScriptRunner.run(options)`：调用方先持有实例租约；脚本失败不抛，看返回快照的 `status` / `error` / `timedOut` / `failureCode`。
   `reserve(index, runId)` 同步占位；AI：`ScriptRunner.setAiAssist(handler)`；每次运行的 `aiAssist: false` 让线程不再求助。
-- 渲染进程：`src/renderer/views/plans/`（`PlansView` 页面、`TaskDialog`、`PlanConfigDialog`、`LegacyPlanImport`、纯函数 `plans-model.ts`）。
+- 渲染进程：`src/renderer/views/plans/`（`PlansView` 页面、`TaskDialog`、`PlanConfigDialog`、`LegacyPlanImport`、纯函数 `plans-model.ts`）；
+  「运行记录 → 脚本控制台」（`src/renderer/views/console/`）：勾选多台模拟器一次执行同一个脚本（每台各调一次 `scriptRun`，带各自绑定且已登录的账号、
+  同一组参数与优先级），逐行显示「本次下发」结果，勾选的实例上正在跑的脚本可一起暂停 / 继续 / 停止；纯函数在 `console-model.ts`，
+  测试见 `test/script-console.test.ts`。
 
 没有移植：原版的预览推流（改用模拟器实时画面窗口 LiveView）、MessagePort 直连渲染进程（改为主进程批量推送事件
 `plan-run` / `run-logs` / `run-matches`）、模板编辑器的「立即验证」（由模板库自己的测试接口承担）。

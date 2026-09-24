@@ -43,6 +43,11 @@ const DOWNLOADING = JSON.stringify({
   risk: { level: 'low', effect: 'download_update', buttonText: '无', dialogText: '正在下载资源 35%', consequence: '等待下载完成', reason: '官方资源下载', hazards: [] },
 });
 
+const KICKED = JSON.stringify({
+  screen: 'kicked', action: 'none', target: null, confidence: 0.95, reason: '您已经在其他设备上登录了',
+  risk: { level: 'low', effect: 'acknowledge', buttonText: '确定', dialogText: '您已经在其他设备上登录了', consequence: '回到登录', reason: '顶号', hazards: [] },
+});
+
 describe('AiRecoveryService', () => {
   let home: string;
   let api: FakeApi;
@@ -164,6 +169,23 @@ describe('AiRecoveryService', () => {
     expect(taps).toHaveLength(0);
     const [record] = await advisor.history();
     expect(record).toMatchObject({ outcome: 'rejected', requiresAttention: true });
+  });
+
+  it('a confident 「被顶号」 reading goes to the alerts port with its screen (never a tap or BACK) — only when 自动处理 is on', async () => {
+    const screens: Array<string | undefined> = [];
+    deps.onNeedsAttention = (index, info, context) => { attention.push({ index, code: info.code, stage: info.stage, context }); screens.push(info.screen); };
+    await enableAi();
+    api.queue({ status: 200, body: chatBody(KICKED) });
+    await expect(new AiRecoveryService(deps).adviseGather(3, screen[0]!, 1)).rejects.toMatchObject({ code: 'AI_RISK_BLOCKED' });
+    expect(attention).toEqual([{ index: 3, code: 'AI_RISK_BLOCKED', stage: 'AI 操作风险评估', context: 'gather-g0' }]);
+    expect(screens).toEqual(['kicked']);
+    expect(taps).toHaveLength(0);
+    // Advice-only mode never changes what happens on the device: no verdict, the caller keeps its ladder.
+    await enableAi({ autoActions: false });
+    api.queue({ status: 200, body: chatBody(KICKED) });
+    clock += 60_000;
+    await expect(new AiRecoveryService(deps).adviseGather(3, screen[0]!, 1)).resolves.not.toBe('recovered');
+    expect(screens).toEqual(['kicked']);
   });
 
   it('AI「正在下载更新」reuses the update wait only when 自动处理 is on', async () => {

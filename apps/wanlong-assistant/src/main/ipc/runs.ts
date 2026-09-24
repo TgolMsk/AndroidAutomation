@@ -2,7 +2,7 @@ import type { OpenDialogOptions } from 'electron';
 import { LOG_LEVELS, SHOT_POLICIES, type LogLevel } from '@avdm/automation/script';
 import type { RunsApi } from '../../shared/ipc';
 import type { PlanService } from '../plans';
-import type { RunLogQuery, ScriptRunOptions } from '../plans/types';
+import { SCRIPT_RUN_PRIORITIES, type RunLogQuery, type ScriptRunOptions } from '../plans/types';
 import type { DomainHandlers } from './types';
 import { asIndex, flag, game, patchObject, text } from './validate';
 
@@ -23,6 +23,10 @@ function runOptions(value: unknown): ScriptRunOptions | undefined {
   if (raw.maxRunMinutes !== undefined) {
     if (!Number.isInteger(raw.maxRunMinutes)) throw new Error('运行时长上限无效');
     out.maxRunMinutes = raw.maxRunMinutes;
+  }
+  if (raw.priority !== undefined) {
+    if (!SCRIPT_RUN_PRIORITIES.includes(raw.priority)) throw new Error('执行优先级无效');
+    out.priority = raw.priority;
   }
   return out;
 }

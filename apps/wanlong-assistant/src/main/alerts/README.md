@@ -54,6 +54,16 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
 8. **卡死 ≠ 掉线**：画面纹丝不动 / 截图一直失败、但实例进程还在 → 判卡死。两个触发点都在调度器的实例锁内：健康探针
    （完整阈值 `freezeMinutes`）与「连续采样失败、马上要按掉线暂停」（降档门槛）。重启命令一下发就 `noteRestart()`（失败的也算），
    窗口内超过 `freezeRestartLimit` 次 → 转「模拟器或游戏掉线」暂停。恢复流程接 AbortSignal（自动调度关掉 / 助手退出）。
+9. **被顶号 → 关闭模拟器**（用户诉求「账号被挤（关闭该模拟器）」；设置 `detect.stopOnKicked`「被顶号时关闭模拟器」，**默认开**）：
+   `suspectedKicked` 一旦判定，照常**先暂停、再推送**，然后后台对这台实例做一次**正常关机**（端口 `stopInstance` = core `stop(i)`，
+   保存 Quick Boot 快照，再丢掉这次开机的设备通道）；关机不在实例锁的 await 链里（最长约一分钟），实例已暂停，期间没有自动流程碰它。
+   同一实例同一时刻只关一次，推送与历史的 `detail.模拟器` 写明「随后自动关闭」。判定来源：
+   - 采样认不出的帧 / 健康探针帧 / 采集失败现场上的顶号模板（原有三条），**手动「运行一轮」的失败现场也算**（只有顶号，其它手动失败仍不计）；
+   - **脚本失败后**再截一帧跑一次顶号探针（`probeAfterScript`，脚本自己没有探针）；
+   - 「自动处理」开着时 **AI 把画面认成「被顶号」**（置信度不低于 AI 设置的下限）：AI 执行器不点、不按 BACK，经 `AiAttentionInfo.screen`
+     交给 `raiseKickedByAi`，与模板判定同一结论（即使「自动暂停」关着也暂停）。「自动处理」关着时 AI 只记建议，不产生这个判定。
+   维护 / 强制更新（`needsAttention`）只暂停，不关模拟器；AI 处理不了的其它异常用「模拟器实例」行上的「重启游戏」（`AutomationHost.restartGame`）。
+   恢复前要先把实例重新启动并登录（恢复会打开自动调度，没开机会被拒）。
 
 ## ★★ 凭据
 
@@ -74,7 +84,8 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
 | 恢复 | 任何实例都能 `resume` | 只恢复生效中的暂停，其余用中文拒绝 | 首次开启自动调度要走宿主的只读探针 + 确认门槛（DECISIONS C） |
 | 重启方式 | MuMu `control restart` / 雷电 `quit+launch` | `stop({ force: true })` + `start()`（SIGKILL 保留快照失效标记 → 冷启动） | DECISIONS C：Android Emulator 的 Quick Boot 会把卡住的现场存进快照 |
 | Token 存储 / 打码 | 明文 alerts.json / 显示后 4 位 | safeStorage 密文 / 全遮 | 本仓库原有的钥匙串加固，不回退 |
-| 顶号探针 | 失败现场 + 可能再截一帧 | 只用已经截到的那一帧（失败现场、采样认不出的帧、健康探针帧），分数下限 `max(0.92, 模板阈值)` | 零额外截图；沿用本仓库原监控的安全下限 |
+| 顶号探针 | 失败现场 + 可能再截一帧 | 只用已经截到的那一帧（失败现场、采样认不出的帧、健康探针帧），分数下限 `max(0.92, 模板阈值)`；只有脚本失败后会专门再截一帧 | 零额外截图；沿用本仓库原监控的安全下限；脚本没有自己的探针 |
+| 被顶号之后 | 暂停 + 推送 | 暂停 + 推送 + 关闭该模拟器（`stopOnKicked`，默认开，可关） | 用户诉求：被挤下线的号不要反复重连把另一台设备挤掉 |
 | 通道 | 只有 Telegram | Telegram + 本机通知（两通道各自冷却键 `channel|实例:类型`） | 本仓库原有本机通知；本机成功不能吞掉 Telegram 的重试 |
 | 历史 | 内存 | `automation/wanlong/alerts-history.json`（≤100 条），并写入统计日账 | 重启后仍能看最近告警 |
 | 日账里的运行失败 | 只在达到阈值时告警 | 同原版：失败的运行只记成当天的 `failed` 周期，不再写 `runFailed` 告警行（旧日文件里的仍可读） | 「告警记录」与每日告警数只含真正的告警结论 |

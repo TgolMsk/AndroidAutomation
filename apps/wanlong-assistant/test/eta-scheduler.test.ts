@@ -481,6 +481,48 @@ describe('EtaScheduler', () => {
     expect(sampleCalls[2].reason).toContain('脚本执行结束');
   });
 
+  it('suspends for a script with auto off too: in-flight exclusive work gets its grace, nothing new starts meanwhile', async () => {
+    const scheduler = await ready();
+    let finish!: () => void;
+    const exclusive = scheduler.exclusive(1, '读资源统计', () => new Promise<string>((resolve) => { finish = () => resolve('done'); }));
+    await until(() => scheduler.locks.busy(1), '独占开始');
+    const preempted: string[] = [];
+    const suspending = scheduler.suspendForScript(1, 1_000, '日常脚本', () => preempted.push('manual'));
+    let released: (() => void) | null = null;
+    void suspending.then((release) => { released = release; });
+    await settle();
+    // Auto is off, but the script still waits for the lock holder instead of racing it for the device.
+    expect(released).toBeNull();
+    await expect(scheduler.exclusive(1, '截图', async () => 'shot')).rejects.toMatchObject({ code: 'CONCURRENCY_LIMIT' });
+    finish();
+    const release = await suspending;
+    expect(await exclusive).toBe('done');
+    // It drained within the grace: nothing was preempted.
+    expect(preempted).toEqual([]);
+    release();
+    // Auto off: no wake is armed afterwards.
+    expect(scheduler.getState(1).nextWakeAt).toBeNull();
+  });
+
+  it('highest priority (graceMs 0) aborts the in-flight wake at once and preempts the caller\'s own work', async () => {
+    const scheduler = await ready();
+    await scheduler.setAuto(1, true);
+    let inflight: SampleRequest | null = null;
+    samples.push((req) => new Promise<PanelSample>((_resolve, reject) => {
+      inflight = req;
+      req.signal.addEventListener('abort', () => reject(req.signal.reason), { once: true });
+    }));
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await until(() => inflight !== null, '唤醒采样开始');
+    const preempted: string[] = [];
+    const release = await scheduler.suspendForScript(1, 0, '日常脚本', () => preempted.push('manual'));
+    expect(inflight!.signal.aborted).toBe(true);
+    expect(preempted).toEqual(['manual']);
+    expect(logs.some((line) => line.includes('按脚本最高优先立即中断'))).toBe(true);
+    release();
+    expect(scheduler.getState(1)).toMatchObject({ nextWakeReason: '脚本执行结束，重读队列校验' });
+  });
+
   it('refuses exclusive() while another writer owns the instance and queues behind a sample', async () => {
     let busy: string | null = '账号登录';
     const scheduler = await ready({}, { externalBusy: () => busy });

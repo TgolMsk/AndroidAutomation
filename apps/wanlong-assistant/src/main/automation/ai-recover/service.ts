@@ -45,6 +45,8 @@ export interface AiAttentionInfo {
   message: string;
   /** 「AI 操作风险评估」or「游戏资源更新」 (original alert detail 阶段). */
   stage: string;
+  /** The screen the advisor recognised, when it did ('kicked' → the alerts module's kicked verdict). */
+  screen?: string;
 }
 
 export interface AiRecoveryDeps {
@@ -357,14 +359,21 @@ export class AiRecoveryService {
         log,
         ...(deps.sleep ? { sleep: deps.sleep } : {}),
       });
+      const settings = deps.advisor.settings();
+      // Only when the AI may act at all (「自动处理」 on): advice-only mode never changes what happens on the device.
+      const kicked = settings.autoActions && !result.handled && result.advice?.screen === 'kicked' &&
+        result.advice.confidence >= settings.minConfidence;
       return {
         handled: result.handled,
         outcome: result.outcome,
         action: result.advice?.action ?? null,
         // ★ With automatic handling off the AI only advises: its word never starts an update wait either.
         riskEffect: deps.advisor.settings().autoActions ? result.advice?.risk.effect ?? null : null,
-        requiresAttention: result.requiresAttention,
-        message: result.message,
+        // ★ A confident 「被顶号」 reading is a verdict of its own: never tap or BACK on it — hand it to the alerts
+        //   module (pause, push, close the emulator), whatever action the model proposed.
+        requiresAttention: result.requiresAttention || kicked,
+        message: kicked && !result.requiresAttention ? `AI 认出画面是「被顶号」（${result.advice?.reason || '账号在其他设备登录'}）` : result.message,
+        screen: result.advice?.screen ?? null,
       };
     };
     return recoverUnknownWithUpdate({
@@ -379,9 +388,11 @@ export class AiRecoveryService {
       log: (level, message) => deps.log(level, message, index),
       consult,
       onNeedsAttention: async (error) => {
+        const screen = error.detail?.['screen'];
         const info: AiAttentionInfo = {
           code: error.code, message: error.message,
           stage: attentionStageOf(error.code),
+          ...(typeof screen === 'string' ? { screen } : {}),
         };
         await deps.onNeedsAttention?.(index, info, context);
       },

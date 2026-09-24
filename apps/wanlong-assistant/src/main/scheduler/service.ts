@@ -499,12 +499,15 @@ export class EtaScheduler {
   }
 
   /**
-   * Scripts take priority (original plans iron rule 1). Polite first: cancel the wake and wait up to `graceMs` for
-   * the in-flight sample/dispatch to finish; then abort it and wait for the lock (≤ 5 s). Never throws.
+   * Scripts take priority over everything automatic on the instance (original plans iron rule 1). New work stops at
+   * once (the wake is cancelled; samples, probes, cycles and `exclusive` refuse while `scriptHolds > 0`). In-flight
+   * work gets `graceMs` to finish politely — with auto off too (a panel refresh, a resource read, a bot action or a
+   * manual gather round still holds the lock) — then scheduler work is aborted, `onPreempt` aborts the caller's own
+   * work (manual gather rounds), and the lock gets ≤ 5 s to drain. `graceMs = 0` preempts at once. Never throws.
    * The returned release (idempotent) swaps in a fresh AbortController — the old one is aborted and would kill the
    * next wake — and schedules「脚本执行结束，重读队列校验」15 s later.
    */
-  async suspendForScript(index: number, graceMs: number, reason: string): Promise<() => void> {
+  async suspendForScript(index: number, graceMs: number, reason: string, onPreempt?: () => void): Promise<() => void> {
     await this.ready();
     let rt: Runtime;
     try { rt = this.rt(index); } catch { return () => undefined; }
@@ -521,16 +524,21 @@ export class EtaScheduler {
       this.log('info', `实例 #${index} 的自动调度已恢复，${Math.round(RESAMPLE_AFTER_SCRIPT_MS / 1000)}s 后重读队列。`);
     };
     try {
-      if (!rt.state.auto) return release;
-      this.timers.cancel(index);
-      rt.state.nextWakeAt = null;
-      rt.state.nextWakeReason = `为脚本让路：${reason}`;
-      this.publish(rt);
+      if (rt.state.auto) {
+        this.timers.cancel(index);
+        rt.state.nextWakeAt = null;
+        rt.state.nextWakeReason = `为脚本让路：${reason}`;
+        this.publish(rt);
+      }
       const drain = (): Promise<void> => this.locks.drain(index);
-      if (graceMs > 0 && rt.operatingDepth > 0) await Promise.race([drain(), sleep(graceMs)]);
-      if (rt.operatingDepth > 0) {
-        this.log('warn', `实例 #${index} 上的自动调度 ${Math.round(graceMs / 1000)}s 内没让开，按脚本优先中断它（${reason}）。`);
+      const occupied = (): boolean => rt.operatingDepth > 0 || this.locks.busy(index);
+      if (graceMs > 0 && occupied()) await Promise.race([drain(), sleep(graceMs)]);
+      if (occupied()) {
+        this.log('warn', graceMs > 0
+          ? `实例 #${index} 上的自动任务 ${Math.round(graceMs / 1000)}s 内没让开，按脚本优先中断它（${reason}）。`
+          : `实例 #${index} 按脚本最高优先立即中断正在进行的自动任务（${reason}）。`);
         rt.autoController?.abort(new SchedulerError('RUN_ABORTED', `为脚本让路：${reason}`));
+        try { onPreempt?.(); } catch (error) { this.log('warn', `实例 #${index} 中断手动任务时出错：${messageOf(error)}`); }
         await Promise.race([drain(), sleep(ABORT_DRAIN_MS)]);
       }
     } catch (error) {

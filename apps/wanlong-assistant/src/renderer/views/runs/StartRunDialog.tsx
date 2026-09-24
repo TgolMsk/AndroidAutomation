@@ -2,13 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import type { InstanceState } from '@avdm/core';
 import type { ScriptParamDef, ScriptParamValue } from '@avdm/automation/script';
 import type { GameAccount } from '../../../main/automation/accounts/types';
-import type { ImeStatus, ScriptDef, ScriptMeta, ScriptRunSnapshot, ShotPolicy } from '../../../main/plans/types';
+import type { ImeStatus, ScriptDef, ScriptMeta, ScriptRunPriority, ScriptRunSnapshot, ShotPolicy } from '../../../main/plans/types';
+import { PRIORITY_OPTIONS } from '../console/console-model';
 import { avdm, errMsg } from '../../api';
 import { Modal } from '../../components/Modal';
 import { Spinner } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
 import { isRunning } from '../../format';
-import { coerceParam, defaultParams, instanceBlockReason, SHOT_POLICY_OPTIONS } from './run-rows';
+import { coerceParam, defaultParams, instanceBlockReason, SHOT_POLICY_OPTIONS, usesUnicodeText } from './run-rows';
 
 export interface StartRunDialogProps {
   gameId: string;
@@ -20,19 +21,8 @@ export interface StartRunDialogProps {
   onClose: () => void;
 }
 
-// eslint-disable-next-line no-control-regex
-const NON_ASCII = /[^\x00-\x7F]/;
-
-function usesUnicodeText(script: ScriptDef | null): boolean {
-  if (!script) return false;
-  const walk = (steps: ScriptDef['steps']): boolean => steps.some((step) =>
-    (step.kind === 'text' && NON_ASCII.test(step.text)) ||
-    (step.kind === 'if' && (walk(step.then) || walk(step.else ?? []))) ||
-    (step.kind === 'loop' && walk(step.steps)));
-  return walk(script.steps);
-}
-
-function ParamField({ param, value, onChange }: { param: ScriptParamDef; value: ScriptParamValue | undefined; onChange: (value: ScriptParamValue | undefined) => void }) {
+/** One script parameter input (shared with the 脚本控制台). */
+export function ParamField({ param, value, onChange }: { param: ScriptParamDef; value: ScriptParamValue | undefined; onChange: (value: ScriptParamValue | undefined) => void }) {
   const id = `runs-param-${param.key}`;
   if (param.type === 'boolean') {
     return (
@@ -65,6 +55,7 @@ export function StartRunDialog({ gameId, instances, busy, initialIndex, onStarte
   // '' = follow the app setting (main resolves it); only an explicit choice is sent.
   const [shotPolicy, setShotPolicy] = useState<ShotPolicy | ''>('');
   const [minutes, setMinutes] = useState('60');
+  const [priority, setPriority] = useState<ScriptRunPriority>('highest');
   const [def, setDef] = useState<ScriptDef | null>(null);
   const [defError, setDefError] = useState<string | null>(null);
   const [params, setParams] = useState<Record<string, ScriptParamValue>>({});
@@ -134,7 +125,7 @@ export function StartRunDialog({ gameId, instances, busy, initialIndex, onStarte
     setBusyAction('start');
     try {
       const snapshot = await avdm.scriptRun(gameId, index, scriptId, {
-        accountId: accountId || undefined, params, ...(shotPolicy ? { shotPolicy } : {}), maxRunMinutes: minutesValue,
+        accountId: accountId || undefined, params, ...(shotPolicy ? { shotPolicy } : {}), maxRunMinutes: minutesValue, priority,
       });
       toast.push({ kind: 'success', title: '已启动执行', detail: `${snapshot.scriptName} → 实例 #${snapshot.instanceIndex}` });
       onStarted(snapshot);
@@ -197,6 +188,13 @@ export function StartRunDialog({ gameId, instances, busy, initialIndex, onStarte
             <option value="">跟随应用设置（未设置时为「仅失败时留痕」）</option>
             {SHOT_POLICY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
+        </label>
+        <label className="field">
+          <span className="field-label">执行优先级</span>
+          <select value={priority} onChange={(event) => setPriority(event.target.value as ScriptRunPriority)}>
+            {PRIORITY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}：{option.hint}</option>)}
+          </select>
+          <span className="hint">脚本执行期间，这台实例上的自动采集、探针、资源读取、机器人操作都会让路，结束 15 秒后自动恢复。</span>
         </label>
         <label className="field">
           <span className="field-label">运行时长上限（分钟，0 = 不限）</span>

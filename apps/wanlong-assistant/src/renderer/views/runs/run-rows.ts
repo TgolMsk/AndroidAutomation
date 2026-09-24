@@ -3,7 +3,7 @@
  * snapshots with plan queue records that never reached the runner (queued, skipped, older runs).
  */
 import type { ScriptParamDef, ScriptParamValue } from '@avdm/automation/script';
-import type { PlanRun, RunStats, RunStatus, ScriptRunSnapshot } from '../../../main/plans/types';
+import type { PlanRun, RunStats, RunStatus, ScriptDef, ScriptRunSnapshot } from '../../../main/plans/types';
 import { formatCstClock } from '../../../shared/time';
 import { isScriptRunActive } from '../../state/plan-runs';
 
@@ -106,6 +106,19 @@ export function coerceParam(param: ScriptParamDef, raw: string | boolean): Scrip
     return Number.isFinite(value) ? value : undefined;
   }
   return String(raw);
+}
+
+// eslint-disable-next-line no-control-regex
+const NON_ASCII = /[^\x00-\x7F]/;
+
+/** The script types non-ASCII text somewhere (the instance then needs ADBKeyboard enabled). */
+export function usesUnicodeText(script: Pick<ScriptDef, 'steps'> | null): boolean {
+  if (!script) return false;
+  const walk = (steps: ScriptDef['steps']): boolean => steps.some((step) =>
+    (step.kind === 'text' && NON_ASCII.test(step.text)) ||
+    (step.kind === 'if' && (walk(step.then) || walk(step.else ?? []))) ||
+    (step.kind === 'loop' && walk(step.steps)));
+  return walk(script.steps);
 }
 
 /** Why an instance cannot receive a manual run right now, or null when it can. */

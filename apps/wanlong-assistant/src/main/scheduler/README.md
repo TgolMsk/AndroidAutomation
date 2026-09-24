@@ -88,8 +88,10 @@ ScheduleCompat (compat.ts)              旧 AutomationSchedule 视图（渲染�
   实例文件读不出 / 格式不兼容时同理：页面读 `store.inspect()`（带 `settingsError`、保留还能读出的模板集），带 `config` 的保存会重建它
   （坏文件备份为 `<i>.json.corrupt`）；运行路径仍用严格的 `store.get()`。实例文件里的配置是给已删除的旧 AVD 存的（`configReplaced`）时，
   `gatherConfig()` 抛 `AUTOMATION_NOT_READY` 拒绝开跑（定时唤醒按「不计为失败」暂停），重新保存后才生效 —— 绝不按序号沿用。
-- **脚本优先**（DECISIONS A.4）：`PlanHostPort.suspendForScript` = `eta.suspendForScript(i, 计划配置 preemptGraceMs（默认 8 s）, reason)`，
-  计划运行与临时运行都在拿租约前调用、结束（成功 / 失败 / 跳过）后在 `finally` 里归还；开着自动采集从不阻止脚本。
+- **脚本优先**（DECISIONS A.4）：`PlanHostPort.suspendForScript` = `AutomationHost.suspendForScript(i, graceMs, reason)`
+  = `eta.suspendForScript(i, graceMs, reason, 中止本实例手动采集)`（计划运行的 `graceMs` = 计划配置 preemptGraceMs，默认 8 s；
+  临时运行默认最高优先 = 0），计划运行与临时运行都在拿租约前调用、结束（成功 / 失败 / 跳过）后在 `finally` 里归还；开着自动采集从不阻止脚本。
+  自动采集关着时同样先等锁上的活（手动刷新、读资源统计、机器人操作、手动采集）让开，超时才中止。
 - **截图留痕**：采集失败现场跟随应用设置 `shotPolicy`（`AutomationHostHooks.shotPolicy`，原版 `saveAlertShot`）：`never` 不存、`onFail` 只存失败现场、
   `always` 连过程留痕也存；不论哪档，失败那一帧都照样交给顶号探针。
 - **模板变更立即失效**：宿主订阅自己的 `onTemplatesChanged`（保存 / 删除 / 导入），立刻让所有视觉 worker 丢弃编译缓存；
@@ -164,7 +166,7 @@ automation.setHooks({
 | 方法 | 说明 |
 |---|---|
 | `exclusive(i, what, fn({signal}), signal?)` | 借出实例锁（机器人截图、读资源统计、卡死重启、AI 点击）。在钩子里调用时重入；外部占用 / 脚本在跑时抛 `CONCURRENCY_LIMIT`（`what` 进中文提示）。★ `fn` 里绝不能 `setAuto(true)` |
-| `suspendForScript(i, graceMs, reason)` | 脚本优先：先等在飞的链路 `graceMs`，再中止并等锁排空（≤5 s）。返回幂等的 `release()`：换新 AbortController，15 s 后「脚本执行结束，重读队列校验」。从不抛 |
+| `suspendForScript(i, graceMs, reason, onPreempt?)` | 脚本优先：立刻不再起新活；在飞的活（自动关着也算：锁上任何持有者）先等 `graceMs`（0 = 当场），再中止调度器的活、调 `onPreempt`（宿主中止手动采集）并等锁排空（≤5 s）。返回幂等的 `release()`：换新 AbortController，自动开着时 15 s 后「脚本执行结束，重读队列校验」。从不抛 |
 | `setAuto(i, enabled, reason?)` | 代数计数 + 就绪门槛（实例在跑、身份、模板、配置、账号）+ 首次只读采样。关闭永远成功且优先（只读进程里关闭开着的实例除外）。不含探针门槛：用户开启走 `AutomationHost.setSchedule`，恢复路径直接调它。★ 只能从 IPC / 锁外调用 |
 | `sampleNow(i)` | 面板「立即刷新」，受 `minSampleIntervalMs` 节流，不派兵 |
 | `noteDispatch(es)(i, notes, {signal, resample})` | 派兵记账（行军秒数 / 坐标 / 资源），默认之后强制重采一次 |

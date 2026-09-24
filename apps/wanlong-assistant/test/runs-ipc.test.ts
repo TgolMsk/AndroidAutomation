@@ -28,6 +28,9 @@ describe('runs IPC domain', () => {
     await runsHandlers.scriptRun(ctx, 'wanlong', 1, ' daily ', { accountId: '', shotPolicy: 'always', maxRunMinutes: 0, params: { n: 1 } });
     expect(plans.runScript).toHaveBeenCalledWith('wanlong', 1, 'daily', { shotPolicy: 'always', maxRunMinutes: 0, params: { n: 1 } });
     await expect(runsHandlers.scriptRun(ctx, 'wanlong', 1, 'daily', { shotPolicy: 'sometimes' as never })).rejects.toThrow('截图留痕策略无效');
+    await runsHandlers.scriptRun(ctx, 'wanlong', 2, 'daily', { priority: 'normal' });
+    expect(plans.runScript).toHaveBeenLastCalledWith('wanlong', 2, 'daily', { priority: 'normal' });
+    await expect(runsHandlers.scriptRun(ctx, 'wanlong', 1, 'daily', { priority: 'now' as never })).rejects.toThrow('执行优先级无效');
     await expect(runsHandlers.scriptRun(ctx, 'wanlong', 99, 'daily')).rejects.toThrow();
     await expect(runsHandlers.scriptRun(ctx, 'unknown-game', 1, 'daily')).rejects.toThrow();
   });

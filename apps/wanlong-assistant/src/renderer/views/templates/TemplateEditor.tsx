@@ -12,10 +12,12 @@ import { useAvdmEvent } from '../../hooks/useAvdmEvent';
 import { useSelectionLock } from '../../state/selection';
 import {
   buildTemplateDraft, clampTolerance, DELETE_WARNING, describeCoverage, importSummary, importTouchesSet, lowVarianceGuidance,
-  maskBadge, overwriteTarget, quickPicks, rectText, resolutionWarning, ROI_ADVICE, saveSuccessDetail, stdBadge,
-  templateIdProblem, templateSummary, testVerdict, validCrop, type LowVarianceGuidance, type QuickPick,
+  overwriteTarget, quickPicks, rectText, resolutionWarning, ROI_ADVICE, saveSuccessDetail,
+  templateIdProblem, testVerdict, validCrop, type LowVarianceGuidance, type QuickPick,
 } from './template-editor';
 import { ResourceTemplatesCard } from './ResourceTemplatesCard';
+import { TemplateList } from './TemplateList';
+import { isGlyphTemplate } from './template-groups';
 import './TemplatesView.css';
 
 interface TemplateEditorProps {
@@ -160,7 +162,9 @@ export function TemplateEditor({ gameId, index, onChanged, proposal }: TemplateE
     setSelectedId((previous) => {
       const candidate = preferId === undefined ? previous : preferId;
       if (keepNew && candidate === null) return null;
-      return current?.templates.some((item) => item.id === candidate) ? candidate : current?.templates[0]?.id ?? null;
+      if (current?.templates.some((item) => item.id === candidate)) return candidate ?? null;
+      // Open on a screen template: the digit glyphs are hidden from the list's default view.
+      return (current?.templates.find((item) => !isGlyphTemplate(item)) ?? current?.templates[0])?.id ?? null;
     });
     setError(null);
     void loadCoverage(false);
@@ -518,26 +522,8 @@ export function TemplateEditor({ gameId, index, onChanged, proposal }: TemplateE
         {activeSet && gameId === 'wanlong' && <ResourceTemplatesCard gameId={gameId} index={index} set={activeSet} disabled={busy !== null} onPick={(pick) => newTemplate(pick)} onChanged={onChanged} />}
 
         {activeSet && <div className="template-workspace">
-          <aside className="template-library-list" aria-label="当前模板集中的模板">
-            <div className="template-library-list-head"><strong>模板列表</strong><span>{activeSet.templates.length}</span></div>
-            <button className={`template-list-item ${!selectedId ? 'is-selected' : ''}`} type="button" onClick={() => newTemplate()} disabled={busy !== null}><Icon name="plus" /><span><strong>新建模板</strong></span></button>
-            {activeSet.templates.map((item) => {
-              const std = stdBadge(item.std);
-              const mask = maskBadge(item.maskCoverage);
-              return <div className="template-list-row" key={item.id}>
-                <button className={`template-list-item ${selectedId === item.id ? 'is-selected' : ''}`} type="button" onClick={() => selectTemplate(item)} disabled={busy !== null}>
-                  <Icon name="grid" />
-                  <span>
-                    <strong>{item.name}</strong>
-                    <span className="template-badges">{std && <em className={`template-badge is-${std.tone}`} title={std.hint}>{std.label}</em>}{mask && <em className="template-badge is-info" title={mask.hint}>{mask.label}</em>}</span>
-                    <small title={item.id}>{item.id} · {templateSummary(item)}</small>
-                  </span>
-                </button>
-                <button className="icon-btn small template-list-test" type="button" aria-label={`立即验证 ${item.name}`} title="在当前实例的真实画面上跑一次匹配" onClick={() => void test(item.id, false)} disabled={busy !== null}><Icon name="search" size={14} /></button>
-              </div>;
-            })}
-            {activeSet.templates.length === 0 && <p className="template-library-note">这个集合里还没有模板。读取游戏画面并拖选第一个识别区域。</p>}
-          </aside>
+          <TemplateList gameId={gameId} index={index} set={activeSet} selectedId={selectedId} disabled={busy !== null}
+            onSelect={selectTemplate} onNew={() => newTemplate()} onTest={(id) => void test(id, false)} />
 
           <div className="template-editor">
             {usingProposal && matchingProposal && <div className="template-proposal" role="status"><Icon name="chip" /><div><strong>来自 AI 顾问的建议</strong><p>建议区域来自旧截图。请重新读取当前画面，检查裁剪框后手动确认保存。</p></div></div>}

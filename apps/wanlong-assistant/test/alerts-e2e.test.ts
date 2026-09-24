@@ -74,6 +74,8 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
   let ledger: AlertRecord[];
   /** Every `scheduler-changed` payload the scheduler published. */
   let published: SchedulerQueueState[];
+  /** Instances the alerts module shut down (「被顶号时关闭模拟器」). */
+  let stopped: number[];
   const lastPublished = (index: number) => published.filter((state) => state.instanceIndex === index).at(-1);
   const pausesFile = () => path.join(home, 'automation', 'wanlong', 'alerts-pauses.json');
   const historyFile = () => path.join(home, 'automation', 'wanlong', 'alerts-history.json');
@@ -100,6 +102,7 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
     raised = [];
     ledger = [];
     published = [];
+    stopped = [];
     ports = {
       sample: vi.fn(async (_index: number, req: SampleRequest) => (samples.shift() ?? (async () => panel(5, 5)))(req)),
       healthFrame: vi.fn(async () => ({ raw: frame(), foreground: running ? PACKAGE : 'com.android.launcher3', running })),
@@ -125,6 +128,7 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
       onPauseChanged: (pause) => pauseEvents.push(pause),
       refreshSchedulerView: (index) => scheduler.refreshView(index),
       onRaised: (record) => raised.push(record),
+      stopInstance: async (index) => { stopped.push(index); },
       codec, fetch, sleep: async () => undefined, gamePackage: PACKAGE,
     });
     scheduler.setHooks(alerts.schedulerHooks());
@@ -440,6 +444,76 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
     // The switch turns layer 2 off.
     await alerts.hub.saveConfig({ detect: { kickedProbeEnabled: false } });
     expect(await alerts.probeKicked(1, frame())).toBeNull();
+  });
+
+  it('★ kicked: pause and push first, then close the emulator (「被顶号时关闭模拟器」, on by default); the switch turns it off', async () => {
+    const kicked = async (ids: string[]) => missing(ids).map((result) => result.templateId === 'tpl_dlg_kicked' ? { ...result, found: true, score: 0.97, reason: undefined } : result);
+    match = kicked;
+    const hooks = alerts.schedulerHooks();
+    const signal = new AbortController().signal;
+    expect(await hooks.probeUnrecognizedFrame!(0, frame(), { signal })).toBe(true);
+    expect(alerts.center.getPause(0)).toMatchObject({ paused: true, type: 'suspectedKicked' });
+    await until(() => stopped.length === 1, '关闭模拟器');
+    expect(stopped).toEqual([0]);
+    await alerts.center.whenIdle();
+    expect(raised.at(-1)?.event.detail).toMatchObject({ 模拟器: expect.stringContaining('随后自动关闭') });
+    expect(logs.some((line) => line.includes('按设置关闭这台模拟器'))).toBe(true);
+    // Maintenance / update hits pause for a human but never close the emulator.
+    match = async (ids) => missing(ids).map((result) => result.templateId === 'tpl_dlg_maintenance' ? { ...result, found: true, score: 0.97, reason: undefined } : result);
+    expect(await hooks.onHealthProbe!(1, frame(), { signal, foreground: PACKAGE, running: true })).toBeUndefined();
+    await alerts.center.whenIdle();
+    expect(stopped).toEqual([0]);
+    // Switched off: kicked instances are only paused.
+    await alerts.hub.saveConfig({ detect: { stopOnKicked: false } });
+    match = kicked;
+    expect(await hooks.probeUnrecognizedFrame!(2, frame(), { signal })).toBe(true);
+    expect(alerts.center.getPause(2)).toMatchObject({ paused: true, type: 'suspectedKicked' });
+    await alerts.center.whenIdle();
+    expect(stopped).toEqual([0]);
+  });
+
+  it('kicked on a gather failure frame closes the emulator — scheduled rounds and manual rounds alike', async () => {
+    const hit = { type: 'suspectedKicked', reason: '命中顶号提示框', templateId: 'tpl_dlg_kicked', score: 0.96 };
+    await alerts.onCycleResult(3, factOf({ kicked: hit, shotPath: 'automation/wanlong/shots/inst3-cycle-error-1.jpg' }), 'scheduled');
+    expect(alerts.center.getPause(3)).toMatchObject({ paused: true, type: 'suspectedKicked' });
+    await alerts.onCycleResult(4, factOf({ kicked: hit }), 'manual');
+    expect(alerts.center.getPause(4)).toMatchObject({ paused: true, type: 'suspectedKicked' });
+    expect(alerts.center.getPause(4).reason).toContain('手动采集');
+    // A plain manual failure is still not counted or alerted.
+    await alerts.onCycleResult(5, factOf(), 'manual');
+    expect(alerts.center.getPause(5).paused).toBe(false);
+    await until(() => stopped.length === 2, '关闭模拟器');
+    expect([...stopped].sort()).toEqual([3, 4]);
+  });
+
+  it('the AI reading 「被顶号」 is the same verdict: paused even with 自动暂停 off, closed once, alerted once', async () => {
+    await alerts.hub.saveConfig({ detect: { autoPauseEnabled: false } });
+    await scheduler.setAuto(6, true);
+    await alerts.raiseKickedByAi(6, 'AI 认出画面是「被顶号」（账号在其他设备登录）');
+    expect(alerts.center.getPause(6)).toMatchObject({ paused: true, type: 'suspectedKicked', detail: { 阶段: 'AI 画面识别' } });
+    expect(scheduler.getState(6).auto).toBe(false);
+    await alerts.raiseKickedByAi(6, '又一次');
+    await alerts.center.whenIdle();
+    await until(() => stopped.length === 1, '关闭模拟器');
+    expect(stopped).toEqual([6]);
+    expect(raised.filter((record) => record.event.instanceIndex === 6 && record.event.type === 'suspectedKicked')).toHaveLength(1);
+  });
+
+  it('a failed script run gets one kicked probe on a fresh frame (scripts have no probe of their own)', async () => {
+    let captures = 0;
+    const capture = async () => { captures += 1; return frame(); };
+    expect(await alerts.probeAfterScript(7, capture)).toBe(false);
+    expect(captures).toBe(1);
+    match = async (ids) => missing(ids).map((result) => result.templateId === 'tpl_dlg_kicked' ? { ...result, found: true, score: 0.97, reason: undefined } : result);
+    expect(await alerts.probeAfterScript(7, capture)).toBe(true);
+    expect(alerts.center.getPause(7)).toMatchObject({ paused: true, type: 'suspectedKicked' });
+    expect(alerts.center.getPause(7).reason).toContain('脚本执行失败后');
+    // Already paused: no capture at all. A failing capture never throws.
+    expect(await alerts.probeAfterScript(7, capture)).toBe(false);
+    expect(captures).toBe(2);
+    expect(await alerts.probeAfterScript(8, async () => { throw new Error('游戏未处于前台'); })).toBe(false);
+    await until(() => stopped.length === 1, '关闭模拟器');
+    expect(stopped).toEqual([7]);
   });
 
   it('the health probe pauses an exited game as offline with the probe frame as scene', async () => {

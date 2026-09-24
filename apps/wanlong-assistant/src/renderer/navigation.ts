@@ -12,6 +12,7 @@ export type ViewKey =
   | 'instances'
   | 'accounts'
   | 'gatherOverview'
+  | 'scriptConsole'
   | 'plans'
   | 'runs'
   | 'stats'
@@ -56,9 +57,10 @@ export const NAVIGATION: readonly NavigationSection[] = [
   {
     key: 'activity',
     label: '运行记录',
-    description: '排定定时任务，查看正在执行的任务与最近结果',
+    description: '多台模拟器统一执行脚本、排定定时任务，查看正在执行的任务与最近结果',
     icon: 'log',
     views: [
+      { key: 'scriptConsole', label: '脚本控制台' },
       { key: 'plans', label: '任务计划' },
       { key: 'runs', label: '执行监控' },
     ],

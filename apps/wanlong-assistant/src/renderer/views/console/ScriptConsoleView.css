@@ -1,0 +1,255 @@
+.console-view {
+  display: grid;
+  gap: 18px;
+}
+
+.console-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.console-head p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.console-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.console-config {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.console-config .field {
+  display: grid;
+  gap: 5px;
+}
+
+.console-config select,
+.console-config input[type='number'] {
+  width: 100%;
+}
+
+.console-muted {
+  margin: -6px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.console-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.console-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-2);
+}
+
+.console-seg button {
+  flex: 1;
+  min-height: 28px;
+  padding: 3px 12px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.console-seg button.is-active {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.console-seg button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.check.console-check {
+  align-items: flex-start;
+  font-size: 12px;
+}
+
+.console-check input {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+}
+
+.console-check span {
+  display: grid;
+  gap: 2px;
+}
+
+.console-check small {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.console-rule {
+  align-items: flex-start;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.console-rule > div {
+  display: grid;
+  gap: 2px;
+}
+
+.console-targets {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.console-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.console-toolbar .search {
+  min-width: 200px;
+  flex: 1;
+}
+
+.console-count {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.console-scroll {
+  max-height: min(62vh, 640px);
+  overflow: auto;
+}
+
+.console-table th.console-tick,
+.console-table td.console-tick {
+  width: 34px;
+  text-align: center;
+}
+
+.console-table tr.is-ticked td {
+  background: var(--accent-bg);
+}
+
+.console-name,
+.console-account,
+.console-activity {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.console-activity {
+  justify-items: start;
+}
+
+.console-run-name {
+  overflow: hidden;
+  max-width: 220px;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-result {
+  max-width: 240px;
+  font-size: 12px;
+}
+
+.console-result span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-ok { color: var(--green); }
+.console-fail { color: var(--red); }
+.console-skip { color: var(--amber); }
+.console-warn { color: var(--amber); font-size: 11px; }
+
+.console-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.console-footer {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.console-footer-notes {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.console-footer-notes:empty {
+  display: none;
+}
+
+.console-footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.console-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.console-empty {
+  margin: 0;
+  padding: 22px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+}
+
+@media (max-width: 1100px) {
+  .console-layout { grid-template-columns: 1fr; }
+}

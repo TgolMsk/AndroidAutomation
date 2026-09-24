@@ -110,12 +110,12 @@
 
 .template-workspace {
   display: grid;
-  grid-template-columns: 196px minmax(0, 1fr);
+  grid-template-columns: 268px minmax(0, 1fr);
   gap: 23px;
   padding-top: 21px;
   border-top: 1px solid var(--border);
 }
-.template-library-list { align-self: start; min-width: 0; }
+.template-library-list { position: sticky; top: 12px; align-self: start; min-width: 0; }
 .template-library-list-head {
   display: flex;
   justify-content: space-between;
@@ -159,8 +159,31 @@
 .template-badge.is-danger { background: var(--red-bg); color: var(--red); }
 .template-badge.is-info { background: var(--accent-bg); color: var(--accent); }
 .template-list-item strong { overflow: hidden; font-size: 12px; font-weight: 590; text-overflow: ellipsis; white-space: nowrap; }
-.template-list-item small { overflow: hidden; color: var(--text-faint); font-family: var(--mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.template-library-note { margin: 13px 9px; color: var(--text-dim); font-size: 11px; line-height: 1.55; }
+.template-list-item small { overflow: hidden; min-width: 0; color: var(--text-faint); font-family: var(--mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.template-library-note { display: grid; justify-items: start; gap: 7px; margin: 13px 9px; color: var(--text-dim); font-size: 11px; line-height: 1.55; }
+
+.template-list-tools { display: grid; gap: 6px; margin: 0 0 8px; }
+.template-list-search.search { width: 100%; }
+.template-list-search input { width: 100%; font-size: 12px; }
+.template-list-tools select { width: 100%; height: 32px; font-size: 12px; }
+.template-list-new { min-height: 34px; margin-bottom: 4px; }
+.template-list-rows { display: grid; gap: 1px; }
+.template-list-rows .template-list-item { min-height: 46px; margin: 0; padding: 6px 7px; }
+.template-list-meta { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.template-list-meta .template-badge { flex: 0 0 auto; padding: 0 5px; font-size: 9.5px; }
+.template-thumb { display: grid; flex: 0 0 auto; width: 46px; height: 32px; place-items: center; overflow: hidden; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-2); }
+.template-thumb img { max-width: 100%; max-height: 100%; object-fit: contain; image-rendering: pixelated; }
+.template-list-item.is-selected .template-thumb { border-color: var(--accent); }
+
+.template-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 5px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.template-pager-pages { display: inline-flex; align-items: center; gap: 2px; }
+.template-pager-pages button { min-width: 24px; height: 24px; padding: 0 5px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-dim); font: inherit; font-family: var(--mono); font-size: 11px; cursor: pointer; }
+.template-pager-pages button:hover:not(:disabled) { background: var(--panel); color: var(--text); }
+.template-pager-pages button:disabled { opacity: .4; cursor: default; }
+.template-pager-pages button.is-active { border-color: var(--border-2); background: var(--panel-2); color: var(--text); }
+.template-pager-pages button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.template-pager-gap { color: var(--text-faint); font-size: 11px; }
+.template-pager-range { flex-basis: 100%; color: var(--text-faint); font-size: 10px; text-align: center; }
 
 .template-editor { min-width: 0; }
 .template-proposal {
@@ -273,11 +296,9 @@
 
 @media (max-width: 1050px) {
   .template-workspace { grid-template-columns: 1fr; gap: 15px; }
-  .template-library-list { display: flex; align-items: stretch; gap: 5px; overflow-x: auto; padding-bottom: 6px; }
-  .template-library-list-head { flex: 0 0 auto; align-self: center; margin: 0 8px 0 0; }
-  .template-list-item { flex: 0 0 155px; margin: 0; }
-  .template-list-row { flex: 0 0 200px; }
-  .template-library-note { align-self: center; margin: 0 8px; }
+  .template-library-list { position: static; }
+  .template-list-tools { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .template-list-rows { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 3px 8px; }
 }
 
 @media (max-width: 760px) {

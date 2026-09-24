@@ -24,7 +24,7 @@ describe('seven-section navigation', () => {
   it('matches the original information architecture', () => {
     expect(NAVIGATION.map((section) => section.label)).toEqual(['设备与账号', '自动采集', '运行记录', '数据统计', 'AI 处理', '脚本与模板', '设置']);
     expect(NAVIGATION.map((section) => section.views.map((view) => view.key))).toEqual([
-      ['instances', 'accounts'], ['gatherOverview'], ['plans', 'runs'], ['stats'], ['ai'], ['scripts', 'templates'], ['settings'],
+      ['instances', 'accounts'], ['gatherOverview'], ['scriptConsole', 'plans', 'runs'], ['stats'], ['ai'], ['scripts', 'templates'], ['settings'],
     ]);
   });
 
@@ -35,7 +35,7 @@ describe('seven-section navigation', () => {
     expect(viewLabel('templates')).toBe('模板库');
     // Pages holding unsaved drafts stay mounted, as the always-mounted workspace kept them before the split:
     // the script editor (template library round trip), the plan / 调度设置 drafts and the gather draft + probe.
-    for (const key of ['gatherOverview', 'plans', 'scripts'] as const) expect(VIEW_REGISTRY[key].keepAlive, key).toBe(true);
+    for (const key of ['gatherOverview', 'plans', 'scripts', 'scriptConsole'] as const) expect(VIEW_REGISTRY[key].keepAlive, key).toBe(true);
   });
 
   it('brings a kept-alive page back at its scroll position and opens other pages at the top', () => {

@@ -327,6 +327,8 @@ export interface OverlayConsultResult {
   /** 风险过高、需要人处理（→ AI_RISK_BLOCKED）。 */
   requiresAttention?: boolean
   message?: string
+  /** 顾问认出的界面类别（如 'kicked'）；随 AI_RISK_BLOCKED 带在错误的 detail.screen 里交给告警。 */
+  screen?: string | null
 }
 
 /**
@@ -372,7 +374,7 @@ export async function recoverUnknownWithUpdate(opts: RecoverUnknownWithUpdateOpt
     const r = await opts.consult(raw, waiting)
     check()
     if (r?.requiresAttention) {
-      throw new AppError(AI_RISK_BLOCKED, r.message || 'AI 风险评估认为这一步需要人工处理，已停止自动操作。')
+      throw new AppError(AI_RISK_BLOCKED, r.message || 'AI 风险评估认为这一步需要人工处理，已停止自动操作。', r.screen ? { screen: r.screen } : undefined)
     }
     return r
   }

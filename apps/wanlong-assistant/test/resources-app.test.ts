@@ -232,6 +232,44 @@ describe('WanlongGatherRunner.readResources (vision-worker job)', { timeout: 30_
   });
 });
 
+describe('AutomationHost.restartGame (「重启游戏」 in the instance list)', { timeout: 30_000 }, () => {
+  const runner = { runOnce: vi.fn(), stop: vi.fn(async () => undefined), dispose: vi.fn(async () => undefined), isRunning: vi.fn(() => false) };
+
+  it('force-stops the game and launches it again inside the instance lock; refuses a stopped instance and a script holder', async () => {
+    const home = await tempHome();
+    const calls: string[] = [];
+    let foreground: string | null = 'com.android.launcher3';
+    let status = 'running';
+    let host!: AutomationHost;
+    const manager = {
+      getState: async () => ({ status, record: { createdAt: CREATED_AT } }),
+      device: async () => ({
+        stopApp: async (pkg: string) => { calls.push(`stop:${pkg}:${host.locks.holder(1)}`); foreground = null; },
+        startApp: async (pkg: string) => { calls.push(`start:${pkg}`); foreground = pkg; },
+        foregroundPackage: async () => foreground,
+      }),
+    };
+    host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner as never, undefined, {},
+      { locks: new InstanceLocks(home, { fileLock: async (_path, fn) => fn() }), scheduler: { ownerLease: false } });
+    try {
+      const result = await host.restartGame('wanlong', 1);
+      expect(result.foreground).toBe(true);
+      expect(calls).toEqual([`stop:${PACKAGE}:重启游戏`, `start:${PACKAGE}`]);
+      expect(host.locks.holder(1)).toBeNull();
+
+      host.setPorts({ externalBusy: () => '脚本计划' });
+      await expect(host.restartGame('wanlong', 1)).rejects.toMatchObject({ code: 'CONCURRENCY_LIMIT', message: expect.stringContaining('脚本计划') });
+      host.setPorts({ externalBusy: () => null });
+      status = 'stopped';
+      await expect(host.restartGame('wanlong', 1)).rejects.toThrow('没有在运行');
+      expect(calls).toHaveLength(2);
+    } finally {
+      await host.dispose();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('AutomationHost.readResourceStats', { timeout: 30_000 }, () => {
   let home: string;
   let host: AutomationHost;

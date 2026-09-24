@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { TemplateDefinition } from '@avdm/automation';
 import { COND_MODE_TEXT, condModeOf, describeCond, seedCondition, type CondMode, type Condition } from '@avdm/automation/script';
 import { Icon } from '../../components/Icon';
+import { groupTemplates, matchesTemplateQuery, pickableTemplates } from '../templates/template-groups';
 
 /** A labelled form cell: small caption, the control(s), an optional one-line hint (the original `Field`). */
 export function Field({ label, hint, wide, children }: { label: string; hint?: ReactNode; wide?: boolean; children: ReactNode }) {
@@ -95,9 +96,23 @@ function optionText(template: Pick<TemplateDefinition, 'id' | 'name'>): string {
   return `${template.name}（${template.id}）`;
 }
 
+/** The pickable templates of a set, narrowed by the filter box, in screen groups (digit glyphs hidden). */
+function useTemplateGroups(templates: readonly TemplateDefinition[], keep: readonly string[], filter: string) {
+  return useMemo(() => {
+    const pickable = pickableTemplates(templates, keep, filter);
+    const shown = filter.trim() ? pickable.filter((t) => keep.includes(t.id) || matchesTemplateQuery(t, filter)) : pickable;
+    return { groups: groupTemplates(shown), pickable: pickable.length, hiddenGlyphs: templates.length - pickable.length, shown: shown.length };
+  }, [templates, keep.join('\n'), filter]);
+}
+
+function glyphHint(hidden: number): string | undefined {
+  return hidden > 0 ? `已隐藏 ${hidden} 张数字字形（只给读数用）；筛选框里输入 dig_ 或「字形」可以显示` : undefined;
+}
+
 /**
- * Template dropdown shown as 「名字（id）」. A long set gets a filter box (the original Select was searchable); a
- * referenced id missing from the set stays selectable, marked 「不在模板集里」.
+ * Template dropdown shown as 「名字（id）」 in screen groups (the library's `groupTemplates`). Digit glyphs are left out
+ * (a script never taps a glyph; they are more than half of a bundled set) unless already chosen or asked for in the
+ * filter. A long set gets a filter box; a referenced id missing from the set stays selectable, marked 「不在模板集里」.
  */
 export function TemplatePicker({ value, templates, onChange, label, placeholder = '选一张模板' }: {
   value: string;
@@ -107,20 +122,72 @@ export function TemplatePicker({ value, templates, onChange, label, placeholder 
   placeholder?: string;
 }) {
   const [filter, setFilter] = useState('');
-  const needle = filter.trim().toLowerCase();
-  const shown = needle ? templates.filter((t) => t.id === value || optionText(t).toLowerCase().includes(needle)) : templates;
+  const keep = useMemo(() => (value ? [value] : []), [value]);
+  const { groups, pickable, hiddenGlyphs, shown } = useTemplateGroups(templates, keep, filter);
   const missing = Boolean(value) && !templates.some((t) => t.id === value);
   return (
     <span className="blk-picker">
-      {templates.length > FILTER_FROM && (
-        <input type="search" className="blk-picker-filter" aria-label={`${label}：筛选`} placeholder="筛选模板" value={filter} onChange={(event) => setFilter(event.target.value)} />
+      {pickable > FILTER_FROM && (
+        <input type="search" className="blk-picker-filter" aria-label={`${label}：筛选`} placeholder="筛选名称 / ID / 标签" value={filter}
+          title={glyphHint(hiddenGlyphs)} onChange={(event) => setFilter(event.target.value)} />
       )}
-      <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>
-        <option value="" disabled>{templates.length ? placeholder : '模板集里还没有模板'}</option>
+      <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} title={glyphHint(hiddenGlyphs)}>
+        <option value="" disabled>{templates.length ? (filter.trim() && shown === 0 ? '没有匹配的模板' : placeholder) : '模板集里还没有模板'}</option>
         {missing && <option value={value}>{value}（不在模板集里）</option>}
-        {shown.map((t) => <option key={t.id} value={t.id}>{optionText(t)}</option>)}
+        {groups.map((group) => (
+          <optgroup key={group.key} label={`${group.label}（${group.templates.length}）`}>
+            {group.templates.map((t) => <option key={t.id} value={t.id}>{optionText(t)}</option>)}
+          </optgroup>
+        ))}
       </select>
     </span>
+  );
+}
+
+/**
+ * 「出现任意一张」: the chosen templates as removable chips, then the set's pickable templates in screen groups with a
+ * filter box (the same grouping and glyph rule as `TemplatePicker`) instead of one long wall of checkboxes.
+ */
+function TemplateMultiPicker({ value, templates, onChange, label }: {
+  value: readonly string[];
+  templates: readonly TemplateDefinition[];
+  onChange: (ids: string[]) => void;
+  label: string;
+}) {
+  const [filter, setFilter] = useState('');
+  const { groups, hiddenGlyphs, shown } = useTemplateGroups(templates, value, filter);
+  const nameOf = (id: string): string => templates.find((t) => t.id === id)?.name ?? `${id}（不在模板集里）`;
+  const toggle = (id: string, on: boolean): void => onChange(on ? [...value, id] : value.filter((item) => item !== id));
+  return (
+    <div className="blk-multi-picker" role="group" aria-label={label}>
+      <div className="blk-multi-head">
+        {value.length === 0 ? <span className="blk-field-hint">还没选模板：在下面勾选，任意一张出现在画面上就算成立</span>
+          : value.map((id) => (
+            <span key={id} className={`blk-chip${templates.some((t) => t.id === id) ? '' : ' is-missing'}`} title={id}>
+              {nameOf(id)}
+              <button type="button" aria-label={`去掉 ${nameOf(id)}`} onClick={() => toggle(id, false)}><Icon name="close" size={10} /></button>
+            </span>
+          ))}
+      </div>
+      {templates.length === 0 ? <span className="blk-field-hint">模板集里还没有模板，先去截一张</span> : <>
+        <input type="search" className="blk-picker-filter" aria-label={`${label}：筛选`} placeholder="筛选名称 / ID / 标签" value={filter}
+          title={glyphHint(hiddenGlyphs)} onChange={(event) => setFilter(event.target.value)} />
+        <div className="blk-multi">
+          {shown === 0 && <span className="blk-field-hint">没有匹配的模板</span>}
+          {groups.map((group) => (
+            <fieldset key={group.key} className="blk-multi-group">
+              <legend>{group.label}（{group.templates.length}）</legend>
+              {group.templates.map((t) => (
+                <label key={t.id} className="check small" title={t.id}>
+                  <input type="checkbox" checked={value.includes(t.id)} onChange={(event) => toggle(t.id, event.target.checked)} />
+                  {t.name}
+                </label>
+              ))}
+            </fieldset>
+          ))}
+        </div>
+      </>}
+    </div>
   );
 }
 
@@ -177,17 +244,8 @@ export function CondEditor({ cond, templates, onChange, onCapture, captureBlocke
         </span>
       )}
       {mode === 'anyOf' && cond?.kind === 'anyTemplate' && (
-        <div className="blk-multi" role="group" aria-label={`${label}：出现任意一张就算成立`}>
-          {templates.length === 0 && <span className="blk-field-hint">模板集里还没有模板，先去截一张</span>}
-          {[...cond.templateIds.filter((id) => !templates.some((t) => t.id === id)).map((id) => ({ id, name: id, missing: true })),
-            ...templates.map((t) => ({ id: t.id, name: t.name, missing: false }))].map((t) => (
-            <label key={t.id} className="check small">
-              <input type="checkbox" checked={cond.templateIds.includes(t.id)}
-                onChange={(event) => onChange({ ...cond, templateIds: event.target.checked ? [...cond.templateIds, t.id] : cond.templateIds.filter((id) => id !== t.id) })} />
-              {t.missing ? `${t.id}（不在模板集里）` : `${t.name}（${t.id}）`}
-            </label>
-          ))}
-        </div>
+        <TemplateMultiPicker label={`${label}：出现任意一张就算成立`} value={cond.templateIds} templates={templates}
+          onChange={(templateIds) => onChange({ ...cond, templateIds })} />
       )}
       {mode === 'foreground' && cond?.kind === 'foreground' && (
         <span className="blk-row">
