@@ -40,9 +40,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** Per-game, per-instance settings. No game or account data is committed to the repository. */
+/** Per-game, per-instance settings, stored under the user's home (never in the repository or the app bundle). */
 export class AutomationSettingsStore {
+  private defaultTemplateDir: ((gameId: string) => string | null) | undefined;
+
   constructor(readonly home: string) {}
+
+  /**
+   * Template set used when an instance has not picked one: the managed copy of the set shipped with the app (original:
+   * the set matching the game package). The resolver is asked on every read, so it only applies once seeding made it.
+   */
+  setDefaultTemplateDir(resolver: ((gameId: string) => string | null) | undefined): void {
+    this.defaultTemplateDir = resolver;
+  }
 
   private fileFor(gameId: string, index: number): string {
     if (!GAME_ID_RE.test(gameId)) throw new Error('游戏包 ID 无效');
@@ -62,6 +72,15 @@ export class AutomationSettingsStore {
    * the file still names one. `get()` is the strict read every run uses.
    */
   async inspect(gameId: string, index: number): Promise<SettingsRead> {
+    const read = await this.inspectFile(gameId, index);
+    if (read.settings.templateDir || !this.defaultTemplateDir) return read;
+    let fallback: string | null = null;
+    try { fallback = this.defaultTemplateDir(gameId); }
+    catch { /* No default then: the pages keep asking for a template set. */ }
+    return fallback ? { ...read, settings: { ...read.settings, templateDir: fallback } } : read;
+  }
+
+  private async inspectFile(gameId: string, index: number): Promise<SettingsRead> {
     const file = this.fileFor(gameId, index);
     let text: string;
     try {

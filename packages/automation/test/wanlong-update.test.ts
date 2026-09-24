@@ -1,7 +1,8 @@
 /**
- * Port of scripts/game-update-offline-check.ts. The four calibrated crops are game art and cannot be committed,
- * so synthetic high-texture stand-ins are placed at the original geometry. With WANLONG_UPDATE_TEMPLATES pointing to
- * the old panel's resources/game-update folder, the same detection cases also run on the real crops.
+ * Port of scripts/game-update-offline-check.ts. This package's tests stay synthetic (the real crops ship with the
+ * assistant's built-in set, apps/wanlong-assistant/resources/templates), so high-texture stand-ins are placed at the
+ * original geometry. With WANLONG_UPDATE_TEMPLATES pointing to the old panel's resources/game-update folder, the same
+ * detection cases also run on the real crops.
  */
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

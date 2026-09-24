@@ -1,6 +1,7 @@
 import { runDoctorChecks } from '@avdm/core';
 import { loadTemplateSet } from '@avdm/automation';
 import { normalizeGatherConfig } from '@avdm/automation/wanlong';
+import { app } from 'electron';
 import { bootstrapApp } from '@avdm/emulator-shell/main/bootstrap';
 import { AccountManager } from './automation/accounts';
 import { HomeVerifier } from './automation/accounts/home-verify';
@@ -8,6 +9,7 @@ import { loginActive } from './automation/accounts/types';
 import { AdvisorService } from './automation/advisor';
 import { AiRecoveryService } from './automation/ai-recover';
 import { gamePlugin } from './automation/games';
+import { builtinDefaultResolver, builtinTemplatesDir, listBuiltinTemplateSets } from './automation/builtin-templates';
 import { AutomationHost } from './automation/host';
 import { InsightsService } from './automation/insights';
 import { InstanceProvisioner } from './instances/provisioner';
@@ -103,6 +105,14 @@ bootstrapApp({
     // Template edits (save / delete / import) make compiled templates stale: tell the renderer; cache owners
     // (vision workers, sampler, resources, AI harvest) subscribe through automation.onTemplatesChanged too.
     automation.onTemplatesChanged((change) => broadcast('templates-changed', change));
+
+    // ── built-in template library (shipped with the app; seeded into the user library at start, only-add) ──
+    const builtinTemplates = builtinTemplatesDir(app.isPackaged, process.resourcesPath, app.getAppPath());
+    // An instance without a chosen template set uses the managed copy of the shipped set for its game.
+    automation.setDefaultTemplateDir(builtinDefaultResolver(
+      (gameId) => automation.managedTemplateRoot(gameId), listBuiltinTemplateSets(builtinTemplates),
+      (gameId) => gamePlugin(gameId).packageName,
+    ));
 
     // ── accounts ──
     const homeVerifier = new HomeVerifier({
@@ -521,6 +531,17 @@ bootstrapApp({
         const failures = await runServiceSteps('start', [
           // First: the shell may reopen the 数据统计 page at once, before the emulator manager has even opened.
           { name: '数据统计', impact: '数据统计页没有数据，派兵与暂停不会记账', run: () => stats.start() },
+          // Before the scheduler re-arms: a fresh install needs the shipped templates before its first gather.
+          {
+            name: '内置模板库', impact: '随应用分发的模板没有补进模板库，未选模板集的实例无法识别画面',
+            run: async () => {
+              const seeded = await automation.seedBuiltinTemplates('wanlong', builtinTemplates);
+              const copied = Object.keys(seeded?.copiedSets ?? {}).length;
+              const added = Object.values(seeded?.addedTemplates ?? {}).reduce((sum, ids) => sum + ids.length, 0);
+              if (copied || added) appLog.info('templates', `内置模板库已补进模板库：新模板集 ${copied} 个，已有模板集补充模板 ${added} 张`);
+              for (const [setId, reason] of Object.entries(seeded?.skipped ?? {})) appLog.warn('templates', `内置模板集 ${setId} 未补进：${reason}`);
+            },
+          },
           {
             name: '模拟器日志记录', impact: '模拟器管理器的警告不会写入助手日志文件',
             run: async () => (await services.host.get()).on('log', (entry) => appLog.record(entry.level, 'emulator', entry.message, undefined, entry.index)),

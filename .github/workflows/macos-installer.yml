@@ -53,6 +53,9 @@ jobs:
           test -x "$emulator_app/Contents/Resources/bin/avdm"
           test -f "$assistant_app/Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64-0.35.4.node"
           test -f "$assistant_app/Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-arm64/lib/libvips-cpp.8.18.6.dylib"
+          # The built-in template library (extraResources) that the assistant seeds into the user library at start.
+          test -f "$assistant_app/Contents/Resources/templates/tset_mtugr5sx0iwc/manifest.json"
+          test -f "$assistant_app/Contents/Resources/templates/tset_mtugr5sx0iwc/tpl_btn_search.png"
           test "$(plutil -extract CFBundleIdentifier raw -o - "$emulator_app/Contents/Info.plist")" = 'com.tgolmsk.avdm'
           test "$(plutil -extract CFBundleIdentifier raw -o - "$assistant_app/Contents/Info.plist")" = 'com.tgolmsk.wanlongassistant'
           test "$(plutil -extract CFBundleShortVersionString raw -o - "$emulator_app/Contents/Info.plist")" = "$emulator_version"

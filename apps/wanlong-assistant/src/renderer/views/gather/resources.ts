@@ -1,9 +1,7 @@
 /**
- * Resource meta for badges (original features/gather/types.ts GATHER_RESOURCE_META). Names come from the single
- * source `RESOURCE_LABEL`; this adds only the one-character glyph and a token colour.
- *
- * ★ Glyph and colour only: the original's processed game art (assets/resources/*.png) is game art and never enters
- *   the repository (DECISIONS A.5), so every badge is the original's text-badge fallback.
+ * Resource meta for the gather pages (original features/gather/types.ts GATHER_RESOURCE_META). Names come from the
+ * single source `RESOURCE_LABEL`; this adds only the search-panel tap position. The badges themselves are the shared
+ * icon badge (components/ResourceBadge.tsx: the original's processed resource icons, a glyph when one cannot load).
  */
 import { RESOURCE_LABEL, type GatherResourceType } from '@avdm/automation/wanlong/pure';
 
@@ -14,17 +12,13 @@ export interface GatherResourceMeta {
   category: string;
   /** Category tap x in reference space (y 1310); display and troubleshooting only. */
   categoryTapX: number;
-  /** One-character glyph drawn on the badge. */
-  glyph: string;
-  /** Design-token colour of the badge background. */
-  colorVar: string;
 }
 
 export const GATHER_RESOURCE_META: Readonly<Record<GatherResourceType, GatherResourceMeta>> = {
-  wood: { ...RESOURCE_LABEL.wood, categoryTapX: 1276, glyph: '木', colorVar: 'var(--green)' },
-  gold: { ...RESOURCE_LABEL.gold, categoryTapX: 874, glyph: '金', colorVar: 'var(--amber)' },
-  iron: { ...RESOURCE_LABEL.iron, categoryTapX: 1686, glyph: '铁', colorVar: 'var(--grey)' },
-  mana: { ...RESOURCE_LABEL.mana, categoryTapX: 2088, glyph: '魔', colorVar: 'var(--accent)' },
+  wood: { ...RESOURCE_LABEL.wood, categoryTapX: 1276 },
+  gold: { ...RESOURCE_LABEL.gold, categoryTapX: 874 },
+  iron: { ...RESOURCE_LABEL.iron, categoryTapX: 1686 },
+  mana: { ...RESOURCE_LABEL.mana, categoryTapX: 2088 },
 };
 
 const TYPES: readonly GatherResourceType[] = ['wood', 'gold', 'iron', 'mana'];

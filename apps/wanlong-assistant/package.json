@@ -13,6 +13,8 @@
     "dist:mac": "pnpm build && electron-builder --mac dmg --arm64 --publish never",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "vitest run",
+    "icons": "node scripts/resource-icons.mjs",
+    "icons:app": "node scripts/app-icons.mjs",
     "tplkit": "tsx scripts/tplkit.ts"
   },
   "dependencies": {

@@ -5,7 +5,8 @@
  *   · loadResourceUnitTemplates —— 从**调用方给的模板集目录**里读单位字并按 shrink=1 编译（带缓存）
  *   · seedResourceTemplates     —— 按 resourceSeedPlan 从截图裁模板，走 TemplateLibrary.save 正式通道
  *
- * ★ 模板永远来自用户自己的模板集目录（不进仓库、不进安装包）；本模块从不在仓库或安装目录里找图。
+ * ★ 模板永远来自调用方给的模板集目录（用户模板库里的集；随助手分发的内置集由助手启动时补进模板库）；
+ *   本模块从不在仓库或安装目录里直接找图。
  */
 
 import sharp from 'sharp'

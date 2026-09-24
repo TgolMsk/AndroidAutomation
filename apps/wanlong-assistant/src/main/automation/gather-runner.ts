@@ -49,7 +49,7 @@ export interface GatherManager {
 }
 
 export interface RunGatherOnceOptions {
-  /** Explicit local directory containing manifest.json; templates never enter the repository. */
+  /** Explicit template set directory containing manifest.json (the user's library, which holds the seeded built-in set). */
   templateDir: string;
   config: Parameters<typeof normalizeGatherConfig>[0];
   signal?: AbortSignal;

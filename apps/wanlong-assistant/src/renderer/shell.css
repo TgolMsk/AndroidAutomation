@@ -45,6 +45,14 @@
   color: var(--accent);
 }
 
+.wl-shell-brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
 .wl-shell-brand-text {
   display: grid;
   gap: 2px;

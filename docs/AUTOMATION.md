@@ -22,7 +22,7 @@
 
 ## 万龙觉醒迁移
 
-复用 `wanlong-panel` 的模板识别和 `runGatherCycle` G0–G16 状态机，替换旧的 MuMu/雷电驱动、ADB 地址发现和单体 Electron 入口。模板由用户选择本地目录导入或在助手内新建，不把旧仓库的 `.wl-data`、真实游戏截图、登录 XML 或账号资料复制进公开代码或安装包。
+复用 `wanlong-panel` 的模板识别和 `runGatherCycle` G0–G16 状态机，替换旧的 MuMu/雷电驱动、ADB 地址发现和单体 Electron 入口。旧面板的内置模板集（`tset_mtugr5sx0iwc`「万龙觉醒」，127 张加游戏资源更新的 4 张）随助手分发（见下文「内置模板库」）；用户也可以导入本地目录或在助手内新建。旧仓库的其余 `.wl-data`、真实游戏截图、登录 XML 和账号资料不复制进公开代码或安装包。
 
 旧模板参考分辨率为 2560×1440，当前 #1 为 960×540。两者同为 16:9，但细节缩放会影响分数；探针必须用当前 AVD 的真实画面做正负样本验证。校准失败时需要重新采样模板或调整实例规格，不允许直接进入采集流程。
 
@@ -87,7 +87,8 @@
 
 - 视觉引擎在 `@avdm/automation`（去底预览、保存时的差分掩码、立即验证、完整编译检查都在一次性模板工作线程里跑）：只用 `TM_CCOEFF_NORMED`；模板灰度标准差 < 12 一律拒绝（`TEMPLATE_LOW_VARIANCE`）；透明底模板按 α 通道生成掩码（cubic 缩放后 ≥128 为不透明，全透明或不透明像素 < 64 / < 10% 拒绝）；模板按内容指纹编译缓存（256 条），阈值与 ROI 每次以调用方为准；ROI 越界、比模板小都返回带中文原因的未命中而不是抛错；`detect()` 一帧批量匹配，单张坏模板只降级为 `found:false`。错误带码（`AppError.code`），经 IPC 信封传到界面。
 - 模板保存：裁剪 → PNG → 可选透明底（`alpha`，或 1~3 张差分帧 `diffFrames` 由主进程按与预览相同的算法重算）→ **先过方差守卫再写盘** → `<id>.png` 与 manifest 原子写。固定 ID 覆盖已有模板必须显式 `overwrite: true`（否则 `TEMPLATE_EXISTS`），覆盖时保留清单位置与创建时间。manifest 记录 `std`、`maskCoverage`、`tags`、`note`、`createdAt`、`updatedAt`，读取时一并返回；旧的 `<id>.<随机>.png` 文件名照常读取。
-- 旧模板集导入：模板库页「导入 / 合并旧模板集」选择旧面板的 `.wl-data/templates`、`<旧数据目录>/templates` 或单个模板集文件夹，按原版内置播种的规则**只增不改**合并进 `~/.avdm/automation/templates/wanlong/`：没有的模板集整集复制（先图后清单），已有的只补缺的 id，用户改过的模板、AI 自学的模板一个字节不动；用户清单损坏时跳过、绝不覆盖；不安全文件名、缺图、符号链接、其他游戏包名的模板集都跳过并说明原因；所选文件夹里一个模板集都没有时明确提示选错了目录。导入与保存 / 删除同一规则：会补进模板的模板集，绑定它的实例不能在运行，自动续跑先关掉（需要重新探针），写入期间持有设备租约。模板仍不进仓库、不进安装包。
+- 旧模板集导入：模板库页「导入 / 合并旧模板集」选择旧面板的 `.wl-data/templates`、`<旧数据目录>/templates` 或单个模板集文件夹，按原版内置播种的规则**只增不改**合并进 `~/.avdm/automation/templates/wanlong/`：没有的模板集整集复制（先图后清单），已有的只补缺的 id，用户改过的模板、AI 自学的模板一个字节不动；用户清单损坏时跳过、绝不覆盖；不安全文件名、缺图、符号链接、其他游戏包名的模板集都跳过并说明原因；所选文件夹里一个模板集都没有时明确提示选错了目录。导入与保存 / 删除同一规则：会补进模板的模板集，绑定它的实例不能在运行，自动续跑先关掉（需要重新探针），写入期间持有设备租约。
+- 内置模板库：`apps/wanlong-assistant/resources/templates/<模板集ID>/`（electron-builder `extraResources` → 安装包 `<Resources>/templates`）随助手分发。主进程启动恢复步骤「内置模板库」按上面同一套只增不改规则（`TemplateLibrary.importSets`）补进 `~/.avdm/automation/templates/wanlong/`，补进了模板就推送 `templates-changed`；这一步排在自动续跑恢复之前，与原版一样不关自动续跑（只增不改不会改动探针验过的模板；会话中途的手动导入仍按上面的规则关掉）；失败在顶栏提示，不挡其他服务。实例没选模板集时，`AutomationSettingsStore.inspect()` 默认用包名对得上的内置集的托管副本（原版按包名自动选集），显式选的模板集优先。代码：`apps/wanlong-assistant/src/main/automation/builtin-templates.ts`。
 - 模板内容变化（保存 / 删除 / 导入）会推送 `templates-changed {gameId, directory}`，主进程侧用 `AutomationHost.onTemplatesChanged(listener)` 订阅，持有编译缓存的模块（常驻视觉 worker、采样器、资源统计、AI 自学）据此失效。
 - 开发者工具 tplkit：`pnpm --filter @avdm/wanlong-assistant run tplkit -- <命令>`（cap / view / analyze / probe / alpha / glyphs / save / verify / cross / ocr / find / scan / ls / del），抓帧走 `@avdm/core`，帧与预览默认写到 `~/.avdm/automation/tplkit`，模板集默认用 `--dir`、`TPLKIT_SET_DIR` 或 `WL_INSTANCE` 绑定的模板集。字形 id 后缀与采集加载器一致（`dig_xxx_0`~`_9`、`colon`、`comma`、`slash`、`dot`、`percent`）。
 - 分辨率：模板与字形按 2560×1440 参考坐标。低于参考分辨率的实例截图会被放大后匹配，小图标与数字字形不可靠，模板页会提示；建议把实例建成 2560×1440（至少 1920×1080）再截模板。

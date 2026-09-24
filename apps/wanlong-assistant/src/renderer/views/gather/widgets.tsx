@@ -1,6 +1,7 @@
 import { useId, useState, type ReactNode } from 'react';
 import type { GatherResourceType, InstanceQueueState } from '@avdm/automation/wanlong/pure';
 import { freeQueueSlots } from '@avdm/automation/wanlong/pure';
+import { ResourceBadge as SharedResourceBadge } from '../../components/ResourceBadge';
 import { Spinner } from '../../components/StatusBadge';
 import { GATHER_RESOURCE_META } from './resources';
 import './gather.css';
@@ -43,17 +44,11 @@ export function HintBubble({ text, level, label = '查看说明' }: { text: stri
 }
 
 /**
- * Resource badge: a glyph on the resource's token colour (original ResourceBadge's text fallback — the game art is
- * never committed). Shared by march rows and the config form.
+ * Resource badge for march rows and the config form: the shared icon badge (original ResourceBadge — the resource
+ * icon, a glyph on the resource colour when it cannot load), at the gather pages' default size.
  */
 export function ResourceBadge({ type, size = 26, title }: { type: GatherResourceType; size?: number; title?: string }) {
-  const meta = GATHER_RESOURCE_META[type];
-  return (
-    <span className="gather-res" role="img" aria-label={meta.resource} title={title ?? meta.resource}
-      style={{ width: size, height: size, fontSize: Math.max(10, Math.round(size * 0.5)), background: meta.colorVar }}>
-      {meta.glyph}
-    </span>
-  );
+  return <SharedResourceBadge type={type} size={size} title={title ?? GATHER_RESOURCE_META[type].resource} />;
 }
 
 /** Unknown resource: 「?」 with the reason why it is unknown. */

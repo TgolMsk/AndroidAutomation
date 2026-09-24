@@ -23,6 +23,7 @@ import { TemplateFlowProvider } from './state/template-flow';
 import { VIEW_REGISTRY, restoredScrollTop } from './views/registry';
 import { SidebarUpdate } from './views/update/SidebarUpdate';
 import './shell.css';
+import appIcon from './assets/brand/app-icon.png';
 
 const COLLAPSED_KEY = 'wl.nav.collapsed';
 
@@ -134,7 +135,7 @@ function Sidebar() {
   return (
     <aside className={`wl-shell-sidebar${collapsed ? ' is-collapsed' : ''}`}>
       <div className="wl-shell-brand">
-        <span className="wl-shell-brand-mark" aria-hidden="true"><Icon name="workflow" size={19} /></span>
+        <span className="wl-shell-brand-mark" aria-hidden="true"><img src={appIcon} alt="" draggable={false} /></span>
         <div className="wl-shell-brand-text"><strong>万龙助手</strong><small>多账号自动化工作台</small></div>
       </div>
       <nav className="wl-shell-nav" aria-label="主导航">

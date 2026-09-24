@@ -4,7 +4,7 @@ import { Worker } from 'node:worker_threads';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import { AppError, canonicalDirectory, TemplateLibrary, type MatchResult, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
+import { AppError, canonicalDirectory, TemplateLibrary, type MatchResult, type RawFrame, type Rect, type SeedResult, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
 import {
   cycleFactOf, normalizeGatherConfig, RESOURCE_SEED_FRAMES, RESOURCE_TEMPLATE_CATALOG, resourceSeedPlan,
   seedResourceTemplates, startupFailureFact, type DispatchRecord, type GatherCycleFact, type GatherCycleResult,
@@ -697,6 +697,43 @@ export class AutomationHost {
     const result = await this.templates.save(directory, ready);
     this.emitTemplatesChanged(gameId, result.directory, 'save', [result.definition.id]);
     return diffCoverage === undefined ? result : { ...result, diffCoverage };
+  }
+
+  /** This game's managed template root (~/.avdm/automation/templates/<gameId>), where shipped sets are seeded. */
+  managedTemplateRoot(gameId: string): string {
+    gamePlugin(gameId);
+    return this.templates.gameRoot(gameId);
+  }
+
+  /** See AutomationSettingsStore.setDefaultTemplateDir: the shipped set stands in for an instance without one. */
+  setDefaultTemplateDir(resolver: ((gameId: string) => string | null) | undefined): void {
+    this.store.setDefaultTemplateDir(resolver);
+  }
+
+  /**
+   * Only-add merge of the template sets shipped with the app into this game's managed library (original
+   * seedBuiltinTemplates, run at every start): missing sets are copied whole, existing ones only gain the ids they
+   * lack, and nothing the user edited or the AI learnt is overwritten. It runs before schedules are restored, so no
+   * automation is running and no probe is remembered yet (probe memory is per process); like the original it leaves
+   * schedules as they were, since only-add never changes a template a probe checked (a user import mid-session switches
+   * bound schedules off instead: importTemplateSets). Sets that changed notify the cache owners. A missing builtin dir
+   * (a checkout without resources) is not an error.
+   */
+  async seedBuiltinTemplates(gameId: string, builtinDir: string): Promise<SeedResult | null> {
+    const plugin = gamePlugin(gameId);
+    if (this.disposed) throw new Error('应用正在退出');
+    try { if (!(await stat(builtinDir)).isDirectory()) return null; }
+    catch { return null; }
+    const result = await this.templates.importSets(gameId, builtinDir, {
+      packageName: plugin.packageName,
+      log: (level, message) => this.logLine(level, `[内置模板] ${message}`),
+    });
+    const root = await this.templates.canonicalGameRoot(gameId);
+    for (const setId of Object.keys(result.copiedSets)) this.emitTemplatesChanged(gameId, await canonicalDirectory(join(root, setId)), 'import', []);
+    for (const [setId, ids] of Object.entries(result.addedTemplates)) {
+      if (ids.length) this.emitTemplatesChanged(gameId, await canonicalDirectory(join(root, setId)), 'import', ids);
+    }
+    return result;
   }
 
   /** Subscribe to template-content changes (save / delete / import). Returns the unsubscribe function. */

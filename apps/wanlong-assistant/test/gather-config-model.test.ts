@@ -94,14 +94,13 @@ describe('describeGatherConfigBadge (single implementation for header, cards and
   });
 });
 
-describe('resource meta (glyph and token colour only, names from the single source)', () => {
+describe('resource meta (search-panel tap x only, names from the single source)', () => {
   it('names come from RESOURCE_LABEL; categories and tap x match the original', () => {
     for (const type of ['wood', 'gold', 'iron', 'mana'] as const) {
       expect(GATHER_RESOURCE_META[type]).toMatchObject(RESOURCE_LABEL[type]);
-      expect(GATHER_RESOURCE_META[type].colorVar).toMatch(/^var\(--[a-z-]+\)$/);
     }
-    expect(Object.values(GATHER_RESOURCE_META).map((meta) => [meta.glyph, meta.categoryTapX]))
-      .toEqual([['木', 1276], ['金', 874], ['铁', 1686], ['魔', 2088]]);
+    expect(Object.entries(GATHER_RESOURCE_META).map(([type, meta]) => [type, meta.categoryTapX]))
+      .toEqual([['wood', 1276], ['gold', 874], ['iron', 1686], ['mana', 2088]]);
     // Form defaults are the automation package's: mana off with 0 queues (the old 1-vs-0 drift).
     expect(DEFAULT_GATHER_CONFIG.resources.find((item) => item.type === 'mana')).toMatchObject({ enabled: false, queues: 0 });
   });

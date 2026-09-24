@@ -1,0 +1,3527 @@
+{
+  "id": "tset_mtugr5sx0iwc",
+  "name": "万龙觉醒",
+  "packageName": "com.lilithgames.samo.android.cn",
+  "refWidth": 2560,
+  "refHeight": 1440,
+  "templates": [
+    {
+      "id": "tpl_world_search_icon",
+      "name": "世界地图-放大镜(透明底)",
+      "file": "tpl_world_search_icon.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 55,
+        "y": 1069,
+        "w": 80,
+        "h": 80
+      },
+      "defaultRoi": {
+        "x": 20,
+        "y": 1030,
+        "w": 200,
+        "h": 180
+      },
+      "std": 42.8,
+      "maskCoverage": 0.343,
+      "tags": [
+        "nav",
+        "worldmap",
+        "透明底"
+      ],
+      "note": "世界地图左下角搜索放大镜；判定在世界地图（与回城按钮 A/B 组成 anyTemplate）。点它开搜索面板用的是 FIXED_TAP.worldSearchIcon (100,1112)，不用模板中心。★镜片半透明、底下是地图地形，整块模板会随地形漂移（0.79~0.985）；2026-09-10 改为透明底：兽族地图 3 帧 + 法师地图 2 帧跨阵营差分去底，只留金属圈 + 手柄（不透明占比 0.34），两阵营地图上 0.976~0.980，城内 / 搜索面板 / 创建部队页 ≤0.51。",
+      "createdAt": 1788980424264,
+      "updatedAt": 1789024346548
+    },
+    {
+      "id": "tpl_nav_city_toggle",
+      "name": "世界地图-回城内按钮(城堡)",
+      "file": "tpl_nav_city_toggle.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 50,
+        "y": 1270,
+        "w": 150,
+        "h": 140
+      },
+      "defaultRoi": {
+        "x": 10,
+        "y": 1230,
+        "w": 280,
+        "h": 210
+      },
+      "std": 62.1,
+      "tags": [
+        "nav",
+        "worldmap"
+      ],
+      "note": "世界地图左下角城堡图标，点它回城内；tap 点 (115,1330)",
+      "createdAt": 1788980424299,
+      "updatedAt": 1788985829528
+    },
+    {
+      "id": "tpl_btn_search",
+      "name": "搜索面板-搜索按钮",
+      "file": "tpl_btn_search.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1206,
+        "y": 1020,
+        "w": 126,
+        "h": 70
+      },
+      "defaultRoi": {
+        "x": 300,
+        "y": 996,
+        "w": 2000,
+        "h": 118
+      },
+      "std": 43.3,
+      "tags": [
+        "search",
+        "anchor"
+      ],
+      "note": "★搜索面板唯一锚点。面板随分类左右平移：伐木场页模板中心(1269,1055)，黑暗灵页(464,1055)，Δx≈805。绝不可写死坐标",
+      "createdAt": 1788980978146,
+      "updatedAt": 1788985829605
+    },
+    {
+      "id": "tpl_label_level",
+      "name": "搜索面板-等级标签",
+      "file": "tpl_label_level.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1256,
+        "y": 828,
+        "w": 74,
+        "h": 38
+      },
+      "defaultRoi": {
+        "x": 120,
+        "y": 820,
+        "w": 1500,
+        "h": 56
+      },
+      "std": 73.2,
+      "tags": [
+        "search",
+        "anchor"
+      ],
+      "note": "★实测该标签随滑杆手柄移动（lv1..lv8 每级右移 55.3px），必须在宽带 ROI 内先定位它，数字 ROI = 本模板右边缘+8 起 30px 宽",
+      "createdAt": 1788980978166,
+      "updatedAt": 1788985872970
+    },
+    {
+      "id": "dig_panel_level_1",
+      "name": "等级数字-1",
+      "file": "dig_panel_level_1.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1118,
+        "y": 834,
+        "w": 20,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 200,
+        "y": 820,
+        "w": 2200,
+        "h": 60
+      },
+      "std": 75.4,
+      "tags": [
+        "digit",
+        "dig_panel_level"
+      ],
+      "note": "搜索面板『等级 N』数字，浅粉底黑字，字形 18x27，模板框 20x30。数字区 = tpl_label_level 命中框 x+74, y+6, 46x36。",
+      "createdAt": 1788981165048,
+      "updatedAt": 1788981216373
+    },
+    {
+      "id": "dig_panel_level_2",
+      "name": "等级数字-2",
+      "file": "dig_panel_level_2.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1171,
+        "y": 834,
+        "w": 20,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 200,
+        "y": 820,
+        "w": 2200,
+        "h": 60
+      },
+      "std": 74.9,
+      "tags": [
+        "digit",
+        "dig_panel_level"
+      ],
+      "note": "搜索面板『等级 N』数字，浅粉底黑字，字形 18x27，模板框 20x30。数字区 = tpl_label_level 命中框 x+74, y+6, 46x36。",
+      "createdAt": 1788981165070,
+      "updatedAt": 1788981216397
+    },
+    {
+      "id": "dig_panel_level_3",
+      "name": "等级数字-3",
+      "file": "dig_panel_level_3.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1224,
+        "y": 834,
+        "w": 20,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 200,
+        "y": 820,
+        "w": 2200,
+        "h": 60
+      },
+      "std": 73.7,
+      "tags": [
+        "digit",
+        "dig_panel_level"
+      ],
+      "note": "搜索面板『等级 N』数字，浅粉底黑字，字形 18x27，模板框 20x30。数字区 = tpl_label_level 命中框 x+74, y+6, 46x36。",
+      "createdAt": 1788981165093,
+      "updatedAt": 1788981216421
+    },
+    {
+      "id": "dig_panel_level_4",
+      "name": "等级数字-4",
+      "file": "dig_panel_level_4.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1277,
+        "y": 834,
+        "w": 20,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 200,
+        "y": 820,
+        "w": 2200,
+        "h": 60
+      },
+      "std": 78.4,
+      "tags": [
+        "digit",
+        "dig_panel_level"
+      ],
+      "note": "搜索面板『等级 N』数字，浅粉底黑字，字形 18x27，模板框 20x30。数字区 = tpl_label_level 命中框 x+74, y+6, 46x36。",
+      "createdAt": 1788981165116,
+      "updatedAt": 1788981216444
+    },
+    {
+      "id": "dig_panel_level_5",
+      "name": "等级数字-5",
+      "file": "dig_panel_level_5.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1330,
+        "y": 834,
+        "w": 20,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 200,
+        "y": 820,
+        "w": 2200,
+        "h": 60
+      },
+      "std": 74.5,
+      "tags": [
+        "digit",
+        "dig_panel_level"
+      ],
+      "note": "搜索面板『等级 N』数字，浅粉底黑字，字形 18x27，模板框 20x30。数字区 = tpl_label_level 命中框 x+74, y+6, 46x36。",
+      "createdAt": 1788981165138,
+      "updatedAt": 1788981216467
+    },
+    {
+      "id": "dig_panel_level_6",
+      "name": "等级数字-6",
+      "file": "dig_panel_level_6.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1384,
+        "y": 834,
+        "w": 20,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 200,
+        "y": 820,
+        "w": 2200,
+        "h": 60
+      },
+      "std": 74,
+      "tags": [
+        "digit",
+        "dig_panel_level"
+      ],
+      "note": "搜索面板『等级 N』数字，浅粉底黑字，字形 18x27，模板框 20x30。数字区 = tpl_label_level 命中框 x+74, y+6, 46x36。",
+      "createdAt": 1788981165160,
+      "updatedAt": 1788981216490
+    },
+    {
+      "id": "dig_panel_level_7",
+      "name": "等级数字-7",
+      "file": "dig_panel_level_7.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1437,
+        "y": 834,
+        "w": 20,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 200,
+        "y": 820,
+        "w": 2200,
+        "h": 60
+      },
+      "std": 75,
+      "tags": [
+        "digit",
+        "dig_panel_level"
+      ],
+      "note": "搜索面板『等级 N』数字，浅粉底黑字，字形 18x27，模板框 20x30。数字区 = tpl_label_level 命中框 x+74, y+6, 46x36。",
+      "createdAt": 1788981165183,
+      "updatedAt": 1788981216516
+    },
+    {
+      "id": "dig_panel_level_8",
+      "name": "等级数字-8",
+      "file": "dig_panel_level_8.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1491,
+        "y": 834,
+        "w": 20,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 200,
+        "y": 820,
+        "w": 2200,
+        "h": 60
+      },
+      "std": 75.4,
+      "tags": [
+        "digit",
+        "dig_panel_level"
+      ],
+      "note": "搜索面板『等级 N』数字，浅粉底黑字，字形 18x27，模板框 20x30。数字区 = tpl_label_level 命中框 x+74, y+6, 46x36。",
+      "createdAt": 1788981165204,
+      "updatedAt": 1788981216540
+    },
+    {
+      "id": "tpl_btn_gather",
+      "name": "资源点卡片-采集按钮",
+      "file": "tpl_btn_gather.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1776,
+        "y": 1012,
+        "w": 128,
+        "h": 72
+      },
+      "defaultRoi": {
+        "x": 1240,
+        "y": 880,
+        "w": 1320,
+        "h": 320
+      },
+      "std": 45.7,
+      "tags": [
+        "card",
+        "anchor"
+      ],
+      "note": "★资源点卡片锚点。实测按钮矩形 1669..2011 / 993..1104，中心(1840,1048)=文字中心；模板中心即点击点",
+      "createdAt": 1788981503255,
+      "updatedAt": 1788986102761
+    },
+    {
+      "id": "tpl_res_wood_title",
+      "name": "卡片标题-伐木场",
+      "file": "tpl_res_wood_title.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1826,
+        "y": 638,
+        "w": 142,
+        "h": 54
+      },
+      "defaultRoi": {
+        "x": 1300,
+        "y": 600,
+        "w": 1000,
+        "h": 120
+      },
+      "std": 99.3,
+      "tags": [
+        "card",
+        "restype"
+      ],
+      "note": "只框『伐木场』三字，其左边缘是等级数字 ROI 的右界",
+      "createdAt": 1788981503279,
+      "updatedAt": 1788986102782
+    },
+    {
+      "id": "tpl_label_storage",
+      "name": "卡片-储量标签",
+      "file": "tpl_label_storage.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1546,
+        "y": 712,
+        "w": 82,
+        "h": 50
+      },
+      "defaultRoi": {
+        "x": 1300,
+        "y": 680,
+        "w": 900,
+        "h": 110
+      },
+      "std": 61.7,
+      "tags": [
+        "card",
+        "label"
+      ],
+      "note": "数值右对齐在同一行右端",
+      "createdAt": 1788981503304,
+      "updatedAt": 1788986102804
+    },
+    {
+      "id": "tpl_label_gatherer",
+      "name": "卡片-采集者标签",
+      "file": "tpl_label_gatherer.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1546,
+        "y": 770,
+        "w": 120,
+        "h": 44
+      },
+      "defaultRoi": {
+        "x": 1300,
+        "y": 740,
+        "w": 900,
+        "h": 110
+      },
+      "std": 61.8,
+      "tags": [
+        "card",
+        "label"
+      ],
+      "createdAt": 1788981503330,
+      "updatedAt": 1788986102825
+    },
+    {
+      "id": "tpl_label_alliance",
+      "name": "卡片-所属联盟标签",
+      "file": "tpl_label_alliance.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1546,
+        "y": 828,
+        "w": 158,
+        "h": 46
+      },
+      "defaultRoi": {
+        "x": 1300,
+        "y": 796,
+        "w": 900,
+        "h": 110
+      },
+      "std": 62.9,
+      "tags": [
+        "card",
+        "label"
+      ],
+      "createdAt": 1788981503356,
+      "updatedAt": 1788986102848
+    },
+    {
+      "id": "tpl_value_none",
+      "name": "卡片-值『无』",
+      "file": "tpl_value_none.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2088,
+        "y": 770,
+        "w": 42,
+        "h": 42
+      },
+      "defaultRoi": {
+        "x": 1900,
+        "y": 700,
+        "w": 400,
+        "h": 200
+      },
+      "std": 83.8,
+      "tags": [
+        "card",
+        "judge"
+      ],
+      "note": "★采集者=无 ⇒ 该点未被占用。同一模板也用于所属联盟行的中立判定",
+      "createdAt": 1788981503382,
+      "updatedAt": 1788986102870
+    },
+    {
+      "id": "tpl_label_coord_card",
+      "name": "卡片-坐标:",
+      "file": "tpl_label_coord_card.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1798,
+        "y": 1116,
+        "w": 72,
+        "h": 38
+      },
+      "defaultRoi": {
+        "x": 1600,
+        "y": 1080,
+        "w": 800,
+        "h": 110
+      },
+      "std": 30.8,
+      "tags": [
+        "card",
+        "label"
+      ],
+      "note": "『坐标:』含冒号；右侧是目标坐标数字，用于在途队伍去重",
+      "createdAt": 1788981503415,
+      "updatedAt": 1788986102963
+    },
+    {
+      "id": "tpl_checkbox_auto_on",
+      "name": "卡片-自动采集至清空(已勾选)",
+      "file": "tpl_checkbox_auto_on.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1698,
+        "y": 898,
+        "w": 46,
+        "h": 46
+      },
+      "defaultRoi": {
+        "x": 1600,
+        "y": 860,
+        "w": 400,
+        "h": 120
+      },
+      "std": 34,
+      "tags": [
+        "card",
+        "state"
+      ],
+      "note": "实心黄圆+灰环。圆心(1721,921) 7x7 RGB 均值 = (255,255,103)",
+      "createdAt": 1788981503451,
+      "updatedAt": 1788986102937
+    },
+    {
+      "id": "tpl_checkbox_auto_off",
+      "name": "卡片-自动采集至清空(未勾选)",
+      "file": "tpl_checkbox_auto_off.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1698,
+        "y": 898,
+        "w": 46,
+        "h": 46
+      },
+      "defaultRoi": {
+        "x": 1600,
+        "y": 860,
+        "w": 400,
+        "h": 120
+      },
+      "std": 67.4,
+      "tags": [
+        "card",
+        "state"
+      ],
+      "note": "实心深灰圆。圆心(1721,921) 7x7 RGB 均值 = (83,83,83)",
+      "createdAt": 1788981503485,
+      "updatedAt": 1788986198890
+    },
+    {
+      "id": "tpl_auto_btn",
+      "name": "搜索面板-自动按钮(黑暗灵专属)",
+      "file": "tpl_auto_btn.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 716,
+        "y": 1014,
+        "w": 92,
+        "h": 104
+      },
+      "defaultRoi": {
+        "x": 300,
+        "y": 980,
+        "w": 2000,
+        "h": 160
+      },
+      "std": 65.6,
+      "tags": [
+        "search",
+        "negative-guard"
+      ],
+      "note": "否定判据：命中说明当前分类是黑暗灵部队，不是资源分类",
+      "createdAt": 1788981598300,
+      "updatedAt": 1788985829727
+    },
+    {
+      "id": "tpl_panel_title_troop",
+      "name": "部队管理-面板标题",
+      "file": "tpl_panel_title_troop.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 944,
+        "y": 32,
+        "w": 238,
+        "h": 68
+      },
+      "defaultRoi": {
+        "x": 800,
+        "y": 10,
+        "w": 700,
+        "h": 120
+      },
+      "std": 91.7,
+      "tags": [
+        "troop-panel",
+        "anchor"
+      ],
+      "note": "『部队管理』四字，墨迹 949..1175/36..95；不含右侧齿轮(1197..1249)",
+      "createdAt": 1788981598308,
+      "updatedAt": 1788986632944
+    },
+    {
+      "id": "tpl_queue_icon_panel",
+      "name": "部队管理-表头队列图标",
+      "file": "tpl_queue_icon_panel.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2134,
+        "y": 36,
+        "w": 52,
+        "h": 48
+      },
+      "defaultRoi": {
+        "x": 2020,
+        "y": 14,
+        "w": 340,
+        "h": 100
+      },
+      "std": 28.4,
+      "tags": [
+        "troop-panel",
+        "queue",
+        "anchor"
+      ],
+      "note": "镐/剑交叉灰图标，墨迹 2139..2181/40..79；右侧紧跟 N/M（本帧 2/5，数字墨迹 2188..2245 / 42..80）",
+      "createdAt": 1788981598313,
+      "updatedAt": 1788986632949
+    },
+    {
+      "id": "tpl_status_gathering",
+      "name": "部队管理-状态词『采集中』(灰条)",
+      "file": "tpl_status_gathering.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1542,
+        "y": 278,
+        "w": 98,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1380,
+        "y": 180,
+        "w": 600,
+        "h": 1100
+      },
+      "std": 41.2,
+      "tags": [
+        "troop-panel",
+        "status"
+      ],
+      "note": "★白字压在进度条上：刚开始采集时整条是灰的（本模板）；随采集进度左侧变绿，采/集 两字会先后落到绿底上，届时本模板会失配 —— 需与 tpl_status_gathering_green 组成 anyTemplate",
+      "createdAt": 1788981598320,
+      "updatedAt": 1788986818005
+    },
+    {
+      "id": "tpl_status_gathering_green",
+      "name": "部队管理-状态词『采集中』(采/集落在绿底)",
+      "file": "tpl_status_gathering_green.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1542,
+        "y": 522,
+        "w": 98,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1380,
+        "y": 180,
+        "w": 600,
+        "h": 1100
+      },
+      "std": 44.3,
+      "tags": [
+        "troop-panel",
+        "status"
+      ],
+      "note": "★采集进度过半后『采集』二字落到绿色已完成段上、『中』仍在灰段。与 tpl_status_gathering 组成 anyTemplate 覆盖两种进度",
+      "createdAt": 1788981598331,
+      "updatedAt": 1788986851420
+    },
+    {
+      "id": "tpl_stamina_drop",
+      "name": "部队管理-耐力水滴图标",
+      "file": "tpl_stamina_drop.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2042,
+        "y": 190,
+        "w": 52,
+        "h": 42
+      },
+      "defaultRoi": {
+        "x": 1960,
+        "y": 120,
+        "w": 340,
+        "h": 1160
+      },
+      "std": 47.7,
+      "tags": [
+        "troop-panel",
+        "stamina"
+      ],
+      "note": "蓝色水滴，墨迹 2046..2089/193..227；右侧蓝条上是『105 / 105』白字",
+      "createdAt": 1788981598352,
+      "updatedAt": 1788986632965
+    },
+    {
+      "id": "tpl_label_coord_row",
+      "name": "部队管理-行内『坐标:』",
+      "file": "tpl_label_coord_row.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1140,
+        "y": 306,
+        "w": 74,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1080,
+        "y": 180,
+        "w": 400,
+        "h": 1100
+      },
+      "std": 53.6,
+      "tags": [
+        "troop-panel",
+        "label"
+      ],
+      "note": "含冒号；下方 y>=341 是下划线，已排除。字号与卡片上的『坐标:』不同",
+      "createdAt": 1788981615330,
+      "updatedAt": 1788986632974
+    },
+    {
+      "id": "tpl_btn_create_troop",
+      "name": "地图气泡-创建部队按钮",
+      "file": "tpl_btn_create_troop.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1914,
+        "y": 278,
+        "w": 232,
+        "h": 56
+      },
+      "defaultRoi": {
+        "x": 1500,
+        "y": 200,
+        "w": 1060,
+        "h": 240
+      },
+      "std": 35.4,
+      "tags": [
+        "dispatch"
+      ],
+      "note": "点『采集』后出现的蓝色气泡按钮；文字墨迹 1918..2141 / 282..329，中心(2030,306)",
+      "createdAt": 1788981702445,
+      "updatedAt": 1788986275413
+    },
+    {
+      "id": "tpl_queue_icon_map",
+      "name": "世界地图-右侧部队管理入口(列表图标)",
+      "file": "tpl_queue_icon_map.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2488,
+        "y": 558,
+        "w": 68,
+        "h": 68
+      },
+      "defaultRoi": {
+        "x": 2430,
+        "y": 540,
+        "w": 130,
+        "h": 220
+      },
+      "std": 34.5,
+      "tags": [
+        "部队管理",
+        "入口"
+      ],
+      "note": "只在有队伍在野外时出现。原模板裁的是别的位置（实测 0.55 不命中），2026-09-10 重裁。",
+      "createdAt": 1788981702470,
+      "updatedAt": 1789016363533
+    },
+    {
+      "id": "tpl_title_create_troop",
+      "name": "创建部队页-标题",
+      "file": "tpl_title_create_troop.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 132,
+        "y": 32,
+        "w": 238,
+        "h": 66
+      },
+      "defaultRoi": {
+        "x": 60,
+        "y": 10,
+        "w": 500,
+        "h": 110
+      },
+      "std": 82.9,
+      "tags": [
+        "createtroop"
+      ],
+      "note": "深色横幅上的白字；不含左侧返回箭头",
+      "createdAt": 1788981849871,
+      "updatedAt": 1788986372728
+    },
+    {
+      "id": "tpl_btn_preset_gather",
+      "name": "创建部队页-采集一键编成",
+      "file": "tpl_btn_preset_gather.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1884,
+        "y": 376,
+        "w": 262,
+        "h": 52
+      },
+      "defaultRoi": {
+        "x": 1700,
+        "y": 330,
+        "w": 700,
+        "h": 150
+      },
+      "std": 27.1,
+      "tags": [
+        "createtroop"
+      ],
+      "note": "浅蓝小按钮『采集』+右侧书本图标；按钮矩形 1764..2160/374..428，中心(1962,401)",
+      "createdAt": 1788981849883,
+      "updatedAt": 1788986372741
+    },
+    {
+      "id": "tpl_btn_march",
+      "name": "创建部队页-行军按钮",
+      "file": "tpl_btn_march.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2058,
+        "y": 1212,
+        "w": 122,
+        "h": 64
+      },
+      "defaultRoi": {
+        "x": 1800,
+        "y": 1150,
+        "w": 760,
+        "h": 230
+      },
+      "std": 49.5,
+      "tags": [
+        "createtroop",
+        "anchor"
+      ],
+      "note": "★只框『行军』两个深棕字（墨迹 2064..2174/1217..1271）。绝不能框到下方白色倒计时(y 1287..1314)。模板中心(2119,1244)，金按钮中心(2125,1266)=点击点",
+      "createdAt": 1788981849908,
+      "updatedAt": 1788986372765
+    },
+    {
+      "id": "tpl_label_troops",
+      "name": "创建部队页-兵力标签",
+      "file": "tpl_label_troops.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1378,
+        "y": 1250,
+        "w": 74,
+        "h": 48
+      },
+      "defaultRoi": {
+        "x": 1300,
+        "y": 1220,
+        "w": 500,
+        "h": 100
+      },
+      "std": 56.4,
+      "tags": [
+        "createtroop",
+        "label"
+      ],
+      "createdAt": 1788981849932,
+      "updatedAt": 1788986372790
+    },
+    {
+      "id": "tpl_label_load",
+      "name": "创建部队页-负载量标签",
+      "file": "tpl_label_load.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1380,
+        "y": 1316,
+        "w": 108,
+        "h": 46
+      },
+      "defaultRoi": {
+        "x": 1300,
+        "y": 1290,
+        "w": 500,
+        "h": 100
+      },
+      "std": 61,
+      "tags": [
+        "createtroop",
+        "label"
+      ],
+      "createdAt": 1788981849957,
+      "updatedAt": 1788986372817
+    },
+    {
+      "id": "dig_dark20_0",
+      "name": "通用数字(深字浅底20)-0",
+      "file": "dig_dark20_0.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1722,
+        "y": 279,
+        "w": 22,
+        "h": 36
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 30,
+        "w": 1160,
+        "h": 1330
+      },
+      "std": 79.8,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207160,
+      "updatedAt": 1788982207160
+    },
+    {
+      "id": "dig_dark20_1",
+      "name": "通用数字(深字浅底20)-1",
+      "file": "dig_dark20_1.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1722,
+        "y": 279,
+        "w": 22,
+        "h": 36
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 30,
+        "w": 1160,
+        "h": 1330
+      },
+      "std": 81.1,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207172,
+      "updatedAt": 1788982207172
+    },
+    {
+      "id": "dig_dark20_2",
+      "name": "通用数字(深字浅底20)-2",
+      "file": "dig_dark20_2.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1722,
+        "y": 279,
+        "w": 22,
+        "h": 36
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 30,
+        "w": 1160,
+        "h": 1330
+      },
+      "std": 80.4,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207182,
+      "updatedAt": 1788982207182
+    },
+    {
+      "id": "dig_dark20_3",
+      "name": "通用数字(深字浅底20)-3",
+      "file": "dig_dark20_3.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1722,
+        "y": 279,
+        "w": 22,
+        "h": 36
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 30,
+        "w": 1160,
+        "h": 1330
+      },
+      "std": 78.4,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207192,
+      "updatedAt": 1788982207192
+    },
+    {
+      "id": "dig_dark20_4",
+      "name": "通用数字(深字浅底20)-4",
+      "file": "dig_dark20_4.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1722,
+        "y": 279,
+        "w": 22,
+        "h": 36
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 30,
+        "w": 1160,
+        "h": 1330
+      },
+      "std": 83.1,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207201,
+      "updatedAt": 1788982207201
+    },
+    {
+      "id": "dig_dark20_5",
+      "name": "通用数字(深字浅底20)-5",
+      "file": "dig_dark20_5.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1722,
+        "y": 279,
+        "w": 22,
+        "h": 36
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 30,
+        "w": 1160,
+        "h": 1330
+      },
+      "std": 78.9,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207210,
+      "updatedAt": 1788982207210
+    },
+    {
+      "id": "dig_dark20_6",
+      "name": "通用数字(深字浅底20)-6",
+      "file": "dig_dark20_6.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1722,
+        "y": 279,
+        "w": 22,
+        "h": 36
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 30,
+        "w": 1160,
+        "h": 1330
+      },
+      "std": 78.3,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207219,
+      "updatedAt": 1788982207219
+    },
+    {
+      "id": "dig_dark20_7",
+      "name": "通用数字(深字浅底20)-7",
+      "file": "dig_dark20_7.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1722,
+        "y": 279,
+        "w": 22,
+        "h": 36
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 30,
+        "w": 1160,
+        "h": 1330
+      },
+      "std": 77.7,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207227,
+      "updatedAt": 1788982207227
+    },
+    {
+      "id": "dig_dark20_8",
+      "name": "通用数字(深字浅底20)-8",
+      "file": "dig_dark20_8.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1722,
+        "y": 279,
+        "w": 22,
+        "h": 36
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 30,
+        "w": 1160,
+        "h": 1330
+      },
+      "std": 78.6,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207235,
+      "updatedAt": 1788982207235
+    },
+    {
+      "id": "dig_dark20_9",
+      "name": "通用数字(深字浅底20)-9",
+      "file": "dig_dark20_9.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1722,
+        "y": 279,
+        "w": 22,
+        "h": 36
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 30,
+        "w": 1160,
+        "h": 1330
+      },
+      "std": 78.6,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207243,
+      "updatedAt": 1788982207243
+    },
+    {
+      "id": "dig_dark20_colon",
+      "name": "通用数字(深字浅底20)-冒号",
+      "file": "dig_dark20_colon.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1632,
+        "y": 279,
+        "w": 18,
+        "h": 36
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 180,
+        "w": 1160,
+        "h": 1180
+      },
+      "std": 66,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207252,
+      "updatedAt": 1788982207252
+    },
+    {
+      "id": "dig_dark20_slash",
+      "name": "通用数字(深字浅底20)-斜杠",
+      "file": "dig_dark20_slash.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2220,
+        "y": 41,
+        "w": 20,
+        "h": 42
+      },
+      "defaultRoi": {
+        "x": 2100,
+        "y": 20,
+        "w": 300,
+        "h": 80
+      },
+      "std": 23.4,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207258,
+      "updatedAt": 1788982207258
+    },
+    {
+      "id": "dig_dark20_comma",
+      "name": "通用数字(深字浅底20)-逗号",
+      "file": "dig_dark20_comma.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1859,
+        "y": 719,
+        "w": 18,
+        "h": 44
+      },
+      "defaultRoi": {
+        "x": 1400,
+        "y": 600,
+        "w": 1160,
+        "h": 600
+      },
+      "std": 61.4,
+      "tags": [
+        "digit",
+        "dig_dark20"
+      ],
+      "note": "深字浅底 20x30 通用数字套。实测同一套可读：部队管理行内『行军中/返回中 HH:MM:SS』倒计时、表头队列 N/M、资源点卡片储量、创建部队页兵力/负载量（跨这些场景实测 0.976~0.995）。★不能用于：搜索面板等级数字(18x27，0.88 偏低，另有专套)、卡片标题等级数字(24 宽，0.57)、坐标数字(15 宽，0.55)、白字深底的行军按钮耗时与采集中倒计时（极性相反，匹不上）。",
+      "createdAt": 1788982207286,
+      "updatedAt": 1788982207286
+    },
+    {
+      "id": "dig_light16_0",
+      "name": "采集中倒计时数字-0",
+      "file": "dig_light16_0.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1786,
+        "y": 282,
+        "w": 18,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 44.6,
+      "tags": [
+        "digit",
+        "dig_light16"
+      ],
+      "note": "白字深底 16x24 数字套，来源=部队管理行内『采集中 HH:MM:SS』倒计时（ETA 调度的数据源）。★该行的深色底会在灰色(进度条未到)与绿色(进度条已盖过文字)之间变化，本套裁自灰底，已实测在绿底上同样命中。★极性与 dig_dark20 相反，两套不能互换。",
+      "createdAt": 1788982438846,
+      "updatedAt": 1788982438846
+    },
+    {
+      "id": "dig_light16_1",
+      "name": "采集中倒计时数字-1",
+      "file": "dig_light16_1.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1786,
+        "y": 282,
+        "w": 18,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 48.3,
+      "tags": [
+        "digit",
+        "dig_light16"
+      ],
+      "note": "白字深底 16x24 数字套，来源=部队管理行内『采集中 HH:MM:SS』倒计时（ETA 调度的数据源）。★该行的深色底会在灰色(进度条未到)与绿色(进度条已盖过文字)之间变化，本套裁自灰底，已实测在绿底上同样命中。★极性与 dig_dark20 相反，两套不能互换。",
+      "createdAt": 1788982438854,
+      "updatedAt": 1788982438854
+    },
+    {
+      "id": "dig_light16_2",
+      "name": "采集中倒计时数字-2",
+      "file": "dig_light16_2.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1786,
+        "y": 282,
+        "w": 18,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 46.8,
+      "tags": [
+        "digit",
+        "dig_light16"
+      ],
+      "note": "白字深底 16x24 数字套，来源=部队管理行内『采集中 HH:MM:SS』倒计时（ETA 调度的数据源）。★该行的深色底会在灰色(进度条未到)与绿色(进度条已盖过文字)之间变化，本套裁自灰底，已实测在绿底上同样命中。★极性与 dig_dark20 相反，两套不能互换。",
+      "createdAt": 1788982438861,
+      "updatedAt": 1788982438861
+    },
+    {
+      "id": "dig_light16_3",
+      "name": "采集中倒计时数字-3",
+      "file": "dig_light16_3.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1786,
+        "y": 282,
+        "w": 18,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 45.4,
+      "tags": [
+        "digit",
+        "dig_light16"
+      ],
+      "note": "白字深底 16x24 数字套，来源=部队管理行内『采集中 HH:MM:SS』倒计时（ETA 调度的数据源）。★该行的深色底会在灰色(进度条未到)与绿色(进度条已盖过文字)之间变化，本套裁自灰底，已实测在绿底上同样命中。★极性与 dig_dark20 相反，两套不能互换。",
+      "createdAt": 1788982438869,
+      "updatedAt": 1788982438869
+    },
+    {
+      "id": "dig_light16_4",
+      "name": "采集中倒计时数字-4",
+      "file": "dig_light16_4.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1786,
+        "y": 282,
+        "w": 18,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 48.9,
+      "tags": [
+        "digit",
+        "dig_light16"
+      ],
+      "note": "白字深底 16x24 数字套，来源=部队管理行内『采集中 HH:MM:SS』倒计时（ETA 调度的数据源）。★该行的深色底会在灰色(进度条未到)与绿色(进度条已盖过文字)之间变化，本套裁自灰底，已实测在绿底上同样命中。★极性与 dig_dark20 相反，两套不能互换。",
+      "createdAt": 1788982438876,
+      "updatedAt": 1788982438876
+    },
+    {
+      "id": "dig_light16_5",
+      "name": "采集中倒计时数字-5",
+      "file": "dig_light16_5.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1786,
+        "y": 282,
+        "w": 18,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 44.4,
+      "tags": [
+        "digit",
+        "dig_light16"
+      ],
+      "note": "白字深底 16x24 数字套，来源=部队管理行内『采集中 HH:MM:SS』倒计时（ETA 调度的数据源）。★该行的深色底会在灰色(进度条未到)与绿色(进度条已盖过文字)之间变化，本套裁自灰底，已实测在绿底上同样命中。★极性与 dig_dark20 相反，两套不能互换。",
+      "createdAt": 1788982438883,
+      "updatedAt": 1788982438883
+    },
+    {
+      "id": "dig_light16_6",
+      "name": "采集中倒计时数字-6",
+      "file": "dig_light16_6.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1786,
+        "y": 282,
+        "w": 18,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 44.6,
+      "tags": [
+        "digit",
+        "dig_light16"
+      ],
+      "note": "白字深底 16x24 数字套，来源=部队管理行内『采集中 HH:MM:SS』倒计时（ETA 调度的数据源）。★该行的深色底会在灰色(进度条未到)与绿色(进度条已盖过文字)之间变化，本套裁自灰底，已实测在绿底上同样命中。★极性与 dig_dark20 相反，两套不能互换。",
+      "createdAt": 1788982438891,
+      "updatedAt": 1788982438891
+    },
+    {
+      "id": "dig_light16_7",
+      "name": "采集中倒计时数字-7",
+      "file": "dig_light16_7.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1786,
+        "y": 282,
+        "w": 18,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 44.8,
+      "tags": [
+        "digit",
+        "dig_light16"
+      ],
+      "note": "白字深底 16x24 数字套，来源=部队管理行内『采集中 HH:MM:SS』倒计时（ETA 调度的数据源）。★该行的深色底会在灰色(进度条未到)与绿色(进度条已盖过文字)之间变化，本套裁自灰底，已实测在绿底上同样命中。★极性与 dig_dark20 相反，两套不能互换。",
+      "createdAt": 1788982438899,
+      "updatedAt": 1788982438899
+    },
+    {
+      "id": "dig_light16_8",
+      "name": "采集中倒计时数字-8",
+      "file": "dig_light16_8.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1786,
+        "y": 282,
+        "w": 18,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 43.9,
+      "tags": [
+        "digit",
+        "dig_light16"
+      ],
+      "note": "白字深底 16x24 数字套，来源=部队管理行内『采集中 HH:MM:SS』倒计时（ETA 调度的数据源）。★该行的深色底会在灰色(进度条未到)与绿色(进度条已盖过文字)之间变化，本套裁自灰底，已实测在绿底上同样命中。★极性与 dig_dark20 相反，两套不能互换。",
+      "createdAt": 1788982438906,
+      "updatedAt": 1788982438906
+    },
+    {
+      "id": "dig_light16_9",
+      "name": "采集中倒计时数字-9",
+      "file": "dig_light16_9.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1786,
+        "y": 282,
+        "w": 18,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 43.8,
+      "tags": [
+        "digit",
+        "dig_light16"
+      ],
+      "note": "白字深底 16x24 数字套，来源=部队管理行内『采集中 HH:MM:SS』倒计时（ETA 调度的数据源）。★该行的深色底会在灰色(进度条未到)与绿色(进度条已盖过文字)之间变化，本套裁自灰底，已实测在绿底上同样命中。★极性与 dig_dark20 相反，两套不能互换。",
+      "createdAt": 1788982438913,
+      "updatedAt": 1788982438913
+    },
+    {
+      "id": "dig_light16_colon",
+      "name": "采集中倒计时数字-冒号",
+      "file": "dig_light16_colon.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1711,
+        "y": 282,
+        "w": 13,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 40.9,
+      "tags": [
+        "digit",
+        "dig_light16"
+      ],
+      "note": "白字深底 16x24 数字套，来源=部队管理行内『采集中 HH:MM:SS』倒计时（ETA 调度的数据源）。★该行的深色底会在灰色(进度条未到)与绿色(进度条已盖过文字)之间变化，本套裁自灰底，已实测在绿底上同样命中。★极性与 dig_dark20 相反，两套不能互换。",
+      "createdAt": 1788982438920,
+      "updatedAt": 1788982438920
+    },
+    {
+      "id": "tpl_status_marching",
+      "name": "部队管理-状态词『采集行军中』",
+      "file": "tpl_status_marching.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1472,
+        "y": 275,
+        "w": 185,
+        "h": 43
+      },
+      "defaultRoi": {
+        "x": 1440,
+        "y": 180,
+        "w": 520,
+        "h": 1120
+      },
+      "std": 55.9,
+      "tags": [
+        "troop",
+        "status"
+      ],
+      "note": "★去程状态。这类行没有载重进度条，状态词一律左对齐在 x=1476，背景是行底色(浅蓝)。倒计时紧跟其右，用 dig_dark20 读。",
+      "createdAt": 1788982572004,
+      "updatedAt": 1788982572004
+    },
+    {
+      "id": "tpl_status_returning",
+      "name": "部队管理-状态词『返回中』",
+      "file": "tpl_status_returning.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1430,
+        "y": 274,
+        "w": 118,
+        "h": 44
+      },
+      "defaultRoi": {
+        "x": 1380,
+        "y": 180,
+        "w": 600,
+        "h": 1100
+      },
+      "std": 57.1,
+      "tags": [
+        "troop-panel",
+        "status"
+      ],
+      "note": "★采集完成/召回后自动回城的证据，freeAt 语义的直接依据。浅蓝行底深灰字，左对齐 x≈1435，倒计时紧跟其右 +13px",
+      "createdAt": 1788982572014,
+      "updatedAt": 1788986919858
+    },
+    {
+      "id": "dig_march_btn_0",
+      "name": "行军按钮耗时数字-0",
+      "file": "dig_march_btn_0.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2027,
+        "y": 1285,
+        "w": 23,
+        "h": 33
+      },
+      "defaultRoi": {
+        "x": 1700,
+        "y": 1150,
+        "w": 860,
+        "h": 220
+      },
+      "std": 27.2,
+      "tags": [
+        "digit",
+        "dig_march_btn"
+      ],
+      "note": "白字金底 19x29。★本套不全（只采到 0/1/9/:）。**推荐改用另一条路**：派兵后在部队管理面板读『采集行军中』的倒计时（深字浅底，dig_dark20 是完整的 0-9），travelTime 一样准确。",
+      "createdAt": 1788982572041,
+      "updatedAt": 1788982572041
+    },
+    {
+      "id": "dig_march_btn_1",
+      "name": "行军按钮耗时数字-1",
+      "file": "dig_march_btn_1.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2104,
+        "y": 1285,
+        "w": 23,
+        "h": 33
+      },
+      "defaultRoi": {
+        "x": 1700,
+        "y": 1150,
+        "w": 860,
+        "h": 220
+      },
+      "std": 25.4,
+      "tags": [
+        "digit",
+        "dig_march_btn"
+      ],
+      "note": "同上。",
+      "createdAt": 1788982572065,
+      "updatedAt": 1788982572065
+    },
+    {
+      "id": "dig_march_btn_9",
+      "name": "行军按钮耗时数字-9",
+      "file": "dig_march_btn_9.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2158,
+        "y": 1285,
+        "w": 23,
+        "h": 33
+      },
+      "defaultRoi": {
+        "x": 1700,
+        "y": 1150,
+        "w": 860,
+        "h": 220
+      },
+      "std": 29.2,
+      "tags": [
+        "digit",
+        "dig_march_btn"
+      ],
+      "note": "同上。",
+      "createdAt": 1788982572092,
+      "updatedAt": 1788982572092
+    },
+    {
+      "id": "dig_march_btn_colon",
+      "name": "dig_march_btn 字形 :",
+      "file": "dig_march_btn_colon.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2100,
+        "y": 1284,
+        "w": 12,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 2020,
+        "y": 1204,
+        "w": 172,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 23.2,
+      "tags": [
+        "digit",
+        "dig_march_btn"
+      ],
+      "note": "从 s09_create.png 的 2052,1282,168,40 切出；字形 :",
+      "createdAt": 1788982572116,
+      "updatedAt": 1788986372949
+    },
+    {
+      "id": "tpl_res_gold_title",
+      "name": "卡片标题-金矿",
+      "file": "tpl_res_gold_title.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1848,
+        "y": 638,
+        "w": 102,
+        "h": 54
+      },
+      "defaultRoi": {
+        "x": 1300,
+        "y": 600,
+        "w": 1000,
+        "h": 120
+      },
+      "std": 99.3,
+      "tags": [
+        "card",
+        "restype"
+      ],
+      "note": "『金矿』两字，墨迹 1853..1942/642..686。标题整体居中，两字标题比三字标题右移",
+      "createdAt": 1788982913738,
+      "updatedAt": 1788987315257
+    },
+    {
+      "id": "tpl_res_iron_title",
+      "name": "卡片标题-铁矿",
+      "file": "tpl_res_iron_title.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1848,
+        "y": 638,
+        "w": 102,
+        "h": 54
+      },
+      "defaultRoi": {
+        "x": 1300,
+        "y": 600,
+        "w": 1000,
+        "h": 120
+      },
+      "std": 98.7,
+      "tags": [
+        "card",
+        "restype"
+      ],
+      "note": "『铁矿』两字，与『金矿』只差一字，必须交叉验证",
+      "createdAt": 1788982913763,
+      "updatedAt": 1788987386113
+    },
+    {
+      "id": "tpl_res_mana_title",
+      "name": "卡片标题-魔水池",
+      "file": "tpl_res_mana_title.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1826,
+        "y": 638,
+        "w": 144,
+        "h": 54
+      },
+      "defaultRoi": {
+        "x": 1300,
+        "y": 600,
+        "w": 1000,
+        "h": 120
+      },
+      "std": 97.4,
+      "tags": [
+        "card",
+        "restype"
+      ],
+      "note": "『魔水池』三字，墨迹 1830..1965/642..686",
+      "createdAt": 1788982913791,
+      "updatedAt": 1788987461816
+    },
+    {
+      "id": "tpl_nav_map_toggle",
+      "name": "城内-切到世界地图按钮",
+      "file": "tpl_nav_map_toggle.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 40,
+        "y": 1240,
+        "w": 170,
+        "h": 158
+      },
+      "defaultRoi": {
+        "x": 10,
+        "y": 1190,
+        "w": 320,
+        "h": 250
+      },
+      "std": 61,
+      "tags": [
+        "nav",
+        "city"
+      ],
+      "note": "城内左下角的地图卷轴按钮；点它切到世界地图。tap 点 (115,1330)。与世界地图上的城堡按钮 tpl_nav_city_toggle 互为两态",
+      "createdAt": 1788983134205,
+      "updatedAt": 1788987715308
+    },
+    {
+      "id": "tpl_dlg_title_notice",
+      "name": "通用对话框-标题『注意』",
+      "file": "tpl_dlg_title_notice.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1186,
+        "y": 320,
+        "w": 208,
+        "h": 62
+      },
+      "defaultRoi": {
+        "x": 900,
+        "y": 280,
+        "w": 760,
+        "h": 140
+      },
+      "std": 92.4,
+      "tags": [
+        "dialog"
+      ],
+      "note": "★世界地图上按 BACK 会弹出『您确定要退出游戏吗?』，误按『确定』会退出游戏。脚本必须能识别这个对话框并点『取消』。",
+      "createdAt": 1788983253654,
+      "updatedAt": 1788983253654
+    },
+    {
+      "id": "tpl_btn_cancel",
+      "name": "通用对话框-取消",
+      "file": "tpl_btn_cancel.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1488,
+        "y": 940,
+        "w": 120,
+        "h": 60
+      },
+      "defaultRoi": {
+        "x": 1200,
+        "y": 880,
+        "w": 900,
+        "h": 180
+      },
+      "std": 42.4,
+      "tags": [
+        "dialog"
+      ],
+      "note": "蓝底『取消』。本次实测中心 (1548,970)。",
+      "createdAt": 1788983253665,
+      "updatedAt": 1788983253665
+    },
+    {
+      "id": "tpl_btn_confirm",
+      "name": "通用对话框-确定",
+      "file": "tpl_btn_confirm.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 952,
+        "y": 940,
+        "w": 118,
+        "h": 58
+      },
+      "defaultRoi": {
+        "x": 700,
+        "y": 880,
+        "w": 900,
+        "h": 180
+      },
+      "std": 24.7,
+      "tags": [
+        "dialog"
+      ],
+      "note": "红底『确定』。★退出游戏对话框上的『确定』绝不能点，只作识别用。",
+      "createdAt": 1788983253677,
+      "updatedAt": 1788983253677
+    },
+    {
+      "id": "tpl_label_auto_until_empty",
+      "name": "卡片-自动采集至清空 文字",
+      "file": "tpl_label_auto_until_empty.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1756,
+        "y": 898,
+        "w": 214,
+        "h": 48
+      },
+      "defaultRoi": {
+        "x": 1560,
+        "y": 860,
+        "w": 800,
+        "h": 120
+      },
+      "std": 60.1,
+      "tags": [
+        "card",
+        "anchor"
+      ],
+      "note": "★勾选框探针点 = 本模板左边缘 -37px、同 y 中心（实测圆心 1720,921）",
+      "createdAt": 1788986102914,
+      "updatedAt": 1788986102914
+    },
+    {
+      "id": "dig_card_coord_comma",
+      "name": "dig_card_coord 字形 ,",
+      "file": "dig_card_coord_comma.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1920,
+        "y": 1118,
+        "w": 10,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1840,
+        "y": 1038,
+        "w": 170,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 23.8,
+      "tags": [
+        "digit",
+        "dig_card_coord"
+      ],
+      "note": "从 s05_card_wood8.png 的 1869,1114,120,42 切出；字形 ,",
+      "createdAt": 1788986103351,
+      "updatedAt": 1788986103351
+    },
+    {
+      "id": "tpl_status_gather_marching",
+      "name": "部队管理-状态词『采集行军中』",
+      "file": "tpl_status_gather_marching.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1432,
+        "y": 274,
+        "w": 190,
+        "h": 44
+      },
+      "defaultRoi": {
+        "x": 1380,
+        "y": 180,
+        "w": 600,
+        "h": 1100
+      },
+      "std": 56.5,
+      "tags": [
+        "troop-panel",
+        "status"
+      ],
+      "note": "★浅蓝行底、深灰字（与绿色进度条上的白字『采集中』极性相反，两套模板不可互换）。墨迹 1436..1617/278..313；状态词居中，倒计时紧跟其右 +13px",
+      "createdAt": 1788986632958,
+      "updatedAt": 1788986632958
+    },
+    {
+      "id": "dig_stamina_slash",
+      "name": "dig_stamina 字形 /",
+      "file": "dig_stamina_slash.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2154,
+        "y": 200,
+        "w": 22,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 2074,
+        "y": 120,
+        "w": 182,
+        "h": 188
+      },
+      "threshold": 0.78,
+      "std": 58.5,
+      "tags": [
+        "digit",
+        "dig_stamina"
+      ],
+      "note": "从 s10_panel_marching.png 的 2101,202,106,24 切出；字形 /",
+      "createdAt": 1788986633322,
+      "updatedAt": 1788986633322
+    },
+    {
+      "id": "tpl_btn_back_generic",
+      "name": "通用返回箭头(左上角)",
+      "file": "tpl_btn_back_generic.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 22,
+        "y": 24,
+        "w": 68,
+        "h": 88
+      },
+      "defaultRoi": {
+        "x": 0,
+        "y": 0,
+        "w": 300,
+        "h": 200
+      },
+      "std": 40.9,
+      "tags": [
+        "nav",
+        "generic"
+      ],
+      "note": "深红方块+白色『<』，创建部队页/多数二级页左上角通用；用于从二级页退回",
+      "createdAt": 1788987715319,
+      "updatedAt": 1788987715319
+    },
+    {
+      "id": "tpl_alliance_tag_sample_t89s",
+      "name": "卡片-联盟缩写样例 [T89S]",
+      "file": "tpl_alliance_tag_sample_t89s.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1954,
+        "y": 828,
+        "w": 124,
+        "h": 44
+      },
+      "defaultRoi": {
+        "x": 1880,
+        "y": 800,
+        "w": 300,
+        "h": 100
+      },
+      "std": 85.5,
+      "tags": [
+        "card",
+        "sample",
+        "foreign-alliance"
+      ],
+      "note": "★样例，不是本方联盟！本账号联盟实测为 [T89A]（个人信息页读到），而资源点卡片上出现的 [T89S] 是他方联盟。此模板仅用于验证『所属联盟』字段 ROI 是否正确，绝不可当作 tpl_alliance_own 使用",
+      "createdAt": 1788987870517,
+      "updatedAt": 1788987870517
+    },
+    {
+      "id": "dig_card_coord_6",
+      "name": "dig_card_coord 字形 6",
+      "file": "dig_card_coord_6.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1868,
+        "y": 1118,
+        "w": 20,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1788,
+        "y": 1038,
+        "w": 180,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 31.8,
+      "tags": [
+        "digit",
+        "dig_card_coord"
+      ],
+      "note": "从 s05_card_wood8.png 的 1869,1114,120,42 切出；字形 6",
+      "createdAt": 1788988232661,
+      "updatedAt": 1788988232661
+    },
+    {
+      "id": "dig_card_coord_1",
+      "name": "dig_card_coord 字形 1",
+      "file": "dig_card_coord_1.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1886,
+        "y": 1118,
+        "w": 18,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1806,
+        "y": 1038,
+        "w": 178,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 31,
+      "tags": [
+        "digit",
+        "dig_card_coord"
+      ],
+      "note": "从 s05_card_wood8.png 的 1869,1114,120,42 切出；字形 1",
+      "createdAt": 1788988232688,
+      "updatedAt": 1788988232688
+    },
+    {
+      "id": "dig_card_coord_5",
+      "name": "dig_card_coord 字形 5",
+      "file": "dig_card_coord_5.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1902,
+        "y": 1118,
+        "w": 20,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1822,
+        "y": 1038,
+        "w": 180,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 31.1,
+      "tags": [
+        "digit",
+        "dig_card_coord"
+      ],
+      "note": "从 s05_card_wood8.png 的 1869,1114,120,42 切出；字形 5",
+      "createdAt": 1788988232716,
+      "updatedAt": 1788988232716
+    },
+    {
+      "id": "dig_card_coord_3",
+      "name": "dig_card_coord 字形 3",
+      "file": "dig_card_coord_3.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1944,
+        "y": 1118,
+        "w": 20,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1864,
+        "y": 1038,
+        "w": 180,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 30.6,
+      "tags": [
+        "digit",
+        "dig_card_coord"
+      ],
+      "note": "从 s05_card_wood8.png 的 1869,1114,120,42 切出；字形 3",
+      "createdAt": 1788988232741,
+      "updatedAt": 1788988232741
+    },
+    {
+      "id": "dig_card_coord_8",
+      "name": "dig_card_coord 字形 8",
+      "file": "dig_card_coord_8.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1962,
+        "y": 1118,
+        "w": 20,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1882,
+        "y": 1038,
+        "w": 180,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 32.4,
+      "tags": [
+        "digit",
+        "dig_card_coord"
+      ],
+      "note": "卡片坐标 615,538",
+      "createdAt": 1788988232834,
+      "updatedAt": 1788988232834
+    },
+    {
+      "id": "dig_card_coord_9",
+      "name": "dig_card_coord 字形 9",
+      "file": "dig_card_coord_9.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1884,
+        "y": 1118,
+        "w": 20,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1804,
+        "y": 1038,
+        "w": 180,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 31.6,
+      "tags": [
+        "digit",
+        "dig_card_coord"
+      ],
+      "note": "卡片坐标 597,525",
+      "createdAt": 1788988232862,
+      "updatedAt": 1788988232862
+    },
+    {
+      "id": "dig_card_coord_7",
+      "name": "dig_card_coord 字形 7",
+      "file": "dig_card_coord_7.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1902,
+        "y": 1118,
+        "w": 20,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1822,
+        "y": 1038,
+        "w": 180,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 28.1,
+      "tags": [
+        "digit",
+        "dig_card_coord"
+      ],
+      "note": "卡片坐标 597,525",
+      "createdAt": 1788988232889,
+      "updatedAt": 1788988232889
+    },
+    {
+      "id": "dig_card_coord_2",
+      "name": "dig_card_coord 字形 2",
+      "file": "dig_card_coord_2.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1944,
+        "y": 1118,
+        "w": 20,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1864,
+        "y": 1038,
+        "w": 180,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 30.8,
+      "tags": [
+        "digit",
+        "dig_card_coord"
+      ],
+      "note": "卡片坐标 597,525",
+      "createdAt": 1788988232915,
+      "updatedAt": 1788988232915
+    },
+    {
+      "id": "dig_stamina_1",
+      "name": "dig_stamina 字形 1",
+      "file": "dig_stamina_1.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2100,
+        "y": 200,
+        "w": 18,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 2020,
+        "y": 120,
+        "w": 178,
+        "h": 188
+      },
+      "threshold": 0.78,
+      "std": 78,
+      "tags": [
+        "digit",
+        "dig_stamina"
+      ],
+      "note": "从 s10_panel_marching.png 的 2101,202,106,24 切出；字形 1",
+      "createdAt": 1788988232922,
+      "updatedAt": 1788988232922
+    },
+    {
+      "id": "dig_stamina_0",
+      "name": "dig_stamina 字形 0",
+      "file": "dig_stamina_0.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2116,
+        "y": 200,
+        "w": 20,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 2036,
+        "y": 120,
+        "w": 180,
+        "h": 188
+      },
+      "threshold": 0.78,
+      "std": 76.4,
+      "tags": [
+        "digit",
+        "dig_stamina"
+      ],
+      "note": "从 s10_panel_marching.png 的 2101,202,106,24 切出；字形 0",
+      "createdAt": 1788988232928,
+      "updatedAt": 1788988232928
+    },
+    {
+      "id": "dig_stamina_5",
+      "name": "dig_stamina 字形 5",
+      "file": "dig_stamina_5.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2132,
+        "y": 200,
+        "w": 24,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 2052,
+        "y": 120,
+        "w": 184,
+        "h": 188
+      },
+      "threshold": 0.78,
+      "std": 68.5,
+      "tags": [
+        "digit",
+        "dig_stamina"
+      ],
+      "note": "从 s10_panel_marching.png 的 2101,202,106,24 切出；字形 5",
+      "createdAt": 1788988232935,
+      "updatedAt": 1788988232935
+    },
+    {
+      "id": "dig_card_title_7",
+      "name": "dig_card_title 字形 7",
+      "file": "dig_card_title_7.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1790,
+        "y": 644,
+        "w": 22,
+        "h": 44
+      },
+      "defaultRoi": {
+        "x": 1710,
+        "y": 564,
+        "w": 182,
+        "h": 204
+      },
+      "threshold": 0.78,
+      "std": 97.7,
+      "tags": [
+        "digit",
+        "dig_card_title"
+      ],
+      "note": "卡片标题『等级7 伐木场』",
+      "createdAt": 1788988232955,
+      "updatedAt": 1788988232955
+    },
+    {
+      "id": "dig_card_title_8",
+      "name": "dig_card_title 字形 8",
+      "file": "dig_card_title_8.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1792,
+        "y": 644,
+        "w": 20,
+        "h": 44
+      },
+      "defaultRoi": {
+        "x": 1712,
+        "y": 564,
+        "w": 180,
+        "h": 204
+      },
+      "threshold": 0.78,
+      "std": 98.5,
+      "tags": [
+        "digit",
+        "dig_card_title"
+      ],
+      "note": "卡片标题『等级8 伐木场』",
+      "createdAt": 1788988232973,
+      "updatedAt": 1788988232973
+    },
+    {
+      "id": "dig_march_btn_2",
+      "name": "dig_march_btn 字形 2",
+      "file": "dig_march_btn_2.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2170,
+        "y": 1284,
+        "w": 24,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 2090,
+        "y": 1204,
+        "w": 184,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 27.9,
+      "tags": [
+        "digit",
+        "dig_march_btn"
+      ],
+      "note": "从 s09_create.png 的 2052,1282,168,40 切出；字形 2",
+      "createdAt": 1788988232999,
+      "updatedAt": 1788988232999
+    },
+    {
+      "id": "dig_march_btn_5",
+      "name": "dig_march_btn 字形 5",
+      "file": "dig_march_btn_5.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2192,
+        "y": 1284,
+        "w": 24,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 2112,
+        "y": 1204,
+        "w": 184,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 29.3,
+      "tags": [
+        "digit",
+        "dig_march_btn"
+      ],
+      "note": "从 s09_create.png 的 2052,1282,168,40 切出；字形 5",
+      "createdAt": 1788988233023,
+      "updatedAt": 1788988233023
+    },
+    {
+      "id": "tpl_dlg_kicked",
+      "name": "顶号提示·您已经在其他设备上登录了",
+      "file": "tpl_dlg_kicked.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 976,
+        "y": 580,
+        "w": 616,
+        "h": 76
+      },
+      "defaultRoi": {
+        "x": 856,
+        "y": 460,
+        "w": 856,
+        "h": 320
+      },
+      "std": 68.3,
+      "tags": [
+        "顶号",
+        "异常检测"
+      ],
+      "note": "账号被顶下线的弹窗正文。弹窗是稳态不会自己消失，任何一次采样都能看到。2026-09-09 由用户主动制造顶号后采集。",
+      "createdAt": 1789005276428,
+      "updatedAt": 1789005276428
+    },
+    {
+      "id": "tpl_dlg_network_lost",
+      "name": "网络断开重连提示·网络不稳定连接已断开",
+      "file": "tpl_dlg_network_lost.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1020,
+        "y": 552,
+        "w": 552,
+        "h": 68
+      },
+      "defaultRoi": {
+        "x": 900,
+        "y": 440,
+        "w": 780,
+        "h": 300
+      },
+      "std": 65,
+      "tags": [
+        "顶号",
+        "异常检测"
+      ],
+      "note": "「网络不稳定，连接已断开。请点击确定重新连接。(e12: MRF)」的第一行。错误码会变，故只框首行。点确定即重连。2026-09-09 顶号后重启游戏时实际遇到并采集。",
+      "createdAt": 1789005794255,
+      "updatedAt": 1789005794255
+    },
+    {
+      "id": "tpl_title_res_stats",
+      "name": "资源统计-弹窗标题",
+      "file": "tpl_title_res_stats.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1155,
+        "y": 144,
+        "w": 236,
+        "h": 66
+      },
+      "defaultRoi": {
+        "x": 1000,
+        "y": 100,
+        "w": 560,
+        "h": 160
+      },
+      "std": 100.8,
+      "note": "① 判定弹窗已打开（步骤 2 的校验）；② 还原时判定弹窗已关 白字「资源统计」+ 四周黑色笔刷底。★不要框到笔刷毛边（y<136 或 y>220 是模糊的地图背景）。",
+      "createdAt": 1789016206507,
+      "updatedAt": 1789016206507
+    },
+    {
+      "id": "tpl_btn_res_stats",
+      "name": "资源页-资源统计按钮",
+      "file": "tpl_btn_res_stats.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1480,
+        "y": 234,
+        "w": 200,
+        "h": 62
+      },
+      "defaultRoi": {
+        "x": 1380,
+        "y": 200,
+        "w": 400,
+        "h": 130
+      },
+      "std": 63.5,
+      "note": "① 判定已在「道具→资源」页（步骤 1 的校验）；② 它的中心就是步骤 2 的点击点；③ 还原第一步的校验 深灰字「资源统计」+ 右侧深棕色小图标。底是很淡的粉色渐变，靠文字与图标提供纹理。",
+      "createdAt": 1789016206522,
+      "updatedAt": 1789016206522
+    },
+    {
+      "id": "tpl_btn_close_res_stats",
+      "name": "资源统计-右上关闭X",
+      "file": "tpl_btn_close_res_stats.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2068,
+        "y": 142,
+        "w": 102,
+        "h": 102
+      },
+      "defaultRoi": {
+        "x": 2000,
+        "y": 90,
+        "w": 260,
+        "h": 220
+      },
+      "std": 35.5,
+      "note": "第一次 BACK 后标题仍在时点它关弹窗；命中才点，不命中不点。",
+      "createdAt": 1789016206534,
+      "updatedAt": 1789016206534
+    },
+    {
+      "id": "tpl_title_items_res",
+      "name": "道具页-左上标题「资源」",
+      "file": "tpl_title_items_res.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 133,
+        "y": 33,
+        "w": 122,
+        "h": 66
+      },
+      "defaultRoi": {
+        "x": 100,
+        "y": 10,
+        "w": 220,
+        "h": 110
+      },
+      "std": 93.1,
+      "note": "辅助判定「道具页已打开且选中资源分类」。",
+      "createdAt": 1789016206540,
+      "updatedAt": 1789016206540
+    },
+    {
+      "id": "tpl_nav_items",
+      "name": "主界面-底部导航「道具」",
+      "file": "tpl_nav_items.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2046,
+        "y": 1312,
+        "w": 108,
+        "h": 66
+      },
+      "defaultRoi": {
+        "x": 1980,
+        "y": 1270,
+        "w": 240,
+        "h": 170
+      },
+      "std": 37.2,
+      "note": "预检时确认底部导航可见；缺失时按固定坐标 nav.itemsTap 点。 只框米色宝箱本体的下半段，避开右上角红色角标与下方白字「道具」。★ 由 res_06_back2.png 裁出（本帧含底部导航）；若真机上分数偏低请在调度空窗重裁。",
+      "createdAt": 1789016206598,
+      "updatedAt": 1789016206598
+    },
+    {
+      "id": "tpl_label_res_gold",
+      "name": "资源统计-行标签「金币」",
+      "file": "tpl_label_res_gold.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 808,
+        "y": 431,
+        "w": 78,
+        "h": 42
+      },
+      "defaultRoi": {
+        "x": 780,
+        "y": 412,
+        "w": 200,
+        "h": 80
+      },
+      "std": 93.4,
+      "createdAt": 1789016206610,
+      "updatedAt": 1789016206610
+    },
+    {
+      "id": "tpl_label_res_wood",
+      "name": "资源统计-行标签「木材」",
+      "file": "tpl_label_res_wood.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 807,
+        "y": 626,
+        "w": 81,
+        "h": 43
+      },
+      "defaultRoi": {
+        "x": 780,
+        "y": 608,
+        "w": 200,
+        "h": 80
+      },
+      "std": 94.5,
+      "createdAt": 1789016206628,
+      "updatedAt": 1789016206628
+    },
+    {
+      "id": "tpl_label_res_iron",
+      "name": "资源统计-行标签「铁矿石」",
+      "file": "tpl_label_res_iron.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 807,
+        "y": 822,
+        "w": 118,
+        "h": 43
+      },
+      "defaultRoi": {
+        "x": 780,
+        "y": 804,
+        "w": 200,
+        "h": 80
+      },
+      "std": 95.3,
+      "createdAt": 1789016206650,
+      "updatedAt": 1789016206650
+    },
+    {
+      "id": "tpl_label_res_mana",
+      "name": "资源统计-行标签「魔水」",
+      "file": "tpl_label_res_mana.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 807,
+        "y": 1018,
+        "w": 81,
+        "h": 42
+      },
+      "defaultRoi": {
+        "x": 780,
+        "y": 1000,
+        "w": 200,
+        "h": 80
+      },
+      "std": 93.5,
+      "createdAt": 1789016206674,
+      "updatedAt": 1789016206674
+    },
+    {
+      "id": "tpl_resstat_unit_yi",
+      "name": "资源统计-单位「亿」",
+      "file": "tpl_resstat_unit_yi.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1291,
+        "y": 434,
+        "w": 37,
+        "h": 37
+      },
+      "defaultRoi": {
+        "x": 1211,
+        "y": 354,
+        "w": 197,
+        "h": 197
+      },
+      "std": 95.1,
+      "tags": [
+        "resstat_unit"
+      ],
+      "note": "单位字。★不进字形集（没有 digit 标签），读表模块自己按 shrink=1 编译后用 matchIn 在单元格里定位，把数字 ROI 截到它左边。 金币·道具总量「2.9亿」的「亿」整字（字芯 1292..1326 × 435..469，四周 1px 底）。",
+      "createdAt": 1789016206684,
+      "updatedAt": 1789016206684
+    },
+    {
+      "id": "dig_resstat_0",
+      "name": "资源统计数字-0",
+      "file": "dig_resstat_0.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1269,
+        "y": 828,
+        "w": 21,
+        "h": 31
+      },
+      "defaultRoi": {
+        "x": 1189,
+        "y": 748,
+        "w": 181,
+        "h": 191
+      },
+      "std": 95,
+      "tags": [
+        "digit",
+        "dig_resstat"
+      ],
+      "note": "资源统计表数字（浅底黑字，shrink=1）。来源：铁矿石·道具总量 2.0亿",
+      "createdAt": 1789016206702,
+      "updatedAt": 1789016206702
+    },
+    {
+      "id": "dig_resstat_1",
+      "name": "资源统计数字-1",
+      "file": "dig_resstat_1.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1748,
+        "y": 437,
+        "w": 19,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 1668,
+        "y": 357,
+        "w": 179,
+        "h": 190
+      },
+      "std": 93.6,
+      "tags": [
+        "digit",
+        "dig_resstat"
+      ],
+      "note": "资源统计表数字（浅底黑字，shrink=1）。来源：金币·资源总量 11.1亿（首位）",
+      "createdAt": 1789016206711,
+      "updatedAt": 1789016206711
+    },
+    {
+      "id": "dig_resstat_2",
+      "name": "资源统计数字-2",
+      "file": "dig_resstat_2.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1233,
+        "y": 437,
+        "w": 21,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 1153,
+        "y": 357,
+        "w": 181,
+        "h": 190
+      },
+      "std": 95,
+      "tags": [
+        "digit",
+        "dig_resstat"
+      ],
+      "note": "资源统计表数字（浅底黑字，shrink=1）。来源：金币·道具总量 2.9亿",
+      "createdAt": 1789016206722,
+      "updatedAt": 1789016206722
+    },
+    {
+      "id": "dig_resstat_3",
+      "name": "资源统计数字-3",
+      "file": "dig_resstat_3.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1233,
+        "y": 632,
+        "w": 21,
+        "h": 31
+      },
+      "defaultRoi": {
+        "x": 1153,
+        "y": 552,
+        "w": 181,
+        "h": 191
+      },
+      "std": 93,
+      "tags": [
+        "digit",
+        "dig_resstat"
+      ],
+      "note": "资源统计表数字（浅底黑字，shrink=1）。来源：木材·道具总量 3.2亿",
+      "createdAt": 1789016206737,
+      "updatedAt": 1789016206737
+    },
+    {
+      "id": "dig_resstat_4",
+      "name": "资源统计数字-4",
+      "file": "dig_resstat_4.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1758,
+        "y": 633,
+        "w": 23,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 1678,
+        "y": 553,
+        "w": 183,
+        "h": 190
+      },
+      "std": 95.8,
+      "tags": [
+        "digit",
+        "dig_resstat"
+      ],
+      "note": "资源统计表数字（浅底黑字，shrink=1）。来源：木材·资源总量 4.1亿",
+      "createdAt": 1789016206750,
+      "updatedAt": 1789016206750
+    },
+    {
+      "id": "dig_resstat_6",
+      "name": "资源统计数字-6",
+      "file": "dig_resstat_6.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1233,
+        "y": 1024,
+        "w": 21,
+        "h": 31
+      },
+      "defaultRoi": {
+        "x": 1153,
+        "y": 944,
+        "w": 181,
+        "h": 191
+      },
+      "std": 93.4,
+      "tags": [
+        "digit",
+        "dig_resstat"
+      ],
+      "note": "资源统计表数字（浅底黑字，shrink=1）。来源：魔水·道具总量 6.2亿",
+      "createdAt": 1789016206792,
+      "updatedAt": 1789016206792
+    },
+    {
+      "id": "dig_resstat_7",
+      "name": "资源统计数字-7",
+      "file": "dig_resstat_7.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1759,
+        "y": 1024,
+        "w": 21,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 1679,
+        "y": 944,
+        "w": 181,
+        "h": 190
+      },
+      "std": 93.6,
+      "tags": [
+        "digit",
+        "dig_resstat"
+      ],
+      "note": "资源统计表数字（浅底黑字，shrink=1）。来源：魔水·资源总量 7.2亿",
+      "createdAt": 1789016206817,
+      "updatedAt": 1789016206817
+    },
+    {
+      "id": "dig_resstat_9",
+      "name": "资源统计数字-9",
+      "file": "dig_resstat_9.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1269,
+        "y": 437,
+        "w": 21,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 1189,
+        "y": 357,
+        "w": 181,
+        "h": 190
+      },
+      "std": 89.8,
+      "tags": [
+        "digit",
+        "dig_resstat"
+      ],
+      "note": "资源统计表数字（浅底黑字，shrink=1）。来源：金币·道具总量 2.9亿",
+      "createdAt": 1789016206831,
+      "updatedAt": 1789016206831
+    },
+    {
+      "id": "dig_resstat_dot",
+      "name": "资源统计数字-.",
+      "file": "dig_resstat_dot.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1255,
+        "y": 456,
+        "w": 12,
+        "h": 12
+      },
+      "defaultRoi": {
+        "x": 1175,
+        "y": 376,
+        "w": 172,
+        "h": 172
+      },
+      "std": 86.8,
+      "tags": [
+        "digit",
+        "dig_resstat"
+      ],
+      "note": "资源统计表数字（浅底黑字，shrink=1）。来源：金币·道具总量 2.9亿 的小数点（7x7 字芯，四周多留 2px 底）",
+      "createdAt": 1789016206843,
+      "updatedAt": 1789016206843
+    },
+    {
+      "id": "tpl_nav_city_toggle_b",
+      "name": "世界地图-回城按钮(变体B·兽族·透明底)",
+      "file": "tpl_nav_city_toggle_b.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 22,
+        "y": 1222,
+        "w": 196,
+        "h": 200
+      },
+      "defaultRoi": {
+        "x": 10,
+        "y": 1190,
+        "w": 320,
+        "h": 250
+      },
+      "std": 45.1,
+      "maskCoverage": 0.932,
+      "tags": [
+        "nav",
+        "worldmap",
+        "变体",
+        "透明底"
+      ],
+      "note": "兽族阵营（huadong 小号）世界地图左下角的回城按钮：白圆环 + 兽族城堡剪影。圆环里透着地图地形，拖动地图就变，所以用 3 帧（原位 + 拖动两次）差分去底。与法师阵营的 tpl_nav_city_toggle 互为 anyTemplate。2026-09-10 重裁（原版整块裁，圆环外的地形会拉低分数）。",
+      "createdAt": 1789016363591,
+      "updatedAt": 1789024092038
+    },
+    {
+      "id": "tpl_nav_map_toggle_b",
+      "name": "城内-切到世界地图按钮(变体B·兽族·透明底)",
+      "file": "tpl_nav_map_toggle_b.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 22,
+        "y": 1224,
+        "w": 196,
+        "h": 192
+      },
+      "defaultRoi": {
+        "x": 10,
+        "y": 1190,
+        "w": 320,
+        "h": 250
+      },
+      "std": 47,
+      "maskCoverage": 0.601,
+      "tags": [
+        "nav",
+        "city",
+        "变体",
+        "透明底"
+      ],
+      "note": "兽族阵营（huadong 小号）城内左下角的「切世界地图」按钮：白圆环 + 菱形指针 + 八角地图盘。圆环里透着城内地形，城一拖动就变，所以用 3 帧（原位 + 拖动两次）差分去底，只留圆环/指针/地图盘参与匹配。整块匹配换个背景只有 0.79~0.89，掩码后 0.97~0.98；对法师城内按钮 0.63、世界地图 ≤0.50。tap 点仍是 (115,1330)。2026-09-10 裁。",
+      "createdAt": 1789023849379,
+      "updatedAt": 1789023849379
+    },
+    {
+      "id": "dig_card_coord_0",
+      "name": "dig_card_coord 字形 0",
+      "file": "dig_card_coord_0.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1322,
+        "y": 554,
+        "w": 20,
+        "h": 34
+      },
+      "defaultRoi": {
+        "x": 1242,
+        "y": 474,
+        "w": 180,
+        "h": 194
+      },
+      "threshold": 0.78,
+      "std": 57.7,
+      "tags": [
+        "digit",
+        "dig_card_coord"
+      ],
+      "note": "从 inst3_panel.png（2 队列小号 aaaaa）部队管理第 2 行「坐标:1239,710」切出；字形 0。2026-09-10 补，之前坐标含 0 一律读不出（4 仍缺）。",
+      "createdAt": 1789027324179,
+      "updatedAt": 1789027324179
+    },
+    {
+      "id": "tpl_row_res_gold",
+      "name": "部队管理-行内资源缩略图·金币矿",
+      "file": "tpl_row_res_gold.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1130,
+        "y": 196,
+        "w": 180,
+        "h": 104
+      },
+      "defaultRoi": {
+        "x": 1105,
+        "y": 178,
+        "w": 230,
+        "h": 150
+      },
+      "std": 59.1,
+      "tags": [
+        "troop-panel",
+        "row-resource"
+      ],
+      "note": "部队管理面板每行左侧的目标资源点缩略图（褐色岩台 + 金色矿石）。采集中的行显示资源点，行军中/返回中的行显示部队图（认不出资源）。ROI 为第 1 行的，实际按行中心 relRect(THUMB_REL) 搜。2026-09-10 从 huadong 面板第 1 行裁。",
+      "createdAt": 1789028589350,
+      "updatedAt": 1789028589350
+    },
+    {
+      "id": "tpl_row_res_wood",
+      "name": "部队管理-行内资源缩略图·木材",
+      "file": "tpl_row_res_wood.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1130,
+        "y": 439,
+        "w": 180,
+        "h": 104
+      },
+      "defaultRoi": {
+        "x": 1105,
+        "y": 178,
+        "w": 230,
+        "h": 150
+      },
+      "std": 56.6,
+      "tags": [
+        "troop-panel",
+        "row-resource"
+      ],
+      "note": "木材点缩略图（岩台上的原木堆 + 斧头）。2026-09-10 从 huadong 面板第 2 行裁。",
+      "createdAt": 1789028589398,
+      "updatedAt": 1789028589398
+    },
+    {
+      "id": "tpl_row_res_mana",
+      "name": "部队管理-行内资源缩略图·魔水",
+      "file": "tpl_row_res_mana.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1130,
+        "y": 196,
+        "w": 180,
+        "h": 104
+      },
+      "defaultRoi": {
+        "x": 1105,
+        "y": 178,
+        "w": 230,
+        "h": 150
+      },
+      "std": 54.2,
+      "tags": [
+        "troop-panel",
+        "row-resource"
+      ],
+      "note": "魔水点缩略图（蓝色水池 + 紫色水晶）。2026-09-10 从主号面板第 1 行裁。铁矿石缩略图尚无样本（见模板库说明 §6.6）。",
+      "createdAt": 1789028589443,
+      "updatedAt": 1789028589443
+    },
+    {
+      "id": "tpl_status_icon_gathering",
+      "name": "部队管理-行内「采集中」菱形图标里的白镐",
+      "file": "tpl_status_icon_gathering.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1376,
+        "y": 279,
+        "w": 30,
+        "h": 29
+      },
+      "defaultRoi": {
+        "x": 1345,
+        "y": 253,
+        "w": 100,
+        "h": 85
+      },
+      "threshold": 0.7,
+      "std": 45.7,
+      "tags": [
+        "troop-panel",
+        "status"
+      ],
+      "note": "采集中的行在载重进度条左端有个绿色菱形图标。★菱形的白色描边是会转圈的高光动画，整个图标做模板不同帧只有 0.55~0.86；只框中间的白镐（30x29）；高光扫过时镐也会变亮，实测正样本 0.77~0.93、负样本（脚印图标/部队图/空行）≤0.37，所以本模板阈值单独设 0.7。与 tpl_status_gathering / _green 组成 anyTemplate，实际按行中心 relRect(STATUS_ICON_REL) 搜。2026-09-10 从 2 队列小号面板第 1 行裁。",
+      "createdAt": 1789028589521,
+      "updatedAt": 1789028964555
+    },
+    {
+      "id": "tpl_row_res_iron",
+      "name": "部队管理-行内资源缩略图·铁矿石",
+      "file": "tpl_row_res_iron.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1130,
+        "y": 439,
+        "w": 180,
+        "h": 104
+      },
+      "defaultRoi": {
+        "x": 1105,
+        "y": 178,
+        "w": 230,
+        "h": 150
+      },
+      "std": 69.2,
+      "tags": [
+        "troop-panel",
+        "row-resource"
+      ],
+      "note": "铁矿石点缩略图（岩台上的暗色矿石堆）。2026-09-10 从 huadong 面板第 2 行裁（用户报「队列 2 矿石挖取未识别」）。实际按行中心 relRect(THUMB_REL) 搜。",
+      "createdAt": 1789030610559,
+      "updatedAt": 1789030610559
+    },
+    {
+      "id": "dig_card_coord_4",
+      "name": "dig_card_coord 字形 4",
+      "file": "dig_card_coord_4.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1244,
+        "y": 311,
+        "w": 20,
+        "h": 28
+      },
+      "defaultRoi": {
+        "x": 1164,
+        "y": 231,
+        "w": 180,
+        "h": 188
+      },
+      "threshold": 0.78,
+      "std": 59.6,
+      "tags": [
+        "digit",
+        "dig_card_coord"
+      ],
+      "note": "从 panel_iron.png（huadong 面板第 1 行「坐标:674,627」）切出；字形 4（与前面的 7 黏连，单独框 4 的那一列带切）。2026-09-10 补，至此坐标字形 0-9 + 逗号齐全。",
+      "createdAt": 1789030682281,
+      "updatedAt": 1789030682281
+    },
+    {
+      "id": "tpl_btn_close_popup",
+      "name": "弹窗关闭·AI 自学 #1",
+      "file": "tpl_btn_close_popup.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2097,
+        "y": 427,
+        "w": 86,
+        "h": 86
+      },
+      "defaultRoi": {
+        "x": 1940,
+        "y": 270,
+        "w": 400,
+        "h": 400
+      },
+      "std": 17.9,
+      "tags": [
+        "ai-harvest",
+        "popup-close"
+      ],
+      "note": "AI 自学（scheduler-sample，置信 0.95，模型 qwen3.8-flash）：预先下载活动弹窗，右上角有清晰的×关闭按钮",
+      "createdAt": 1789367230596,
+      "updatedAt": 1789367230596
+    },
+    {
+      "id": "tpl_btn_close_popup_ai2",
+      "name": "弹窗关闭·AI 自学 #2",
+      "file": "tpl_btn_close_popup_ai2.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1915,
+        "y": 365,
+        "w": 66,
+        "h": 69
+      },
+      "defaultRoi": {
+        "x": 1758,
+        "y": 208,
+        "w": 380,
+        "h": 383
+      },
+      "std": 30.6,
+      "tags": [
+        "ai-harvest",
+        "popup-close"
+      ],
+      "note": "AI 自学（scheduler-sample，置信 0.95，模型 qwen3.8-flash）：活动弹窗，右上角有明确的关闭按钮",
+      "createdAt": 1789493436256,
+      "updatedAt": 1789493436256
+    },
+    {
+      "id": "dig_panel_level_0",
+      "name": "等级数字-0",
+      "file": "dig_panel_level_0.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2356,
+        "y": 834,
+        "w": 20,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 200,
+        "y": 820,
+        "w": 2200,
+        "h": 60
+      },
+      "std": 74.2,
+      "tags": [
+        "digit",
+        "dig_panel_level"
+      ],
+      "note": "搜索面板『等级 N』数字，浅粉底黑字。2026-09-18 补：滑杆上限涨到 10 后缺 0/9 两张字形，等级读不出来导致卡在搜索页。",
+      "createdAt": 1789785012254,
+      "updatedAt": 1789785012254
+    },
+    {
+      "id": "dig_panel_level_9",
+      "name": "等级数字-9",
+      "file": "dig_panel_level_9.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 2302,
+        "y": 834,
+        "w": 20,
+        "h": 30
+      },
+      "defaultRoi": {
+        "x": 200,
+        "y": 820,
+        "w": 2200,
+        "h": 60
+      },
+      "std": 69.9,
+      "tags": [
+        "digit",
+        "dig_panel_level"
+      ],
+      "note": "搜索面板『等级 N』数字，浅粉底黑字。2026-09-18 补：滑杆上限涨到 10 后缺 0/9 两张字形，等级读不出来导致卡在搜索页。",
+      "createdAt": 1789785012447,
+      "updatedAt": 1789785012447
+    },
+    {
+      "id": "game-update-message",
+      "name": "游戏资源更新-提示文案",
+      "file": "game-update-message.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 844,
+        "y": 570,
+        "w": 870,
+        "h": 52
+      },
+      "defaultRoi": {
+        "x": 700,
+        "y": 480,
+        "w": 1200,
+        "h": 250
+      },
+      "threshold": 0.94,
+      "std": 76.3,
+      "tags": [
+        "game_update"
+      ],
+      "note": "游戏资源更新弹窗（从旧版面板导入）。只在文案与按钮同时命中、相对位置一致时才会确认下载。",
+      "createdAt": 1790279407529,
+      "updatedAt": 1790279407529
+    },
+    {
+      "id": "game-update-confirm",
+      "name": "游戏资源更新-确定按钮",
+      "file": "game-update-confirm.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1320,
+        "y": 827,
+        "w": 450,
+        "h": 155
+      },
+      "defaultRoi": {
+        "x": 1150,
+        "y": 720,
+        "w": 750,
+        "h": 400
+      },
+      "threshold": 0.96,
+      "std": 31.7,
+      "tags": [
+        "game_update"
+      ],
+      "note": "游戏资源更新弹窗（从旧版面板导入）。只在文案与按钮同时命中、相对位置一致时才会确认下载。",
+      "createdAt": 1790279407593,
+      "updatedAt": 1790279407593
+    },
+    {
+      "id": "game-update-downloading",
+      "name": "游戏资源更新-下载中文案",
+      "file": "game-update-downloading.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1010,
+        "y": 1207,
+        "w": 192,
+        "h": 42
+      },
+      "defaultRoi": {
+        "x": 700,
+        "y": 1150,
+        "w": 1100,
+        "h": 140
+      },
+      "threshold": 0.94,
+      "std": 52.6,
+      "tags": [
+        "game_update"
+      ],
+      "note": "游戏资源更新弹窗（从旧版面板导入）。只在文案与按钮同时命中、相对位置一致时才会确认下载。",
+      "createdAt": 1790279407657,
+      "updatedAt": 1790279407657
+    },
+    {
+      "id": "game-update-checking",
+      "name": "游戏资源更新-校验中文案",
+      "file": "game-update-checking.png",
+      "authoredWidth": 2560,
+      "authoredHeight": 1440,
+      "bounds": {
+        "x": 1010,
+        "y": 1207,
+        "w": 193,
+        "h": 42
+      },
+      "defaultRoi": {
+        "x": 700,
+        "y": 1150,
+        "w": 1100,
+        "h": 140
+      },
+      "threshold": 0.94,
+      "std": 51.5,
+      "tags": [
+        "game_update"
+      ],
+      "note": "游戏资源更新弹窗（从旧版面板导入）。只在文案与按钮同时命中、相对位置一致时才会确认下载。",
+      "createdAt": 1790279407710,
+      "updatedAt": 1790279407710
+    }
+  ],
+  "updatedAt": 1790279407710
+}

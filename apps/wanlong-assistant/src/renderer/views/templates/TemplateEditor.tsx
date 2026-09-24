@@ -473,7 +473,7 @@ export function TemplateEditor({ gameId, index, onChanged, proposal }: TemplateE
     <section className="template-panel" aria-label="模板库">
       <header className="template-panel-header">
         <div className="template-panel-header-icon"><Icon name="layers" size={20} /></div>
-        <div><h2>模板库</h2><p>从实例读取画面、框选识别区域，保存到当前实例的本地模板集。模板、截图都只留在本机，不进安装包。</p></div>
+        <div><h2>模板库</h2><p>从实例读取画面、框选识别区域，保存到当前实例的本地模板集。随助手分发的内置模板每次启动只补缺的，你改过的模板不会被覆盖；截图只留在本机。</p></div>
         <button className="btn" type="button" onClick={() => void importLegacy()} disabled={busy !== null}>{busy === 'import' ? <Spinner size={14} /> : <Icon name="download" />}导入 / 合并旧模板集</button>
         <button className="btn" type="button" onClick={() => { setBusy('load'); void refresh().catch((cause) => setError(errMsg(cause))).finally(() => setBusy(null)); }} disabled={busy !== null}><Icon name="refresh" />刷新</button>
       </header>

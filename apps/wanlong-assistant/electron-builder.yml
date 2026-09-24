@@ -11,9 +11,16 @@ files:
   - out/**/*
   - package.json
   - '!**/*.map'
+# The built-in template library ships with the app (original: resources/templates → user library at first start,
+# only-add). The main process finds it at <Resources>/templates (src/main/automation/builtin-templates.ts).
+extraResources:
+  - from: resources/templates
+    to: templates
+    filter:
+      - '**/*'
 mac:
   category: public.app-category.productivity
-  icon: build/panel-icon.icns
+  icon: build/app-icon.icns
   identity: '-'
   hardenedRuntime: false
   target:

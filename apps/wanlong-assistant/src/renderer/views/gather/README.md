@@ -21,7 +21,7 @@ itself lives in `../instances/`.
 | `EnableAutoDialog.tsx` | batch 「全部开启」 confirm + the old 「我已核对探针结果」 checkbox | fresh read-only probe verdict per instance before enabling |
 | `InstanceRunDrawer.tsx` | (former single-instance gather page) | template set, read-only probe, 采集一轮 / 停止本轮, recent runs |
 | `occupancy.ts` | (plans × gather, new) | pure: a script run holding / plan rounds waiting for an instance → pre-emption note and the refused actions |
-| `resources.ts`, `widgets.tsx` | `types.ts`, `ResourceBadge.tsx` | glyph + token colour badges (no game art), switch, queue badge, hint bubble |
+| `resources.ts`, `widgets.tsx` | `types.ts`, `ResourceBadge.tsx` | resource icon badges (glyph + token colour fallback), switch, queue badge, hint bubble |
 
 ## Where the config lives (DECISIONS B「调度器」)
 
