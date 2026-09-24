@@ -12,7 +12,8 @@
     "preview": "electron-vite preview",
     "dist:mac": "pnpm build && electron-builder --mac dmg --arm64 --publish never",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "tplkit": "../../packages/cli/node_modules/.bin/tsx scripts/tplkit.ts"
   },
   "dependencies": {
     "@avdm/automation": "workspace:*",

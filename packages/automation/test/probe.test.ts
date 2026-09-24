@@ -72,7 +72,7 @@ describe('template probe', () => {
     const constantPng = await sharp({
       create: { width: 17, height: 13, channels: 4, background: '#eeeeee' },
     }).png().toBuffer();
-    await expect(prepareTemplate(constantPng, set.templates[0]!, set, 1)).rejects.toThrow('纹理不足');
+    await expect(prepareTemplate(constantPng, set.templates[0]!, set, 1)).rejects.toMatchObject({ code: 'TEMPLATE_LOW_VARIANCE', message: expect.stringContaining('方差过低') });
     const outside = join(await mkdtemp(join(tmpdir(), 'avdm-automation-outside-')), 'outside.png');
     await writeFile(outside, await readTemplatePng(set, 'anchor'));
     await writeFile(join(directory, 'manifest.json'), JSON.stringify({

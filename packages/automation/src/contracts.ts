@@ -41,6 +41,13 @@ export interface TemplateDefinition {
   defaultRoi?: Rect;
   threshold?: number;
   tags?: string[];
+  /** Grayscale std measured when saved (one decimal); the template page warns below 18. */
+  std?: number;
+  /** Opaque fraction 0..1 of a transparent-background template; absent for a plain template. */
+  maskCoverage?: number;
+  note?: string;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 export interface TemplateSet {
@@ -52,6 +59,7 @@ export interface TemplateSet {
   templates: TemplateDefinition[];
   /** Absolute path explicitly selected by the caller; never inferred from a repository. */
   directory: string;
+  updatedAt?: number;
 }
 
 export interface PreparedFrame {
@@ -85,6 +93,8 @@ export interface PreparedTemplate {
   threshold: number;
   defaultRoi?: Rect;
   mask?: Uint8Array;
+  /** Opaque fraction of `mask` (three decimals); only for transparent-background templates. */
+  maskCoverage?: number;
   std: number;
 }
 
@@ -101,6 +111,28 @@ export interface MatchResult {
   threshold: number;
   elapsedMs: number;
   reason?: string;
+}
+
+/** Options for one match. `roi` is in reference coordinates; without it the template's defaultRoi, else the full frame. */
+export interface MatchOptions {
+  roi?: Rect;
+  threshold?: number;
+}
+
+/** One template of a batch match on a single prepared frame. */
+export interface DetectSpec {
+  templateId: string;
+  roi?: Rect;
+  threshold?: number;
+}
+
+export interface DetectResponse {
+  capturedAt: number;
+  deviceWidth: number;
+  deviceHeight: number;
+  /** Same order as the requested specs. */
+  results: MatchResult[];
+  timing: { captureMs: number; prepareMs: number; matchMs: number };
 }
 
 export interface VisionPort {

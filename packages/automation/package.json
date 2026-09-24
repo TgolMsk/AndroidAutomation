@@ -23,6 +23,10 @@
       "types": "./dist/script/index.d.ts",
       "default": "./dist/script/index.js"
     },
+    "./constants": {
+      "types": "./dist/constants.d.ts",
+      "default": "./dist/constants.js"
+    },
     "./package.json": "./package.json"
   },
   "files": ["dist"],

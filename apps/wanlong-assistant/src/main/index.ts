@@ -38,6 +38,9 @@ bootstrapApp({
       },
       onScheduleStop: (gameId, index, count) => insights.recordScheduleStop(gameId, index, count),
     });
+    // Template edits (save / delete / import) make compiled templates stale: tell the renderer; cache owners
+    // (vision workers, sampler, resources, AI harvest) subscribe through automation.onTemplatesChanged too.
+    automation.onTemplatesChanged((change) => broadcast('templates-changed', change));
 
     // ── accounts ──
     const accounts = new AccountManager(services.host, automation, home);

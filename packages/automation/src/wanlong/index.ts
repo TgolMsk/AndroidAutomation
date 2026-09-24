@@ -40,3 +40,7 @@ export * from './update-ids.js';
 export type { UnknownScreenAdvisor, UnknownScreenContext } from './gather/session.js';
 export * from './resources/index.js';
 export { describeTemplateSetError, loadTemplateSetOrExplain } from './template-dir.js';
+export { GATHER_CRITICAL_TEMPLATES, GATHER_OPTIONAL_TEMPLATES, GLYPH, TPL, glyphCharOf } from './gather/templates.js';
+export type { GatherTemplateCoverage, GlyphCoverage, MissingTemplate } from './gather/templateCoverage.js';
+export { GATHER_TEMPLATE_LABELS, GLYPH_SET_LABELS, gatherTemplateCoverage } from './gather/templateCoverage.js';
+export * as tplkit from './tools/tplkit.js';

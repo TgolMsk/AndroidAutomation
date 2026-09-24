@@ -5,9 +5,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { withFileLock } from '@avdm/core';
-import { buildTemplateAlpha, TemplateLibrary, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
+import { AppError, buildTemplateAlpha, TemplateLibrary, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
 import { normalizeGatherConfig, type GatherCycleResult } from '@avdm/automation/wanlong';
-import type { AutomationGameSummary, AutomationProbeReport, AutomationRun, AutomationSchedule, AutomationSettings, TemplateAlphaPreview, TemplateCapture, TemplateTestResult } from '../../shared/ipc';
+import type { AutomationGameSummary, AutomationProbeReport, AutomationRun, AutomationSchedule, AutomationSettings, TemplateAlphaPreview, TemplateCapture, TemplateCoverage, TemplateImportResult, TemplatesChange, TemplateTestOptions, TemplateTestResult } from '../../shared/ipc';
 import { broadcast } from '../events';
 import type { ManagerHost } from '../manager-host';
 import { asIndex, errorMessage } from '../util';
@@ -15,7 +15,8 @@ import { WanlongGatherRunner, type GatherManager } from './gather-runner';
 import { inspectGatherProbe } from './gather-probe-guard';
 import { gamePlugin, gameSummaries, gameTask } from './games';
 import type { ProbeWorkerInput, ProbeWorkerOutput } from './probe-worker';
-import type { TemplateTestWorkerInput, TemplateTestWorkerOutput } from './template-test-worker';
+import type { TemplateJob, TemplateJobOutput } from './template-jobs';
+import { buildTemplateCoverage, rawFrameToPng, TemplateChangeFeed, workerError, type TemplatesChangeListener } from './template-tools';
 import { AutomationScheduler, SchedulePauseError, type ScheduledRunContext } from './scheduler';
 import { AutomationSettingsStore } from './store';
 
@@ -73,6 +74,7 @@ export class AutomationHost {
   private readonly activeRuns = new Map<string, ActiveAutomationRun>();
   private readonly activeByIndex = new Map<number, string>();
   private readonly controlQueues = new Map<number, Promise<void>>();
+  private readonly templateChanges = new TemplateChangeFeed();
   private readonly historyFile: string;
   private readonly historyReady: Promise<void>;
   private historyWrite: Promise<void> = Promise.resolve();
@@ -171,51 +173,109 @@ export class AutomationHost {
 
   async captureTemplate(gameId: string, index: number): Promise<TemplateCapture> {
     const { frame, foregroundPackage } = await this.captureReadOnly(gameId, index);
-    const png = await sharp(Buffer.from(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength),
-      { raw: { width: frame.width, height: frame.height, channels: 4 } }).png().toBuffer();
+    const png = await rawFrameToPng(frame);
     return { png, width: frame.width, height: frame.height, capturedAt: frame.capturedAt, foregroundPackage };
   }
 
-  async previewTemplateAlpha(gameId: string, index: number, frames: Uint8Array[], crop: Rect, tolerance: number): Promise<TemplateAlphaPreview> {
+  /** `frames`: the main frame plus 1–3 diff frames of the same size. Pure computation, never touches the device. */
+  async previewTemplateAlpha(gameId: string, index: number, frames: Uint8Array[], crop: Rect, tolerance: number, previewWidth?: number): Promise<TemplateAlphaPreview> {
     const set = await this.templateSet(gameId, index);
     if (!set) throw new Error('请先选择或创建模板集');
-    return buildTemplateAlpha(frames, crop, tolerance);
+    return buildTemplateAlpha(frames, crop, { tolerance, previewWidth });
   }
 
   async saveTemplate(gameId: string, index: number, draft: TemplateDraft): Promise<TemplateSaveResult> {
     const i = asIndex(index);
-    return this.withControlLock(i, async () => {
+    const result = await this.withControlLock(i, async () => {
       this.assertTemplateEditable(i);
       const set = await this.templateSet(gameId, i);
       if (!set) throw new Error('请先选择或创建模板集');
       if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
       return this.withDeviceLease(i, () => this.templates.save(set.directory, draft));
     });
+    this.emitTemplatesChanged(gameId, result.directory, 'save', [result.definition.id]);
+    return result;
   }
 
   async deleteTemplate(gameId: string, index: number, id: string): Promise<void> {
     const i = asIndex(index);
-    return this.withControlLock(i, async () => {
+    const directory = await this.withControlLock(i, async () => {
       this.assertTemplateEditable(i);
       const set = await this.templateSet(gameId, i);
       if (!set) throw new Error('请先选择或创建模板集');
       if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
       await this.withDeviceLease(i, () => this.templates.delete(set.directory, id));
+      return set.directory;
     });
+    this.emitTemplatesChanged(gameId, directory, 'delete', [id]);
   }
 
-  async testTemplate(gameId: string, index: number, id: string): Promise<TemplateTestResult> {
+  /** 「立即验证」: one fresh read-only capture, matched and previewed on that same frame (in a worker). */
+  async testTemplate(gameId: string, index: number, id: string, options: TemplateTestOptions = {}): Promise<TemplateTestResult> {
     const set = await this.templateSet(gameId, index);
     if (!set) throw new Error('请先选择或创建模板集');
     const definition = set.templates.find((item) => item.id === id);
-    if (!definition) throw new Error('模板不存在');
+    if (!definition) throw new AppError('TEMPLATE_NOT_FOUND', `模板集「${set.name}」里没有 id 为 ${id} 的模板`);
     const [{ frame, foregroundPackage }, image] = await Promise.all([
       this.captureReadOnly(gameId, index), this.templates.image(set.directory, id),
     ]);
-    const match = await this.runTemplateTestWorker({ frame, set, definition, image });
-    const png = await sharp(Buffer.from(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength),
-      { raw: { width: frame.width, height: frame.height, channels: 4 } }).png().toBuffer();
-    return { match, preview: { png, width: frame.width, height: frame.height, capturedAt: frame.capturedAt, foregroundPackage } };
+    const output = await this.runTemplateJob({ kind: 'test', frame, set, definition, image, roi: options.roi, threshold: options.threshold });
+    if (output.kind !== 'test') throw new Error('模板测试未返回结果');
+    const png = await rawFrameToPng(frame);
+    return { match: output.match, preview: { png, width: frame.width, height: frame.height, capturedAt: frame.capturedAt, foregroundPackage } };
+  }
+
+  /**
+   * Missing critical / optional gather templates and glyph digits of the instance's set. `compile` also compiles
+   * every template in a worker and reports the ones that fail (missing PNG, low variance after a hand edit, …).
+   */
+  async templateCoverage(gameId: string, index: number, compile: boolean): Promise<TemplateCoverage | null> {
+    const set = await this.templateSet(gameId, index);
+    if (!set) return null;
+    if (!compile) return buildTemplateCoverage(gameId, set, [], false);
+    const output = await this.runTemplateJob({ kind: 'compile', directory: set.directory });
+    if (output.kind !== 'compile') throw new Error('模板编译检查未返回结果');
+    return buildTemplateCoverage(gameId, set, output.failed, true);
+  }
+
+  /**
+   * Only-add merge of legacy template sets (e.g. wanlong-panel's `.wl-data/templates` or `<dataDir>/templates`)
+   * into this game's managed library. Sets of another game package are skipped; existing ids are never touched.
+   * Instance bindings do not change, so no schedule is affected; caches of the touched sets are invalidated.
+   */
+  async importTemplateSets(gameId: string, sourceDir: string): Promise<TemplateImportResult> {
+    const plugin = gamePlugin(gameId);
+    if (this.disposed) throw new Error('应用正在退出');
+    const result = await this.templates.importSets(gameId, sourceDir, {
+      packageName: plugin.packageName,
+      log: (level, message) => { if (level === 'warn') console.warn('[wanlong] 模板导入：', message); },
+    });
+    const root = this.templates.gameRoot(gameId);
+    for (const [setId, ids] of Object.entries(result.addedTemplates)) this.emitTemplatesChanged(gameId, join(root, setId), 'import', ids);
+    for (const setId of Object.keys(result.copiedSets)) this.emitTemplatesChanged(gameId, join(root, setId), 'import', []);
+    return { result, sets: await this.templates.managedSets(gameId) };
+  }
+
+  /**
+   * Save into a known set without taking the device lease or touching schedules: for callers that already hold the
+   * instance lease (the AI harvest inside a cycle). Same library rules (variance guard, explicit overwrite, atomic
+   * writes, per-directory writer) and the same change notification.
+   */
+  async saveTemplateToSet(gameId: string, directory: string, draft: TemplateDraft): Promise<TemplateSaveResult> {
+    gamePlugin(gameId);
+    if (this.disposed) throw new Error('应用正在退出');
+    const result = await this.templates.save(directory, draft);
+    this.emitTemplatesChanged(gameId, result.directory, 'save', [result.definition.id]);
+    return result;
+  }
+
+  /** Subscribe to template-content changes (save / delete / import). Returns the unsubscribe function. */
+  onTemplatesChanged(listener: TemplatesChangeListener): () => void {
+    return this.templateChanges.on(listener);
+  }
+
+  private emitTemplatesChanged(gameId: string, directory: string, reason: TemplatesChange['reason'], templateIds: string[]): void {
+    this.templateChanges.emit({ gameId, directory, reason, templateIds, at: Date.now() });
   }
 
   private assertTemplateEditable(index: number): void {
@@ -594,33 +654,39 @@ export class AutomationHost {
     });
   }
 
-  private runTemplateTestWorker(input: TemplateTestWorkerInput): Promise<import('@avdm/automation').MatchResult> {
+  /** One template job in a fresh worker (match test or full compile check); a failure keeps its error code. */
+  private runTemplateJob(job: TemplateJob): Promise<Extract<TemplateJobOutput, { ok: true }>> {
     const entry = join(dirname(fileURLToPath(import.meta.url)), 'template-test-worker.js');
     const worker = new Worker(entry);
     this.workers.add(worker);
-    const pixels = Uint8Array.from(input.frame.data);
-    const image = Uint8Array.from(input.image);
+    const transfer: ArrayBuffer[] = [];
+    let message: TemplateJob = job;
+    if (job.kind === 'test') {
+      const pixels = Uint8Array.from(job.frame.data);
+      const image = Uint8Array.from(job.image);
+      message = { ...job, frame: { ...job.frame, data: pixels }, image };
+      transfer.push(pixels.buffer, image.buffer);
+    }
     return new Promise((resolve, reject) => {
       let settled = false;
-      const finish = (error?: Error, match?: import('@avdm/automation').MatchResult) => {
+      const finish = (error?: Error, output?: Extract<TemplateJobOutput, { ok: true }>) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         this.workers.delete(worker);
         void worker.terminate();
         if (error) reject(error);
-        else if (match) resolve(match);
-        else reject(new Error('模板测试未返回结果'));
+        else if (output) resolve(output);
+        else reject(new Error('模板任务未返回结果'));
       };
-      const timer = setTimeout(() => finish(new Error('模板测试超时')), PROBE_TIMEOUT_MS);
-      worker.once('message', (result: TemplateTestWorkerOutput) => {
-        if (result.ok) finish(undefined, result.match);
-        else finish(new Error(result.error));
+      const timer = setTimeout(() => finish(new Error(job.kind === 'test' ? '模板测试超时' : '模板编译检查超时')), PROBE_TIMEOUT_MS);
+      worker.once('message', (output: TemplateJobOutput) => {
+        if (output.ok) finish(undefined, output);
+        else finish(workerError(output.error));
       });
       worker.once('error', (error) => finish(error));
-      worker.once('exit', (code) => finish(new Error(`模板测试工作线程已退出 (${code})`)));
-      worker.postMessage({ ...input, frame: { ...input.frame, data: pixels }, image } satisfies TemplateTestWorkerInput,
-        [pixels.buffer, image.buffer]);
+      worker.once('exit', (code) => finish(new Error(`模板工作线程已退出 (${code})`)));
+      worker.postMessage(message, transfer);
     });
   }
 }

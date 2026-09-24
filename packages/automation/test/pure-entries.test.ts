@@ -27,7 +27,7 @@ function runtimeImports(entry: string): Map<string, string[]> {
 }
 
 describe('renderer-safe entry points', () => {
-  it.each(['wanlong/pure.ts', 'script/index.ts'])('%s pulls in no sharp, OpenCV or Node built-ins', (entry) => {
+  it.each(['wanlong/pure.ts', 'script/index.ts', 'constants.ts'])('%s pulls in no sharp, OpenCV or Node built-ins', (entry) => {
     const graph = runtimeImports(entry);
     const bad = [...graph].flatMap(([file, specs]) => specs.filter((spec) => FORBIDDEN.test(spec))
       .map((spec) => `${path.relative(src, file)} → ${spec}`));

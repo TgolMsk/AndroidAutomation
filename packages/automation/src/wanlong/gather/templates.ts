@@ -241,3 +241,15 @@ function charOf(id: string, glyphName: string): string | null {
   if (!suffix) return null;
   return SUFFIX_TO_CHAR[suffix] ?? (/^[0-9]$/.test(suffix) ? suffix : null);
 }
+
+// ── 模板覆盖检查用的只读出口（模板库页「缺失的关键 / 可选模板」快捷列表、tplkit 字形 id 往返）──
+
+/** 少了就跑不起来的模板 id（与 loadGatherTemplates 的判据同一份）。 */
+export const GATHER_CRITICAL_TEMPLATES: readonly string[] = CRITICAL_TEMPLATES
+/** 缺了只告警的模板 id。 */
+export const GATHER_OPTIONAL_TEMPLATES: readonly string[] = OPTIONAL_TEMPLATES
+
+/** 字形模板 id → 字符（与 loadGatherTemplates 的解析同一份）；解析不了返回 null（加载时会被当成缺失）。 */
+export function glyphCharOf(templateId: string, glyphSetName: string): string | null {
+  return charOf(templateId, glyphSetName)
+}
