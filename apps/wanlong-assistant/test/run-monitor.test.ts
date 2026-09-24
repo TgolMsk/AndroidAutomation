@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { LogEntry } from '@avdm/automation/script';
 import type { PlanRun, ScriptRunSnapshot } from '../src/main/plans/types';
 import { countActiveScriptWork, scriptRunBadge, scriptRunsByInstance, upsertSnapshot } from '../src/renderer/state/plan-runs';
-import { LOG_RING_CAPACITY, RunLogBuffer, matchesFilter } from '../src/renderer/state/run-log-store';
+import { LOG_RENDER_WINDOW, LOG_RING_CAPACITY, RunLogBuffer, logEntryKey, logRenderWindow, matchesFilter } from '../src/renderer/state/run-log-store';
 import { buildRunRows, coerceParam, defaultParams, formatDuration, hitRate, logClock, progressLabel, shortData } from '../src/renderer/views/runs/run-rows';
 
 const line = (ts: number, extra: Partial<LogEntry> = {}): LogEntry => ({ ts, level: 'info', runId: 'r1', instanceIndex: 1, scope: 'engine', message: `m${ts}`, ...extra });
@@ -44,6 +44,26 @@ describe('run log ring buffer (original logStore.ts)', () => {
     expect(buffer.snapshot().map((entry) => entry.runId)).toEqual(['r2']);
     buffer.clear();
     expect(buffer.counters()).toMatchObject({ total: 0, received: 0 });
+  });
+
+  it('renders only the newest window of lines, with keys that survive the ring sliding', () => {
+    const buffer = new RunLogBuffer();
+    buffer.push(Array.from({ length: LOG_RING_CAPACITY }, (_v, i) => line(i)));
+    const first = logRenderWindow(buffer.snapshot());
+    expect(first.shown).toHaveLength(LOG_RENDER_WINDOW);
+    expect(first.hidden).toBe(LOG_RING_CAPACITY - LOG_RENDER_WINDOW);
+    expect(first.shown.at(-1)?.ts).toBe(LOG_RING_CAPACITY - 1);
+    // "显示更早的" widens the window; it never exceeds what the ring holds.
+    expect(logRenderWindow(buffer.snapshot(), LOG_RENDER_WINDOW).shown).toHaveLength(2 * LOG_RENDER_WINDOW);
+    expect(logRenderWindow(buffer.snapshot(), 10 * LOG_RING_CAPACITY)).toMatchObject({ hidden: 0 });
+    expect(logRenderWindow([line(1)]).shown).toHaveLength(1);
+
+    const keys = new Map(first.shown.map((entry) => [entry, logEntryKey(entry)]));
+    buffer.push([line(LOG_RING_CAPACITY)]);
+    const next = logRenderWindow(buffer.snapshot()).shown;
+    // The same line objects keep their keys after older lines dropped out, so React reuses those rows.
+    for (const entry of next.slice(0, -1)) expect(logEntryKey(entry)).toBe(keys.get(entry));
+    expect(new Set(next.map(logEntryKey)).size).toBe(next.length);
   });
 
   it('filters by run, level, keyword (message / scope / step) and instance', () => {

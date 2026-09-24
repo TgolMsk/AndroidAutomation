@@ -1,11 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { LogEntry, LogLevel } from '@avdm/automation/script';
 import { avdm, errMsg } from '../../api';
 import { Icon } from '../../components/Icon';
 import { Modal } from '../../components/Modal';
 import { Spinner } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
-import { clearRunLogs, LOG_RING_CAPACITY, mergeRunLogHistory, useRunLogCounters, useRunLogs } from '../../state/run-log-store';
+import {
+  clearRunLogs, LOG_RENDER_WINDOW, LOG_RING_CAPACITY, logEntryKey, logRenderWindow, mergeRunLogHistory, useRunLogCounters, useRunLogs,
+} from '../../state/run-log-store';
 import { logClock, shortData } from './run-rows';
 
 const LEVEL_LABEL: Record<LogLevel, string> = { debug: '调试', info: '信息', warn: '警告', error: '错误' };
@@ -18,7 +20,8 @@ const LEVEL_FILTERS: Array<{ value: LogLevel; label: string }> = [
 /** Within this many px of the bottom counts as "at the bottom" (follow keeps tailing). */
 const BOTTOM_SLACK = 24;
 
-function LogRow({ entry, onShot }: { entry: LogEntry; onShot: (entry: LogEntry) => void }) {
+/** Memoized: a new batch re-renders only the rows it adds (entries and `onShot` keep their identity). */
+const LogRow = memo(function LogRow({ entry, onShot }: { entry: LogEntry; onShot: (entry: LogEntry) => void }) {
   const data = shortData(entry.data);
   return (
     <div className={`runs-log-row is-${entry.level}`}>
@@ -34,11 +37,12 @@ function LogRow({ entry, onShot }: { entry: LogEntry; onShot: (entry: LogEntry) 
       {entry.shot && <button className="link-btn runs-log-shot" onClick={() => onShot(entry)}><Icon name="camera" size={13} />留痕</button>}
     </div>
   );
-}
+});
 
 /**
  * Live log of one run (wanlong-panel LogPane): lines come from the shared ring (live pushes) and "载入历史" merges
- * the stored ndjson. Only the newest 2000 lines are kept, never the whole log in React state.
+ * the stored ndjson. Only the newest 2000 lines are kept, never the whole log in React state, and only the newest
+ * 300 of them are rendered until the reader asks for older ones (the original virtualized the list).
  */
 export function RunLogPane({ gameId, runId }: { gameId: string; runId: string }) {
   const toast = useToast();
@@ -48,19 +52,36 @@ export function RunLogPane({ gameId, runId }: { gameId: string; runId: string })
   const [loading, setLoading] = useState(false);
   const [shot, setShot] = useState<{ url: string; title: string } | null>(null);
   const [shotLoading, setShotLoading] = useState(false);
+  const [older, setOlder] = useState(0);
   const list = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+  /** Distance from the bottom to restore after older rows were added above the viewport. */
+  const keepFromBottom = useRef<number | null>(null);
   const filter = useMemo(() => ({ runId, minLevel, keyword: keyword.trim() }), [runId, minLevel, keyword]);
   const lines = useRunLogs(filter);
   const counters = useRunLogCounters();
+  const { shown, hidden } = logRenderWindow(lines, older);
 
   useEffect(() => { setFollow(true); atBottom.current = true; }, [runId]);
+  useEffect(() => { setOlder(0); }, [filter]);
 
   // Like followOutput 'auto': tail only while the reader is at the bottom; scrolling up pauses it on its own.
   useLayoutEffect(() => {
     const element = list.current;
-    if (element && follow && atBottom.current) element.scrollTop = element.scrollHeight;
-  }, [lines, follow]);
+    if (!element) return;
+    if (keepFromBottom.current !== null) {
+      element.scrollTop = element.scrollHeight - keepFromBottom.current;
+      keepFromBottom.current = null;
+      return;
+    }
+    if (follow && atBottom.current) element.scrollTop = element.scrollHeight;
+  }, [lines, follow, older]);
+
+  function showOlder(): void {
+    const element = list.current;
+    if (element) keepFromBottom.current = element.scrollHeight - element.scrollTop;
+    setOlder((value) => value + LOG_RENDER_WINDOW);
+  }
 
   // The shot's object URL is released when the viewer closes or the pane goes away.
   useEffect(() => () => { if (shot) URL.revokeObjectURL(shot.url); }, [shot]);
@@ -77,6 +98,10 @@ export function RunLogPane({ gameId, runId }: { gameId: string; runId: string })
     } finally { setLoading(false); }
   }
 
+  // A stable callback keeps the memoized rows from re-rendering when the pane's state changes.
+  const openShotRef = useRef<(entry: LogEntry) => Promise<void>>(async () => undefined);
+  const onShot = useCallback((entry: LogEntry) => { void openShotRef.current(entry); }, []);
+
   async function openShot(entry: LogEntry): Promise<void> {
     if (!entry.shot || !entry.runId || shotLoading) return;
     setShotLoading(true);
@@ -89,6 +114,7 @@ export function RunLogPane({ gameId, runId }: { gameId: string; runId: string })
       toast.error('读取留痕截图失败', errMsg(error));
     } finally { setShotLoading(false); }
   }
+  openShotRef.current = openShot;
 
   return (
     <div className="runs-log">
@@ -103,7 +129,7 @@ export function RunLogPane({ gameId, runId }: { gameId: string; runId: string })
         <label className="check small"><input type="checkbox" checked={follow} onChange={(event) => { setFollow(event.target.checked); atBottom.current = true; }} />自动贴底</label>
         <button className="btn xs" onClick={() => void loadHistory()} disabled={loading}>{loading ? <Spinner size={12} /> : <Icon name="refresh" size={13} />}载入历史</button>
         <button className="btn xs ghost" onClick={() => clearRunLogs(runId)}><Icon name="trash" size={13} />清空</button>
-        <span className="runs-log-count">显示 {lines.length} / 缓冲 {counters.total} 行（上限 {LOG_RING_CAPACITY}）</span>
+        <span className="runs-log-count">匹配 {lines.length} / 缓冲 {counters.total} 行（上限 {LOG_RING_CAPACITY}）{hidden > 0 ? `，只画最新 ${shown.length} 行` : ''}</span>
         {counters.error > 0 && <span className="tag runs-tag-bad">错误 {counters.error}</span>}
         {counters.warn > 0 && <span className="tag warn">警告 {counters.warn}</span>}
       </div>
@@ -114,7 +140,14 @@ export function RunLogPane({ gameId, runId }: { gameId: string; runId: string })
         }}>
         {lines.length === 0
           ? <p className="runs-log-empty">这次执行还没有日志。执行开始后实时日志会自动出现，更早的日志点「载入历史」。</p>
-          : lines.map((entry, i) => <LogRow key={`${entry.ts}-${i}`} entry={entry} onShot={(item) => void openShot(item)} />)}
+          : <>
+            {hidden > 0 && (
+              <button className="link-btn runs-log-older" onClick={showOlder}>
+                显示更早的 {Math.min(hidden, LOG_RENDER_WINDOW)} 行（还有 {hidden} 行未显示）
+              </button>
+            )}
+            {shown.map((entry) => <LogRow key={logEntryKey(entry)} entry={entry} onShot={onShot} />)}
+          </>}
       </div>
       {shotLoading && <p className="runs-muted"><Spinner size={12} /> 正在读取留痕截图…</p>}
       {shot && (

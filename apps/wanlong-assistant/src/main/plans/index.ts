@@ -22,6 +22,7 @@ import type {
 export type { AccountPlan, PlanConfig, PlanOverview, PlanRun, PlanTask, ScriptDef, ScriptMeta, TaskTrigger } from './types';
 export { defaultPlanConfig } from './store';
 export { ScriptRunner } from './script-runner';
+export { readAppShotPolicy } from './app-shot-policy';
 
 interface Active { run: PlanRun; controller: AbortController; done: Promise<void> }
 interface Manual { runId: string; gameId: string; controller: AbortController; done: Promise<void> }
@@ -299,7 +300,7 @@ export class PlanService {
       const params = mergeParams(script, accountScriptParams(account, script.id), options.params);
       const assertOwnership = account ? this.ownershipCheck(gameId, account.id, index, identity, plugin.packageName) : undefined;
       const maxRunMs = options.maxRunMinutes > 0 ? options.maxRunMinutes * 60_000 : null;
-      record.done = this.runner.execute({
+      record.done = this.runner.run({
         runId, gameId, packageName: plugin.packageName, instanceIndex: index, instanceIdentity: identity, script, params,
         accountId: account?.id ?? null, accountName: account?.name ?? null, source: 'manual', taskId: null, templateDir: dir || null,
         shotPolicy, maxRunMs, signal: controller.signal, assertOwnership,
@@ -545,6 +546,7 @@ export class PlanService {
   }
 
   private async execute(run: PlanRun, signal: AbortSignal): Promise<void> {
+    let doneMessage = '脚本执行完成';
     try {
       const overview = await this.overview(run.gameId);
       const config = overview.config;
@@ -582,19 +584,26 @@ export class PlanService {
         const shotPolicy = await this.defaultShotPolicy();
         const params = mergeParams(script, accountScriptParams(account, script.id), task.params);
         for (let attempt = 0; attempt <= config.retry; attempt++) {
-          const result = await this.runner.execute({
+          const result = await this.runner.run({
             runId: run.runId, gameId: run.gameId, packageName: pkg, instanceIndex: run.instanceIndex, instanceIdentity: expectedIdentity,
             script, params, accountId: account.id, accountName: account.name, source: 'plan', taskId: run.taskId,
             templateDir: dir || null, shotPolicy, maxRunMs: task.maxRunMinutes > 0 ? task.maxRunMinutes * 60_000 : null,
             signal, assertOwnership: assertAccount,
           });
-          if (result.status === 'succeeded') return;
+          if (result.status === 'succeeded') {
+            // A loop script ends only by a stop or the task's time limit: running the limit out is its planned end.
+            if (result.timedOut) doneMessage = `循环脚本已运行满本次上限 ${task.maxRunMinutes} 分钟，按时结束（完成 ${result.iteration} 轮）`;
+            return;
+          }
           if (result.status === 'aborted' || signal.aborted) throw new RunEndedError(signal.reason instanceof Error ? signal.reason.message : '脚本已停止', 'cancelled');
+          // ★ Original (plan awaitRun / settle): a run stopped by the time limit is never retried — a script stuck
+          // for maxRunMinutes would only be stuck again, holding the instance for another full limit.
+          if (result.timedOut) throw new RunEndedError(result.error ?? `脚本运行超过本次上限 ${task.maxRunMinutes} 分钟，已停止`, 'failed');
           if (attempt === config.retry) throw new RunEndedError(result.error ?? '脚本执行失败', 'failed');
           await abortableDelay(config.retryDelayMs, signal);
         }
       }, { timeoutMs: config.queueWaitMs });
-      await this.finish(run, 'succeeded', '脚本执行完成');
+      await this.finish(run, 'succeeded', doneMessage);
     } catch (error) {
       // Persisted in plans.json: never with a device serial or an adb command line.
       const message = safeErrorMessage(error);

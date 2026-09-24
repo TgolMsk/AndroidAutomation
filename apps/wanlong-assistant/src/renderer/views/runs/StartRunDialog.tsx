@@ -69,6 +69,8 @@ export function StartRunDialog({ gameId, instances, busy, initialIndex, onStarte
   const [defError, setDefError] = useState<string | null>(null);
   const [params, setParams] = useState<Record<string, ScriptParamValue>>({});
   const [ime, setIme] = useState<ImeStatus | null>(null);
+  const [imeError, setImeError] = useState<string | null>(null);
+  const [imeCheck, setImeCheck] = useState(0);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -108,11 +110,12 @@ export function StartRunDialog({ gameId, instances, busy, initialIndex, onStarte
   const selectedRunning = selected ? isRunning(selected) : false;
   useEffect(() => {
     setIme(null);
+    setImeError(null);
     if (index === null || !selectedRunning) return;
     let active = true;
-    void avdm.imeStatus(index).then((status) => { if (active) setIme(status); }, () => undefined);
+    void avdm.imeStatus(index).then((status) => { if (active) setIme(status); }, (error: unknown) => { if (active) setImeError(errMsg(error)); });
     return () => { active = false; };
-  }, [index, selectedRunning]);
+  }, [index, selectedRunning, imeCheck]);
 
   const options = useMemo(() => instances.map((instance) => {
     const i = instance.record.index;
@@ -146,7 +149,7 @@ export function StartRunDialog({ gameId, instances, busy, initialIndex, onStarte
     setBusyAction('ime');
     try {
       const status = await avdm.imeSetup(index);
-      if (status) { setIme(status); toast.push({ kind: 'success', title: 'ADBKeyboard 已启用', detail: status.message }); }
+      if (status) { setIme(status); setImeError(null); toast.push({ kind: 'success', title: 'ADBKeyboard 已启用', detail: status.message }); }
     } catch (error) {
       toast.error('安装输入法失败', errMsg(error));
     } finally { setBusyAction(null); }
@@ -191,7 +194,7 @@ export function StartRunDialog({ gameId, instances, busy, initialIndex, onStarte
         <label className="field">
           <span className="field-label">截图留痕策略</span>
           <select value={shotPolicy} onChange={(event) => setShotPolicy(event.target.value as ShotPolicy | '')}>
-            <option value="">跟随应用设置（默认）</option>
+            <option value="">跟随应用设置（未设置时为「仅失败时留痕」）</option>
             {SHOT_POLICY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
@@ -227,9 +230,14 @@ export function StartRunDialog({ gameId, instances, busy, initialIndex, onStarte
         </p>
       )}
       {index !== null && selectedRunning && (
-        <div className={`runs-ime ${ime?.available ? 'is-ready' : needsIme ? 'is-needed' : ''}`}>
-          <span>中文输入：{ime ? ime.message : '正在检查…'}</span>
-          {ime && !ime.available && (
+        <div className={`runs-ime ${ime?.available ? 'is-ready' : imeError || needsIme ? 'is-needed' : ''}`} role={imeError ? 'alert' : undefined}>
+          <span>中文输入：{ime ? ime.message
+            : imeError ? `检查失败（${imeError}）。请确认实例已开机且 adb 连接正常后点「重新检查」；脚本不输入中文时可以忽略。`
+              : '正在检查…'}</span>
+          {imeError && (
+            <button className="btn xs ghost" onClick={() => setImeCheck((value) => value + 1)} disabled={busyAction !== null}>重新检查</button>
+          )}
+          {((ime && !ime.available) || imeError) && (
             <button className="btn xs" onClick={() => void setupIme()} disabled={busyAction !== null}>
               {busyAction === 'ime' && <Spinner size={12} />}安装输入法
             </button>

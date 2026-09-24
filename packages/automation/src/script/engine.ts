@@ -14,7 +14,8 @@
  *  · Pause takes effect at the next step boundary; stop lets the current step end and finishes as aborted.
  *  · Assistant additions: an ExecutionGuardError (instance replaced, account changed, game left the foreground
  *    before an input) ends the run regardless of retry / onFail / AI, and `maxRunMs` bounds the whole run
- *    (pause time included), failing it when exceeded.
+ *    (pause time included) and marks the snapshot `timedOut`: a one-shot script that overruns it fails; a loop
+ *    script (which only ends by a stop or this limit) has run its allotted time and ends as succeeded.
  *  · Judgement is paced for ≈3 fps (one screencap ≈ 300 ms); do not write steps that need 10 fps reactions.
  *  · Failure shots are always taken unless the shot policy is `never` or the step says `capture: false`.
  */
@@ -46,7 +47,7 @@ type StepOutcome =
 type BlockOutcome = Exclude<StepOutcome, { type: 'next' }> | { type: 'done' };
 
 /** Why the run was halted from outside the step flow. */
-type Halt = { status: 'aborted'; message: string } | { status: 'failed'; message: string };
+type Halt = { status: 'aborted' | 'succeeded' | 'failed'; message: string };
 
 export interface ScriptEngineOptions {
   /** Whole-run limit in ms (pause time counts); null / 0 = unlimited. */
@@ -116,11 +117,11 @@ export class ScriptEngine {
     this.halt = halt;
     this.ctx.setPaused(false);
     this.ctx.abort();
-    if (halt.status === 'aborted') {
+    if (halt.status === 'failed') {
+      this.ctx.log('error', halt.message);
+    } else {
       this.ctx.setStatus('stopping');
       this.ctx.log('info', halt.message);
-    } else {
-      this.ctx.log('error', halt.message);
     }
   }
 
@@ -138,8 +139,12 @@ export class ScriptEngine {
     const maxRunMs = this.options.maxRunMs ?? 0;
     if (maxRunMs > 0) {
       this.deadlineTimer = setTimeout(() => {
+        if (this.finished || this.stopping) return;
         const minutes = Math.round(maxRunMs / 6000) / 10;
-        this.haltWith({ status: 'failed', message: `脚本运行超过本次时间上限（${minutes} 分钟），已停止。` });
+        ctx.snapshot.timedOut = true;
+        // ★ A loop script has no other natural end: running its allotted time is success, never a retryable failure.
+        if (ctx.script.loop) this.haltWith({ status: 'succeeded', message: `循环脚本已运行满本次时间上限（${minutes} 分钟），按时结束。` });
+        else this.haltWith({ status: 'failed', message: `脚本运行超过本次时间上限（${minutes} 分钟），已停止。` });
       }, Math.min(maxRunMs, 2_147_483_647));
       (this.deadlineTimer as { unref?: () => void }).unref?.();
     }

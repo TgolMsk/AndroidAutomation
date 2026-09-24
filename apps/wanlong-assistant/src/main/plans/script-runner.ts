@@ -221,9 +221,15 @@ export class ScriptRunner {
   }
 
   /**
-   * Execute one script in a worker thread. Never rejects for a script failure: the terminal snapshot says how
-   * the run ended (succeeded / failed / aborted). The caller must hold the instance lease.
+   * Run one script in a worker thread (the entry point for PlanService and later modules). Never rejects for a
+   * script failure: the terminal snapshot says how the run ended (succeeded / failed / aborted; `timedOut` when the
+   * whole-run limit ended it). The caller must hold the instance lease for the whole call.
    */
+  run(options: ScriptExecuteOptions): Promise<ScriptRunSnapshot> {
+    return this.execute(options);
+  }
+
+  /** Same as `run()`. */
   async execute(options: ScriptExecuteOptions): Promise<ScriptRunSnapshot> {
     if (this.disposed) throw new Error('助手正在退出，不能启动新的脚本');
     const index = options.instanceIndex;
@@ -336,6 +342,8 @@ export class ScriptRunner {
           entry.post = undefined;
           await worker.terminate().catch(() => undefined);
           if (final) entry.snapshot = { ...entry.snapshot, ...final, ...this.appFields(options) };
+          // The main-side backstop is the same limit: plans must not retry it either.
+          if (overrun) entry.snapshot.timedOut = true;
           const done = this.close(entry, isTerminal(status) ? status : 'failed', error);
           await this.logs.flushed(options.gameId, options.runId).catch(() => undefined);
           resolve(done);
@@ -530,6 +538,18 @@ export class ScriptRunner {
     }
   }
 
+  /**
+   * ★ Frames come only from the game: while another app, the launcher or a system dialog is in front no frame
+   * reaches the worker, so no trace shot can store someone else's screen. A plain step failure, not a guard:
+   * retries and `onFail: restartApp` keep their chance to bring the game back (original recovery semantics).
+   */
+  private async assertCaptureForeground(options: ScriptExecuteOptions, device: ScriptDevice): Promise<void> {
+    const current = await device.foregroundPackage();
+    if (current !== options.packageName) {
+      throw new RunnerMessageError(`目标游戏不在前台（当前 ${current ?? '未知'}），本次不抓取画面`);
+    }
+  }
+
   /** Input is allowed only on the admitted instance, for the bound account, with the game in the foreground. */
   private async guardInput(options: ScriptExecuteOptions, device: ScriptDevice, signal: AbortSignal): Promise<void> {
     checkAbort(signal);
@@ -574,7 +594,11 @@ export class ScriptRunner {
           return;
         case 'capture': {
           await this.assertIdentity(options);
+          await this.assertCaptureForeground(options, device);
           const frame = await device.screencapRaw();
+          checkAbort(signal);
+          // After as well: the frame may have been taken while another app was coming to the front.
+          await this.assertCaptureForeground(options, device);
           checkAbort(signal);
           const data = Uint8Array.from(frame.data);
           reply({ width: frame.width, height: frame.height, data, capturedAt: frame.capturedAt, format: frame.format }, [data.buffer]);

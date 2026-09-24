@@ -104,6 +104,36 @@ describe('ScriptRunner protocol (main side of the worker RPC)', () => {
     expect(worker.terminated).toBe(true);
   });
 
+  it('refuses a capture while the game is not in front (before or during the screencap) as a plain step failure', async () => {
+    const device = fakeScriptDevice();
+    let captures = 0;
+    device.screencapRaw = async () => {
+      captures++;
+      // The second capture is taken while another app comes to the front.
+      if (captures === 1) device.foreground = 'com.android.systemui';
+      return { width: 200, height: 100, data: new Uint8Array(200 * 100 * 4).fill(3), capturedAt: 1 };
+    };
+    device.foreground = 'com.android.launcher3';
+    const replies: ScriptMainToWorker[] = [];
+    const worker = new FakeWorker((message, self) => {
+      if (message.type === 'start') self.emitMessage({ type: 'ready', templates: 0, refWidth: 100, refHeight: 100, shrink: 2 });
+      if (message.type === 'go') self.emitMessage({ type: 'request', id: 1, op: 'capture', args: [] });
+      if (message.type === 'response') {
+        replies.push(message);
+        if (message.id === 1) { device.foreground = PKG; self.emitMessage({ type: 'request', id: 2, op: 'capture', args: [] }); }
+        else self.emitMessage({ type: 'finished', snapshot: finishedSnapshot('failed') });
+      }
+    });
+    const { runner: value } = runner(device, { workerFactory: () => worker });
+    // A launch prologue passes the start gate with the game in the background; frames are still refused.
+    await value.execute(options(script([{ id: 'go', kind: 'launchApp' }])));
+    expect(replies[0]).toMatchObject({ ok: false, error: expect.stringContaining('目标游戏不在前台（当前 com.android.launcher3）') });
+    expect((replies[0] as { guard?: boolean }).guard).toBe(false);
+    expect(captures).toBe(1); // The first request never reached screencap.
+    expect(replies[1]).toMatchObject({ ok: false, error: expect.stringContaining('当前 com.android.systemui') });
+    expect((replies[1] as { value?: unknown }).value).toBeUndefined();
+  });
+
   it('a worker crash marks the run failed with its message', async () => {
     const worker = new FakeWorker((message, self) => {
       if (message.type === 'start') queueMicrotask(() => self.emit('error', new Error('WASM 内存不足')));
@@ -174,6 +204,7 @@ describe('ScriptRunner protocol (main side of the worker RPC)', () => {
     const result = await ctx.runner.execute(options(script([]), { maxRunMs: 40 }));
     expect(Date.now() - started).toBeLessThan(2000);
     expect(result.status).toBe('failed');
+    expect(result.timedOut).toBe(true);
     expect(result.error).toContain('时间上限');
     expect(worker.terminated).toBe(true);
     expect(worker.sent.map((message) => message.type)).toEqual(expect.arrayContaining(['stop', 'abort']));
@@ -351,6 +382,33 @@ describe('ScriptRunner with the real worker core', () => {
     const result = await ctx.runner.execute(options(keepAlive, { templateDir: dir }));
     expect(result.status).toBe('succeeded');
     expect(device.actions).toEqual([`stop:${PKG}`, `start:${PKG}`]);
+  });
+
+  it('never captures another app, and onFail restartApp still brings the game back', async () => {
+    const dir = await writeTemplateSet(path.join(home, 'set'), ['home_btn']);
+    const device = fakeScriptDevice();
+    let captures = 0;
+    const capturedWith: Array<string | undefined> = [];
+    device.screencapRaw = async () => {
+      captures++;
+      capturedWith.push(device.foreground);
+      return { width: 200, height: 100, data: new Uint8Array(200 * 100 * 4), capturedAt: Date.now() };
+    };
+    // The first tap sends the game to the background (a crash, an ad, a system dialog …).
+    let first = true;
+    device.tap = async (x, y) => { device.actions.push(`tap:${x},${y}`); if (first) { first = false; device.foreground = 'com.android.launcher3'; } };
+    const ctx = runner(device, {}, () => true);
+    const result = await ctx.runner.execute(options(script([
+      { id: 'a', kind: 'tap', at: { x: 5, y: 5 } },
+      { id: 'w', kind: 'waitFor', cond: { kind: 'template', templateId: 'home_btn' }, waitMs: 0, onFail: { kind: 'restartApp' } },
+    ], { templateSetId: 'set' }), { templateDir: dir, shotPolicy: 'always' }));
+    expect(result.status).toBe('succeeded');
+    expect(capturedWith.every((pkg) => pkg === PKG)).toBe(true);
+    expect(captures).toBeGreaterThan(0);
+    // restartApp = stopApp, then a cold launchApp (which force-stops once more), as in the original engine.
+    expect(device.actions).toEqual(['tap:10,5', `stop:${PKG}`, `stop:${PKG}`, `start:${PKG}`, 'tap:10,5']);
+    const lines = await ctx.runner.logs.query('wanlong', { runId: RUN });
+    expect(lines.some((line) => line.stepId === 'w' && line.message.includes('目标游戏不在前台'))).toBe(true);
   });
 
   it('pause holds the run at the next step boundary and resume continues it', async () => {

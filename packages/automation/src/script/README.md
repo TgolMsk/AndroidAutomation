@@ -12,7 +12,7 @@
 | `builtin.ts` | 两个只读示例（`builtin_` 前缀保留），按当前游戏包名生成；`builtinCopyId` 给「另存为」挑一个不重复的 id（`_copy`、`_copy2` …），绝不覆盖用户已改过的副本 | 纯 |
 | `context.ts` | `ScriptContext`：取帧（最小间隔 400ms + 0–120ms 抖动、同帧复用、并发共享、输入后作废）、三套坐标、模板匹配、前台 1 秒缓存、留痕、状态节流（≤4 次/秒）、匹配调试（≤3 批/秒） | 包根 |
 | `conditions.ts` / `actions.ts` | 同一帧上的条件求值（带中文原因）；动作原语（长按=一次 shell 的 motionevent，中文走端口的 inputText） | 包根 |
-| `engine.ts` | `ScriptEngine`：控制流不进重试 / onFail、嵌套失败终止整次运行、goto / loop 超限即失败、每块 20 万次、restartApp ≤10、步骤超时（超时的尝试不会再发输入）、脚本级循环、暂停在步骤边界、`maxRunMs`（停止 / 超时时不再等 AI 顾问）、`ExecutionGuardError` 绕过一切处置；开头日志里的文本参数只记字数（可能是账号、密码、验证码） | 包根 |
+| `engine.ts` | `ScriptEngine`：控制流不进重试 / onFail、嵌套失败终止整次运行、goto / loop 超限即失败、每块 20 万次、restartApp ≤10、步骤超时（超时的尝试不会再发输入）、脚本级循环、暂停在步骤边界、`maxRunMs`（暂停时间也计入；到点时快照标 `timedOut`：单次脚本判失败，循环脚本算按时跑完、判成功；停止 / 超时时不再等 AI 顾问）、`ExecutionGuardError` 绕过一切处置；开头日志里的文本参数只记字数（可能是账号、密码、验证码） | 包根 |
 | `logger.ts` | `RunLogger`：100ms 一批，缓冲上限 4000，溢出只报一次 | 包根 |
 | `shots.ts` | 留痕 = 最近一帧编码 JPEG（1280 宽 q72），绝不 `screencap -p` | 包根 |
 

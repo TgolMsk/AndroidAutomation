@@ -355,6 +355,16 @@
   gap: 3px;
 }
 
+.runs-log-older {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font);
+  font-size: 12px;
+  text-align: center;
+}
+
 .runs-log-empty {
   margin: 0;
   padding: 28px 16px;

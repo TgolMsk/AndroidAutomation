@@ -208,6 +208,11 @@ export interface RunSnapshot {
   /** Chinese failure explanation. */
   error: string | null;
   stats: RunStats;
+  /**
+   * The whole-run limit (`maxRunMs`) ended the run: a loop script then ends as succeeded, a one-shot script as
+   * failed. Plans never retry such a run (original: the plan limit stops the run and a stopped run is not retried).
+   */
+  timedOut?: boolean;
 }
 
 // ── Logs ───────────────────────────────────────────────────────────────────

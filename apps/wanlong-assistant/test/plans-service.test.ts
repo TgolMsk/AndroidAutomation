@@ -1,9 +1,9 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withFileLock } from '@avdm/core';
-import { PlanService, ScriptRunner } from '../src/main/plans';
+import { PlanService, readAppShotPolicy, ScriptRunner } from '../src/main/plans';
 import type { GameAccount } from '../src/main/automation/accounts/types';
 import type { PlanHostPort, ScriptDef, ScriptRunSnapshot } from '../src/main/plans/types';
 import { FAST_PACING, fakeScriptDevice, fakeVision, inProcessWorkers, writeTemplateSet } from './helpers/script-worker';
@@ -66,8 +66,66 @@ describe('PlanService integration with fake device', () => {
     await service.saveScript(GAME, script);
     await service.savePlan(GAME, { accountId: ACCOUNT, enabled: false, updatedAt: 0,
       tasks: [{ id: 'task-1', scriptId: script.id, enabled: true, trigger: { kind: 'manual' }, priority: 50, maxRunMinutes: 1 }] });
-    return { service, actions, home, port, snapshots };
+    return { service, actions, home, port, snapshots, runner };
   }
+
+  const endedSnapshot = (extra: Partial<ScriptRunSnapshot>): ScriptRunSnapshot => ({
+    runId: 'x', scriptId: script.id, scriptName: script.name, instanceIndex: 1, accountId: ACCOUNT, accountName: '测试账号', status: 'failed',
+    startedAt: 1, endedAt: 2, stepDone: 0, stepTotal: null, currentStepId: null, currentStepName: null, iteration: 0, error: null,
+    stats: { captures: 0, matches: 0, matchHits: 0, taps: 0, retries: 0, lastTickMs: 0, avgCaptureMs: 0 },
+    gameId: GAME, source: 'plan', taskId: 'task-1', shotPolicy: 'onFail', maxRunMs: 60_000, ...extra,
+  });
+
+  it('never retries a run its time limit ended (original: a stopped plan run is not retried)', async () => {
+    const { service, runner } = await setup(() => false);
+    await service.saveConfig(GAME, { retry: 2, retryDelayMs: 0 });
+    const run = vi.spyOn(runner, 'run').mockImplementation(async (options) => endedSnapshot({
+      runId: options.runId, status: 'failed', timedOut: true, error: '脚本运行超过本次时间上限（1 分钟），已停止。',
+    }));
+    const queued = await service.runNow(GAME, ACCOUNT, 'task-1');
+    await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.status === 'failed');
+    expect(run).toHaveBeenCalledTimes(1);
+    expect((await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.message).toContain('时间上限');
+
+    // Without the time limit the same failure is retried as configured.
+    run.mockImplementation(async (options) => endedSnapshot({ runId: options.runId, status: 'failed', error: '没找到模板' }));
+    const again = await service.runNow(GAME, ACCOUNT, 'task-1');
+    await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === again.runId)?.status === 'failed');
+    expect(run).toHaveBeenCalledTimes(4);
+  });
+
+  it('a loop script that ran its time limit out is recorded as done, not failed', async () => {
+    const { service, runner } = await setup(() => false);
+    await service.saveConfig(GAME, { retry: 1, retryDelayMs: 0 });
+    await service.saveScript(GAME, { ...script, loop: true, loopIntervalMs: 1000 });
+    const run = vi.spyOn(runner, 'run').mockImplementation(async (options) => endedSnapshot({
+      runId: options.runId, status: 'succeeded', timedOut: true, iteration: 3,
+    }));
+    const queued = await service.runNow(GAME, ACCOUNT, 'task-1');
+    await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.status === 'succeeded');
+    expect(run).toHaveBeenCalledTimes(1);
+    expect((await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.message).toContain('按时结束（完成 3 轮）');
+  });
+
+  it('runs without an explicit shot policy follow app-settings.json', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'wanlong-shot-policy-'));
+    homes.push(home);
+    expect(await readAppShotPolicy(home)).toBe('onFail');
+    await mkdir(path.join(home, 'automation'), { recursive: true });
+    await writeFile(path.join(home, 'automation', 'app-settings.json'), JSON.stringify({ version: 1, shotPolicy: 'always' }));
+    expect(await readAppShotPolicy(home)).toBe('always');
+    await writeFile(path.join(home, 'automation', 'app-settings.json'), JSON.stringify({ version: 1, shotPolicy: 'sometimes' }));
+    expect(await readAppShotPolicy(home)).toBe('onFail');
+    await writeFile(path.join(home, 'automation', 'app-settings.json'), '{ broken');
+    expect(await readAppShotPolicy(home)).toBe('onFail');
+
+    const { service, runner, port } = await setup(() => false);
+    port.shotPolicy = () => 'never';
+    const run = vi.spyOn(runner, 'run').mockImplementation(async (options) => endedSnapshot({ runId: options.runId, status: 'succeeded' }));
+    const queued = await service.runNow(GAME, ACCOUNT, 'task-1');
+    await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.status === 'succeeded');
+    expect(run.mock.calls[0]?.[0].shotPolicy).toBe('never');
+  });
 
   it('runs a manual script through the shared instance lease and records success', async () => {
     const { service, actions } = await setup(() => false);

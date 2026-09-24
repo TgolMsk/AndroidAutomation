@@ -10,6 +10,11 @@ import { LOG_LEVEL_ORDER, type LogEntry, type LogLevel } from '@avdm/automation/
 
 export const LOG_RING_CAPACITY = 2000;
 const NOTIFY_INTERVAL_MS = 150;
+/**
+ * Lines the pane renders at once (the newest ones); older lines of the ring appear on demand. Re-rendering all
+ * 2000 rows on every 150 ms batch is what the original avoided with a virtualized list.
+ */
+export const LOG_RENDER_WINDOW = 300;
 
 export interface RunLogFilter {
   /** null / undefined = every run. */
@@ -39,6 +44,26 @@ export function matchesFilter(entry: LogEntry, filter: RunLogFilter): boolean {
     if (!`${entry.message} ${entry.scope} ${entry.stepId ?? ''}`.toLowerCase().includes(needle)) return false;
   }
   return true;
+}
+
+const entryKeys = new WeakMap<LogEntry, number>();
+let nextEntryKey = 0;
+
+/** A stable React key per line: the ring keeps the same objects while it slides, so rows are reused, not remounted. */
+export function logEntryKey(entry: LogEntry): number {
+  let key = entryKeys.get(entry);
+  if (key === undefined) {
+    key = ++nextEntryKey;
+    entryKeys.set(entry, key);
+  }
+  return key;
+}
+
+/** The newest `LOG_RENDER_WINDOW + extra` lines, and how many older ones are not rendered. */
+export function logRenderWindow<T>(lines: readonly T[], extra = 0): { shown: readonly T[]; hidden: number } {
+  const limit = LOG_RENDER_WINDOW + Math.max(0, Math.floor(extra));
+  const hidden = Math.max(0, lines.length - limit);
+  return { shown: hidden ? lines.slice(hidden) : lines, hidden };
 }
 
 /** The pure ring (tested without React). */

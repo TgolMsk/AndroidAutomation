@@ -11,7 +11,7 @@ import { broadcast } from './events';
 import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
 import { MonitoringService, ReadOnlyTelegramBot } from './monitoring';
-import { PlanService, ScriptRunner } from './plans';
+import { PlanService, readAppShotPolicy, ScriptRunner } from './plans';
 
 /**
  * Composition root. Services are built and wired here only, one `// ── <domain> ──` section each, so ported
@@ -101,8 +101,9 @@ bootstrapApp({
       gatherScheduleEnabled: async (gameId, index) =>
         (await automation.schedules()).some((item) => item.gameId === gameId && item.index === index && item.enabled),
       onRun: (run) => broadcast('plan-run', { kind: 'plan', run }),
-      // shotPolicy: the app settings' default (DECISIONS C) — wire `() => appSettings.get().shotPolicy` here once
-      // the app-settings service is merged; until then runs without an explicit policy use 'onFail'.
+      // The app settings' default (DECISIONS C), read from app-settings.json per run; with the settings service
+      // wired here, `() => appSettings.get().shotPolicy` is the same value without the file read.
+      shotPolicy: () => readAppShotPolicy(home),
     }, scriptRunner);
 
     // ── monitoring (failure / freeze / kicked detection) ──

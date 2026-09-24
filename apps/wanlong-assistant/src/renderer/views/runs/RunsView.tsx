@@ -215,6 +215,7 @@ export function RunsView({ visible }: ViewProps) {
           </header>
           {selected.status === 'failed' && selected.message && <p className="notice bad" role="alert">执行失败：{selected.message}</p>}
           {(selected.status === 'skipped' || selected.status === 'cancelled') && selected.message && <p className="notice">{selected.message}</p>}
+          {selected.status === 'succeeded' && snapshot?.timedOut && <p className="notice">循环脚本已运行满本次时间上限，按时结束。</p>}
           {snapshot && (
             <div className="runs-tiles">
               <Tile label="截图次数" value={snapshot.stats.captures} />

@@ -96,12 +96,15 @@ describe('script engine: control flow (original engine.ts semantics)', () => {
     expect(device.actions).toEqual(['tap:20,10']);
   });
 
-  it('runs script-level loop rounds with an iteration counter until the run limit', async () => {
+  it('runs script-level loop rounds with an iteration counter until the run limit, which ends a loop as succeeded', async () => {
     const h = harness(script([tap('a')], { loop: true, loopIntervalMs: 1000 }), { engine: { maxRunMs: 2500 } });
     const started = Date.now();
     const result = await h.run();
-    expect(result.status).toBe('failed');
-    expect(result.error).toContain('时间上限');
+    // A loop only ends by a stop or its time budget: reaching the budget is not a (retryable) failure.
+    expect(result.status).toBe('succeeded');
+    expect(result.timedOut).toBe(true);
+    expect(result.error).toBeNull();
+    expect(h.logs.some((line) => line.message.includes('按时结束'))).toBe(true);
     expect(result.stepTotal).toBeNull();
     expect(result.iteration).toBeGreaterThanOrEqual(2);
     expect(h.device.actions.length).toBe(result.iteration + (result.iteration >= 3 ? 0 : 1));
@@ -218,6 +221,22 @@ describe('script engine: stop, pause, shots', () => {
     const result = await running;
     expect(result.status).toBe('succeeded');
     expect(h.device.actions).toEqual(['tap:20,10']);
+  });
+
+  it('pause time counts toward maxRunMs: a run paused past its limit ends without resuming or sending input', async () => {
+    const h = harness(script([{ id: 's', kind: 'sleep', ms: 30 }, tap('a')]), { engine: { maxRunMs: 150 } });
+    const started = Date.now();
+    const running = h.run();
+    h.engine.pause();
+    // Nobody resumes: only the whole-run limit can end the run.
+    const result = await running;
+    expect(Date.now() - started).toBeGreaterThanOrEqual(140);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(result.status).toBe('failed');
+    expect(result.timedOut).toBe(true);
+    expect(result.error).toContain('时间上限');
+    expect(h.statuses.some((status) => status.status === 'paused')).toBe(true);
+    expect(h.device.actions).toEqual([]);
   });
 
   it('shot policy: success shots only when capture=true or always; failures unless never or capture=false', async () => {
@@ -382,6 +401,7 @@ describe('script engine: AI consult', () => {
     const result = await h.run();
     expect(Date.now() - started).toBeLessThan(2000);
     expect(result.status).toBe('failed');
+    expect(result.timedOut).toBe(true);
     expect(result.error).toContain('时间上限');
     expect(h.consults).toHaveLength(1);
   });
