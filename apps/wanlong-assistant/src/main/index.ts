@@ -33,6 +33,8 @@ import { ShotStore } from './scheduler/shots';
 import { PlanService, ScriptRunner } from './plans';
 import { ResourcesService } from './resources/service';
 import { StatsService, alertRaisedEvent, autoChangedEvent, countsAsAlert, cycleFailedEvent, dispatchEvents, pauseRealityPort, tripEvents } from './stats';
+import { renderDailyStatsText } from '../shared/stats';
+import { cstDateKey, formatCstClock } from '../shared/time';
 import { updateBusyCheck, updateLog, UpdateService } from './update';
 import { electronUpdateDeps } from './update/electron-deps';
 
@@ -472,6 +474,12 @@ bootstrapApp({
     });
     insights.onAlertStored((alert) => {
       if (alert.gameId === 'wanlong' && countsAsAlert(alert.kind)) stats.record(alertRaisedEvent(alert.index, alert.kind, alert.at));
+    });
+    // The bot's 📈 今日统计 and 💰 资源 (original bot actions `stats` / `resources`). `resources.read` already records
+    // the snapshot, so no `recordSnapshot` port; the bot calls it inside its own `eta.exclusive` (the lock is reentrant).
+    remoteBot.setPorts({
+      readResources: (index) => resources.read(index),
+      dailyStatsText: async (now) => renderDailyStatsText(await stats.daily(cstDateKey(now)), { now, formatClock: formatCstClock }),
     });
 
     // ── ipc ── (one service per line: a ported module appends its own line)

@@ -23,9 +23,10 @@ StatsService (service.ts)      收事件 → 当天事实（内存）→ 防抖�
   `GAME_UPDATE_REQUIRED` / `AI_RISK_BLOCKED` 不计失败（专用「需要人处理」告警负责）。
 - **完成趟数**：调度器 `onMarchGone`（上次采样在外、这次不见了的队伍）。资源按原版的链找：事件自带 → 派兵记账按坐标反查
   （跨天、重启后从昨天和今天的派兵事实重建）→ 该实例当天派得最多的资源 → 全局派得最多的资源 → 都没有就丢弃并记一条说明，绝不瞎猜。
-- **告警**：只数告警结论（现在是 insights 里存下的告警，`countsAsAlert` 排除每轮一条的「运行失败」噪声与旧版每次熔断
-  一条的「采集熔断」—— 熔断不是失败、不发告警，已经按 `circuitBreaks` 计过，导入旧日账时同样排除）。告警模块接管后，
-  从它自己的 raise 路径调 `stats.record(alertRaisedEvent(...))`。
+- **告警**：只数告警模块（`src/main/alerts`，FailureTracker 的结论 / 卡死 / 顶号 / 需要人处理）的告警结论。告警模块经
+  `ledgerAlertOf()` → `InsightsService.recordAlert()` 把每条结论写进日账，新写入的一条通过 `insights.onAlertStored` 转成
+  `alertRaised` 事件（按 id 只数一次）。`countsAsAlert` 仍排除旧日账里每轮一条的「运行失败」与每次熔断一条的「采集熔断」——
+  熔断不是失败、不发告警，已经按 `circuitBreaks` 计过，导入旧日账时同样排除。
 - **暂停时长**：★ 唯一来源是调度器 `onAutoChanged`（自动开关真的翻转时）。重复的「暂停」不会把起点往后挪，没有暂停时的
   「恢复」被忽略；跨 0 点时前一天算到 24:00，后一天从 00:00 接着算（`pauseCarry` 事实）。助手关着跨过几天，重启时补齐每一天。
   过去的某一天**永远不会**显示「暂停中」（原版这里会算出 +Infinity）。

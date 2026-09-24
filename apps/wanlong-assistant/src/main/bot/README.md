@@ -71,7 +71,7 @@ src/renderer/views/bot/                设置页「Telegram 机器人 · 在助�
 | pause | `scheduler.setAuto(i,false)` | `AutomationHost.setSchedule(false)`（同时作废还在探测中的开启请求） | 与界面开关同一条路 |
 | 截图 | MuMu 截图，主进程 sharp | `AdbDevice.screencapRaw` + 工作线程编码（1280 宽，q70），模拟器没在运行时先拒绝 | DECISIONS A.6 |
 | 重启游戏 | 第二层任一预留模板命中都点顶号框坐标 | 只在 `tpl_dlg_kicked` 命中时点；进程在但被切到后台时用 monkey 切回前台；维护 / 更新公告单独报错 | 那个坐标只对顶号框校准过 |
-| 资源统计 / 今日统计 | 直接调 | 端口 `readResources` / `dailyStatsText`（`BotService.setPorts`），没接线时回「还没有接入」 | 统计与资源模块并行移植 |
+| 资源统计 / 今日统计 | 直接调 | 端口 `readResources` / `dailyStatsText`（`BotService.setPorts`，在 `main/index.ts` 的统计 / 资源一节接到 `ResourcesService.read` 与 `renderDailyStatsText(stats.daily())`；快照由 `ResourcesService.read` 自己记账，不另传 `recordSnapshot`） | 两个模块分开移植，由 index.ts 晚接线 |
 | 截图留底 | `<dataDir>/shots/bot/` | `automation/wanlong/bot-shots/`（0600，14 天 / 300 张），「不留痕」时不存 | 本仓库数据目录与留痕策略 |
 | 轮询 | 串行处理每条更新 | 快的部分（鉴权、应答按钮）立刻做，慢动作排队（停止 / 重启时丢弃未开始的，执行前按最新设置复核）；启动时丢弃积压；每次最多 50 条 | 回调 10 秒内必须应答 |
 | 重载 | 每次保存告警设置都重启 | 只在机器人自己的设置（开关 / Token / Chat ID / 授权用户）变了才重启 | 改别的设置不打断手机上正在排队的请求 |

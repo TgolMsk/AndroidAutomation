@@ -104,7 +104,7 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
   实例页的红色行、诊断角标（完整 `PauseBanner`）、批量采集的跳过规则都直接读 `useAlerts()` / `pauseOf()`，「恢复」走 `resumePause(i)`。
   「需要人工介入」的 `detail.阶段` 用 `ATTENTION_STAGE` / `attentionStageOf()`（`shared/alerts.ts`，AI 执行器同用一份），
   `pauseTitle()` 把它带进状态行；AI 风险暂停（`isAiAttentionPause`）的横幅上有「查看 AI 处理记录」。
-- 统计模块：暂停 / 恢复事件仍只从 `SchedulerHooks.onAutoChanged` 来；告警写进日账走 `ledgerAlertOf()` → `InsightsService.recordAlert()`。
+- 统计模块：暂停 / 恢复事件仍只从 `SchedulerHooks.onAutoChanged` 来；告警写进日账走 `ledgerAlertOf()` → `InsightsService.recordAlert()`，新写入的一条再经 `insights.onAlertStored` 计入数据统计的「告警」数（按 id 只数一次）。
 
 ## 验证
 
