@@ -91,6 +91,9 @@ const EARLY_EXIT_WATCH_MS = 1000;
 /** Auto-restart budget: at most AUTO_RESTART_MAX restarts per AUTO_RESTART_WINDOW_MS per instance. */
 const AUTO_RESTART_MAX = 3;
 const AUTO_RESTART_WINDOW_MS = 10 * 60_000;
+/** Health-monitor retries of a failed device-identity check: 1 min, doubling, at most 30 min. */
+const IDENTITY_RETRY_MIN_MS = 60_000;
+const IDENTITY_RETRY_MAX_MS = 30 * 60_000;
 /** dispose() waits this long for the monitor's in-flight tick / auto-restarts (launch lock timeout is 120s). */
 const DISPOSE_MONITOR_WAIT_MS = 130_000;
 /** A fetched SDK catalog is reused by plan/install for this long. */
@@ -200,6 +203,11 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
   private readonly bootCache = new Map<number, number>();
   private readonly identityApplying = new Map<number, Promise<void>>();
   private readonly identityErrors = new Map<number, string>();
+  /**
+   * index → when the health monitor may retry a failed identity check. A failure can come after the Android ID
+   * rotation restarted the framework: retrying every tick would restart it (and kill the game) every few seconds.
+   */
+  private readonly identityRetry = new Map<number, { at: number; delayMs: number }>();
   /** index → cached crash message for a given run (avoids re-reading the log on every poll). */
   private readonly crashNotes = new Map<number, { key: string; message: string }>();
   /** index → cached boot-timeout hint for a given run. */
@@ -635,6 +643,7 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
     if (opts.identity !== undefined) {
       await markSnapshotStale(this.paths.avdHome, rec.avdName, 'device identity changed').catch(() => undefined);
       this.identityErrors.delete(index);
+      this.identityRetry.delete(index);
     } else if (spec && spec.bootMode !== rec.spec.bootMode) {
       // Cold-boot sessions never save a snapshot, so an existing one is older than the disk from now on.
       await markSnapshotStale(this.paths.avdHome, rec.avdName, 'boot mode changed').catch(() => undefined);
@@ -1353,6 +1362,7 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
     this.bootDoubt.delete(index);
     this.staleStops.delete(index);
     this.identityErrors.delete(index);
+    this.identityRetry.delete(index);
     const c = this.clients.get(index);
     if (c) {
       c.client.close();
@@ -1823,8 +1833,11 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
       await this.ensureAutoRestartLeadership();
       for (const st of states) {
         const index = st.record.index;
-        if (st.status === 'running' && st.record.identity) {
-          await this.ensureManagedIdentity(st).catch((err: unknown) => this.reportIdentityError(index, err));
+        if (st.status === 'running' && st.record.identity && (this.identityRetry.get(index)?.at ?? 0) <= Date.now()) {
+          await this.ensureManagedIdentity(st).then(
+            () => { this.identityRetry.delete(index); },
+            (err: unknown) => { this.reportIdentityError(index, err); this.deferIdentityRetry(index); },
+          );
         }
         if (st.status !== 'error') {
           this.restartGaveUp.delete(index);
@@ -1970,6 +1983,12 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
     } finally {
       if (this.identityApplying.get(index) === task) this.identityApplying.delete(index);
     }
+  }
+
+  /** Back off the monitor's identity retries: 1 min, doubling, at most 30 min (reset by success or a restart). */
+  private deferIdentityRetry(index: number): void {
+    const delayMs = Math.min(IDENTITY_RETRY_MAX_MS, (this.identityRetry.get(index)?.delayMs ?? IDENTITY_RETRY_MIN_MS / 2) * 2);
+    this.identityRetry.set(index, { at: Date.now() + delayMs, delayMs });
   }
 
   private reportIdentityError(index: number, err: unknown): void {

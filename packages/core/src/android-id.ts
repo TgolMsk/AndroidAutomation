@@ -8,6 +8,9 @@ import { sleep } from './util/proc.js';
 
 const USER_DIR = '/data/system/users';
 const BACKUP_DIR = '/data/local/tmp/avdm/ssaid-backups';
+/** After `start` the settings provider is published a little later than the services `waitFramework` checks. */
+const SETTINGS_READY_MS = 30_000;
+const SETTINGS_RETRY_MS = 1_000;
 
 function userAndroidId(base: string, userId: number): string {
   return userId === 0 ? base : createHash('sha256').update(`${base}:${userId}`).digest('hex').slice(0, 16);
@@ -26,16 +29,48 @@ async function waitFramework(device: AdbDevice): Promise<void> {
 }
 
 /**
+ * `settings put` right after a framework restart fails until SettingsProvider is back (seen on API 35: the command
+ * fails, the same command a few seconds later succeeds). Retry within SETTINGS_READY_MS instead of failing the whole
+ * rotation — a failed rotation used to be retried from scratch, restarting the framework (and the game) again.
+ */
+async function settingsPut(device: AdbDevice, command: string, readyMs: number, retryMs: number): Promise<void> {
+  const deadline = Date.now() + readyMs;
+  for (;;) {
+    try {
+      await device.shell(command, { timeoutMs: 10_000 });
+      return;
+    } catch (err) {
+      if (Date.now() >= deadline) throw err;
+      await sleep(retryMs);
+    }
+  }
+}
+
+export interface EnsureAndroidIdOptions {
+  /** Tests shrink the settings-provider wait. */
+  settingsReadyMs?: number;
+  settingsRetryMs?: number;
+}
+
+/**
  * Android 8+ derives each app's SSAID from a per-user secret. Rotating the secret changes future
  * app-visible IDs without claiming that every app receives the same value. The secure setting is also
  * changed for shell/system tools. This intentionally runs once per stored token, not on every restart.
  */
-export async function ensureAndroidId(device: AdbDevice, token: string, avdDir: string): Promise<void> {
+export async function ensureAndroidId(device: AdbDevice, token: string, avdDir: string, options: EnsureAndroidIdOptions = {}): Promise<void> {
   const marker = path.join(avdDir, '.avdm-android-id');
+  const readyMs = options.settingsReadyMs ?? SETTINGS_READY_MS;
+  const retryMs = options.settingsRetryMs ?? SETTINGS_RETRY_MS;
   await withFileLock(`${marker}.lock`, async () => {
     const applied = await fsp.readFile(marker, 'utf8').catch(() => '');
     const current = await device.shell('settings get --user 0 secure android_id', { timeoutMs: 10_000 }).catch(() => '');
-    if (applied.trim() === token && current.trim() === token) return;
+    if (current.trim() === token) {
+      // Only this function ever writes the token, and only after the SSAID rotation: an earlier attempt rotated and
+      // set it but died before the marker. Rotating again would restart the framework — killing the running game —
+      // for nothing (it did, every health tick, while the marker stayed missing).
+      if (applied.trim() !== token) await atomicWriteFile(marker, `${token}\n`);
+      return;
+    }
 
     await device.run(['root'], { timeoutMs: 15_000 });
     await device.run(['wait-for-device'], { timeoutMs: 20_000 });
@@ -84,7 +119,7 @@ export async function ensureAndroidId(device: AdbDevice, token: string, avdDir: 
       if (/^\d+$/.test(line)) users.add(Number(line));
     }
     for (const userId of users) {
-      await device.shell(`settings put --user ${userId} secure android_id ${userAndroidId(token, userId)}`, { timeoutMs: 10_000 });
+      await settingsPut(device, `settings put --user ${userId} secure android_id ${userAndroidId(token, userId)}`, readyMs, retryMs);
     }
     const verified = await device.shell('settings get --user 0 secure android_id', { timeoutMs: 10_000 });
     if (verified.trim() !== token) throw new AvdmError('COMMAND_FAILED', `Android ID 读回不一致：${verified.trim()}`);
