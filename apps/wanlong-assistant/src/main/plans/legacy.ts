@@ -1,4 +1,10 @@
+import { makeTaskId, mergePlanConfig, defaultPlanConfig, sanitizePlan } from '../../shared/plan';
 import type { AccountPlan, PlanConfig, ScriptDef } from './types';
+
+/**
+ * Explicit, UI-driven import of wanlong-panel scripts and plans. Pure (no Node imports): the renderer imports it.
+ * Imported automation always starts disabled; run counters and trigger bookkeeping are not imported.
+ */
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 
@@ -27,34 +33,41 @@ export function legacyPlanChoices(raw: unknown): Array<{ accountId: string; task
     .map((item) => ({ accountId: item.accountId as string, tasks: Array.isArray(item.tasks) ? item.tasks.length : 0 }));
 }
 
-/** Keep compatible timing knobs but require an explicit enable in the new Assistant. */
+const CONFIG_FIELDS = ['preemptGraceMs', 'catchUpMs', 'queueWaitMs', 'retry', 'retryDelayMs', 'aiAssist'] as const;
+
+/**
+ * The legacy config's knobs (clamped into today's ranges like the original `mergePlanConfig`), always with the
+ * total switch off: the user turns plans on after checking them. Only fields present in the old file are returned.
+ */
 export function convertLegacyConfig(raw: unknown): Partial<PlanConfig> {
   if (!record(raw) || !record(raw.config)) return { enabled: false };
   const old = raw.config;
+  const merged = mergePlanConfig(defaultPlanConfig(), old);
   const patch: Partial<PlanConfig> = { enabled: false };
-  const ranges = { catchUpMs: [0, 12 * 3_600_000], queueWaitMs: [60_000, 12 * 3_600_000],
-    retry: [0, 5], retryDelayMs: [0, 30 * 60_000] } as const;
-  for (const key of Object.keys(ranges) as Array<keyof typeof ranges>) {
+  for (const key of CONFIG_FIELDS) {
     const value = old[key];
-    const [min, max] = ranges[key];
-    if (typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max) patch[key] = value;
+    if (key === 'aiAssist' ? typeof value === 'boolean' : typeof value === 'number' && Number.isFinite(value)) {
+      (patch as Record<string, unknown>)[key] = merged[key];
+    }
   }
   return patch;
 }
 
-/** Account IDs and run counters are intentionally not reused across products. */
-export function convertLegacyAccountPlan(raw: unknown, oldAccountId: string, newAccountId: string): { plan: AccountPlan; warnings: string[] } {
+/**
+ * One legacy account plan mapped onto `newAccountId`, sanitized with the original loader's rules: an invalid daily
+ * trigger becomes 「仅手动」, intervals / priorities / time limits are clamped (0–720 minutes, 0 = unlimited), bad
+ * windows and params are dropped. Tasks whose id does not fit today's rules get a fresh one. Account ids and run
+ * counters are intentionally not reused across products; the plan is imported disabled.
+ */
+export function convertLegacyAccountPlan(
+  raw: unknown, oldAccountId: string, newAccountId: string, newId: () => string = () => makeTaskId(),
+): { plan: AccountPlan; warnings: string[] } {
   if (!record(raw) || !Array.isArray(raw.plans)) throw new Error('旧计划文件应包含 plans 数组');
   const old = raw.plans.find((item: unknown) => record(item) && item.accountId === oldAccountId);
   if (!record(old) || !Array.isArray(old.tasks)) throw new Error('找不到所选旧账号计划');
-  const warnings = ['已映射到当前账号；自动计划默认关闭，旧运行次数和触发记账不导入。旧版抢占采集与 AI 自动介入配置不迁移。请核对后再启用。'];
-  const tasks = old.tasks.map((rawTask: unknown) => {
-    if (!record(rawTask)) throw new Error('旧计划存在无效任务');
-    if (rawTask.maxRunMinutes === 0) {
-      warnings.push(`任务 ${String(rawTask.id)} 的无限运行时长已限制为 120 分钟。`);
-    }
-    return { ...rawTask, maxRunMinutes: rawTask.maxRunMinutes === 0 ? 120 : rawTask.maxRunMinutes };
-  });
-  const plan = { accountId: newAccountId, enabled: false, tasks, updatedAt: 0 } as AccountPlan;
+  const warnings = ['已映射到当前账号；账号计划默认关闭，旧运行次数和触发记账不导入。请核对后再启用。'];
+  const sanitized = sanitizePlan({ ...old, accountId: newAccountId }, (message) => warnings.push(message), { newId });
+  if (!sanitized) throw new Error('找不到所选旧账号计划');
+  const plan: AccountPlan = { accountId: newAccountId, enabled: false, tasks: sanitized.tasks, updatedAt: 0 };
   return { plan, warnings };
 }

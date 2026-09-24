@@ -30,7 +30,6 @@ import { runServiceSteps, ServiceHealth } from './lifecycle';
 import { AlertsService, createAvdFreezeRecoveryIo, KICKED_TEMPLATE_IDS, ledgerAlertOf, safeStorageCodec } from './alerts';
 import { ReadOnlyTelegramBot } from './monitoring';
 import { ShotStore } from './scheduler/shots';
-import { SCRIPT_PREEMPT_GRACE_MS } from './scheduler/service';
 import { PlanService, ScriptRunner } from './plans';
 import { updateBusyCheck, updateLog, UpdateService } from './update';
 import { electronUpdateDeps } from './update/electron-deps';
@@ -167,11 +166,14 @@ bootstrapApp({
       device: async (index) => (await deviceHost.get()).device(index),
       templateDir: async (gameId, index) => (await automation.instanceSettings(gameId, index)).templateDir,
       // ★ Scripts first (DECISIONS A.4, original plan rule 1): a plan or manual run makes the instance's gather
-      // scheduler yield (polite wait, then abort) and gives it back afterwards; gather auto never refuses a script.
-      suspendForScript: (gameId, index, reason) => gameId === 'wanlong'
-        ? automation.eta.suspendForScript(index, SCRIPT_PREEMPT_GRACE_MS, reason)
+      // scheduler yield (polite wait of the plan config's preemptGraceMs, then abort) and gives it back afterwards;
+      // gather auto never refuses a script.
+      suspendForScript: (gameId, index, reason, graceMs) => gameId === 'wanlong'
+        ? automation.eta.suspendForScript(index, graceMs, reason)
         : Promise.resolve(() => undefined),
       onRun: (run) => broadcast('plan-run', { kind: 'plan', run }),
+      onChanged: (overview) => broadcast('plan-changed', overview),
+      onConfigChanged: (event) => broadcast('plan-config-changed', event),
       // App settings (DECISIONS C, one source of defaults): the default trace-shot policy of runs that chose none,
       // and the matching defaults (threshold of templates without their own, downsampling factor) handed to the
       // script worker. Awaiting `ready` keeps a run started right after launch off the built-in defaults.
@@ -190,7 +192,9 @@ bootstrapApp({
       // checked or pointing at a replaced AVD) is the accounts module's `automationReadiness` hook above; a scheduled
       // wake it refuses pauses the ETA scheduler (not a failure) and `onSchedulePause` records the warning.
       externalBusy: (index) => {
-        if (plans.isActiveForInstance(index)) return '脚本计划';
+        // Only a script that holds the instance (admitted / running) makes gathering wait; a task still waiting in the
+        // plan queue does not (original busyRunIdOf) — it preempts gathering itself when it starts.
+        if (plans.runIdOfInstance(index) !== null) return '脚本计划';
         const login = accounts.loginSession(index);
         return login && loginActive(login.phase) ? '账号登录' : null;
       },

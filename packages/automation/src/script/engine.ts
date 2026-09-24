@@ -24,7 +24,7 @@ import { execStep } from './actions.js';
 import { StepScope, type ScriptContext } from './context.js';
 import { describeCondition } from './describe.js';
 import { ScriptError, isExecutionGuardError } from './errors.js';
-import type { Condition, FailPolicy, RunSnapshot, RunStatus, ScriptParamDef, ScriptParamValue, ScriptStep } from './types.js';
+import type { Condition, FailPolicy, RunFailureCode, RunSnapshot, RunStatus, ScriptParamDef, ScriptParamValue, ScriptStep } from './types.js';
 
 export const DEFAULT_MAX_ITERATIONS = 1000;
 export const DEFAULT_MAX_GOTO = 1000;
@@ -47,7 +47,7 @@ type StepOutcome =
 type BlockOutcome = Exclude<StepOutcome, { type: 'next' }> | { type: 'done' };
 
 /** Why the run was halted from outside the step flow. */
-type Halt = { status: 'aborted' | 'succeeded' | 'failed'; message: string };
+type Halt = { status: 'aborted' | 'succeeded' | 'failed'; message: string; code?: RunFailureCode };
 
 export interface ScriptEngineOptions {
   /** Whole-run limit in ms (pause time counts); null / 0 = unlimited. */
@@ -144,7 +144,7 @@ export class ScriptEngine {
         ctx.snapshot.timedOut = true;
         // ★ A loop script has no other natural end: running its allotted time is success, never a retryable failure.
         if (ctx.script.loop) this.haltWith({ status: 'succeeded', message: `循环脚本已运行满本次时间上限（${minutes} 分钟），按时结束。` });
-        else this.haltWith({ status: 'failed', message: `脚本运行超过本次时间上限（${minutes} 分钟），已停止。` });
+        else this.haltWith({ status: 'failed', message: `脚本运行超过本次时间上限（${minutes} 分钟），已停止。`, code: 'TIMEOUT' });
       }, Math.min(maxRunMs, 2_147_483_647));
       (this.deadlineTimer as { unref?: () => void }).unref?.();
     }
@@ -185,17 +185,17 @@ export class ScriptEngine {
         await ctx.sleep(gap);
         if (this.stopping) break;
       }
-      this.finish(this.halt ? this.halt.status : 'succeeded', this.halt?.status === 'failed' ? this.halt.message : null);
+      this.finish(this.halt ? this.halt.status : 'succeeded', this.halt?.status === 'failed' ? this.halt.message : null, this.halt?.code);
     } catch (error) {
       if (this.halt) {
-        this.finish(this.halt.status, this.halt.status === 'failed' ? this.halt.message : null);
+        this.finish(this.halt.status, this.halt.status === 'failed' ? this.halt.message : null, this.halt.code);
       } else if (isExecutionGuardError(error)) {
         ctx.log('error', `执行被安全检查终止：${error.message}`);
-        this.finish('failed', error.message);
+        this.finish('failed', error.message, 'GUARD');
       } else {
         const failure = ScriptError.from(error, 'UNKNOWN');
         ctx.log('error', `执行失败：${failure.message}`, { code: failure.code, ...(failure.detail ?? {}) });
-        this.finish('failed', failure.message);
+        this.finish('failed', failure.message, failure.code);
       }
     } finally {
       signal?.removeEventListener('abort', onAbort);
@@ -457,13 +457,14 @@ export class ScriptEngine {
 
   // ── Finish ────────────────────────────────────────────────────────────
 
-  private finish(status: RunStatus, error: string | null): void {
+  private finish(status: RunStatus, error: string | null, code?: RunFailureCode): void {
     if (this.finished) return;
     this.finished = true;
     const ctx = this.ctx;
     ctx.snapshot.status = status;
     ctx.snapshot.endedAt = ctx.now();
     ctx.snapshot.error = error;
+    if (status === 'failed' && code) ctx.snapshot.failureCode = code;
     ctx.snapshot.currentStepId = null;
     ctx.snapshot.currentStepName = null;
     const seconds = Math.round((ctx.snapshot.endedAt - ctx.snapshot.startedAt) / 1000);

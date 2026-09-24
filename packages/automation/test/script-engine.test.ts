@@ -125,6 +125,8 @@ describe('script engine: retry and onFail', () => {
     const failure = h.logs.find((line) => line.level === 'error' && line.stepId === 'a');
     expect(failure?.shot).toBe('run-1/0001-fail-a.jpg');
     expect(failure?.data).toMatchObject({ code: 'STEP_FAILED' });
+    // Typed for callers (plans decide skip / fail / retry by it, never by the Chinese message).
+    expect(result.failureCode).toBe('STEP_FAILED');
   });
 
   it('continue and goto keep the run going', async () => {
@@ -184,6 +186,7 @@ describe('script engine: retry and onFail', () => {
     const result = await h.run();
     expect(result.status).toBe('failed');
     expect(result.error).toBe('目标游戏已离开前台');
+    expect(result.failureCode).toBe('GUARD');
     expect(device.actions).toEqual(['tap']);
     expect(h.consults).toHaveLength(0);
   });
@@ -234,6 +237,7 @@ describe('script engine: stop, pause, shots', () => {
     expect(Date.now() - started).toBeLessThan(2000);
     expect(result.status).toBe('failed');
     expect(result.timedOut).toBe(true);
+    expect(result.failureCode).toBe('TIMEOUT');
     expect(result.error).toContain('时间上限');
     expect(h.statuses.some((status) => status.status === 'paused')).toBe(true);
     expect(h.device.actions).toEqual([]);
@@ -389,6 +393,7 @@ describe('script engine: AI consult', () => {
     const result = await blocked.run();
     expect(result.status).toBe('failed');
     expect(result.error).toBe('检测到顶号弹窗');
+    expect(result.failureCode).toBe('AI_RISK_BLOCKED');
     expect(vision.calls).toBe(1);
     expect(blocked.logs.find((line) => line.level === 'error' && line.stepId === 'a' && line.message.startsWith('步骤'))?.data).toMatchObject({ code: 'AI_RISK_BLOCKED' });
   });

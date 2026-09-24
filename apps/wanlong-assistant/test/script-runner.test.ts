@@ -207,6 +207,7 @@ describe('ScriptRunner protocol (main side of the worker RPC)', () => {
     expect(Date.now() - started).toBeLessThan(2000);
     expect(result.status).toBe('failed');
     expect(result.timedOut).toBe(true);
+    expect(result.failureCode).toBe('TIMEOUT');
     expect(result.error).toContain('时间上限');
     expect(worker.terminated).toBe(true);
     expect(worker.sent.map((message) => message.type)).toEqual(expect.arrayContaining(['stop', 'abort']));
@@ -285,7 +286,19 @@ describe('ScriptRunner with the real worker core', () => {
     const result = await ctx.runner.execute(options(script([{ id: 'a', kind: 'tap', at: { x: 5, y: 5 } }, { id: 'b', kind: 'tap', at: { x: 6, y: 6 }, retry: 3, onFail: { kind: 'continue' } }])));
     expect(result.status).toBe('failed');
     expect(result.error).toContain('实例已停止或被替换');
+    expect(result.failureCode).toBe('GUARD');
     expect(device.actions).toEqual(['tap:10,5']);
+  });
+
+  it('a start refused before any input is marked START_CHECK (plans skip it instead of failing)', async () => {
+    const device = fakeScriptDevice();
+    device.foreground = 'com.android.launcher3';
+    const ctx = runner(device);
+    const result = await ctx.runner.execute(options(script([{ id: 'a', kind: 'tap', at: { x: 5, y: 5 } }])));
+    expect(result.status).toBe('failed');
+    expect(result.failureCode).toBe('START_CHECK');
+    expect(result.error).toContain('离开前台');
+    expect(device.actions).toEqual([]);
   });
 
   it('long press is one motionevent shell and launch is limited to the game package', async () => {

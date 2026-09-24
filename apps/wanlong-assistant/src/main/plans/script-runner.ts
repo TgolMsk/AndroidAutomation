@@ -3,8 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { ExecutionGuardError, isExecutionGuardError, type RawFrame } from '@avdm/automation';
 import {
-  startsWithLaunch, TERMINAL_RUN_STATUSES, type AiAssistResult, type LogEntry, type LogLevel, type RunSnapshot, type RunStatus,
-  type ScriptDef, type ScriptParamValue, type ShotPolicy,
+  startsWithLaunch, TERMINAL_RUN_STATUSES, type AiAssistResult, type LogEntry, type LogLevel, type RunFailureCode, type RunSnapshot,
+  type RunStatus, type ScriptDef, type ScriptParamValue, type ShotPolicy,
 } from '@avdm/automation/script';
 import { forwardedDeviceError, RunnerMessageError, safeErrorMessage } from './device-errors';
 import { imeBroadcastCommand, needsUnicodeInput, readImeStatus } from './ime';
@@ -336,7 +336,7 @@ export class ScriptRunner {
     };
 
     return new Promise<ScriptRunSnapshot>((resolve) => {
-      const finish = (reported: RunStatus, reportedError: string | null, final?: RunSnapshot): void => {
+      const finish = (reported: RunStatus, reportedError: string | null, final?: RunSnapshot, code?: RunFailureCode): void => {
         if (settled) return;
         settled = true;
         options.signal?.removeEventListener('abort', onExternalAbort);
@@ -355,6 +355,8 @@ export class ScriptRunner {
           if (final) entry.snapshot = { ...entry.snapshot, ...final, ...this.appFields(options) };
           // The main-side backstop is the same limit: plans must not retry it either.
           if (overrun) entry.snapshot.timedOut = true;
+          const failureCode = overrun && reported === 'aborted' ? 'TIMEOUT' : code;
+          if (failureCode) entry.snapshot.failureCode = failureCode;
           const done = this.close(entry, isTerminal(status) ? status : 'failed', error);
           await this.logs.flushed(options.gameId, options.runId).catch(() => undefined);
           resolve(done);
@@ -413,7 +415,8 @@ export class ScriptRunner {
             }).catch((error: unknown) => {
               const reason = safeErrorMessage(error);
               this.runnerLog(entry, 'error', `启动检查未通过：${reason}`);
-              finish('failed', reason);
+              // Refused before any input: plans count this as 「现在没法跑」 (skipped), not as a script failure.
+              finish('failed', reason, undefined, 'START_CHECK');
             });
             return;
           case 'status':
@@ -502,6 +505,7 @@ export class ScriptRunner {
       currentStepName: null,
       error: status === 'failed' ? (error ?? entry.snapshot.error ?? '脚本执行失败') : null,
     };
+    if (status !== 'failed') delete entry.snapshot.failureCode;
     this.notify(entry);
     return copy(entry.snapshot);
   }

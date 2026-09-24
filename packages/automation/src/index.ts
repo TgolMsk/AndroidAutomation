@@ -39,4 +39,5 @@ export {
 export type {
   Condition, FailPolicy, StepBase, ScriptStep, StepKind, ScriptParamDef, ScriptParamValue, ScriptDef, ScriptMeta, ScriptIssue,
   RunStatus, ShotPolicy, RunStats, RunSnapshot, LogLevel, LogEntry, LogQuery, AiConsultRequest, AiAssistResult, ValidateOptions,
+  RunFailureCode,
 } from './script/index.js';

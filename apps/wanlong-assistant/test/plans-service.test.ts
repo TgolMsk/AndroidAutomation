@@ -88,10 +88,15 @@ describe('PlanService integration with fake device', () => {
     expect(run).toHaveBeenCalledTimes(1);
     expect((await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.message).toContain('时间上限');
 
-    // Without the time limit the same failure is retried as configured.
+    // Without the time limit the same failure is retried as configured: each retry is a new attempt of the round,
+    // queued again after the instance was released (original re-enqueue model).
     run.mockImplementation(async (options) => endedSnapshot({ runId: options.runId, status: 'failed', error: '没找到模板' }));
-    const again = await service.runNow(GAME, ACCOUNT, 'task-1');
-    await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === again.runId)?.status === 'failed');
+    await service.runNow(GAME, ACCOUNT, 'task-1');
+    await eventually(async () => run.mock.calls.length === 4 && !service.isActiveForInstance(1) &&
+      (await service.overview(GAME)).tasks[0]?.holdUntil === null);
+    const attempts = (await service.overview(GAME)).runs.slice(0, 3);
+    expect(attempts.map((row) => [row.attempt, row.status])).toEqual([[3, 'failed'], [2, 'failed'], [1, 'failed']]);
+    await new Promise((resolve) => setTimeout(resolve, 300));
     expect(run).toHaveBeenCalledTimes(4);
   });
 
@@ -247,17 +252,62 @@ describe('PlanService integration with fake device', () => {
     expect((await service.overview(GAME)).runs.find((row) => row.runId === run.runId)?.message).toContain('账号已禁用');
   });
 
-  it('cancels a long retry delay promptly and releases the instance', async () => {
-    const { service, actions } = await setup(async () => { throw new Error('fake adb failure'); });
+  it('waits out a long retry delay with the instance released, and cancelling drops the pending retry', async () => {
+    const { service, actions, home } = await setup(async () => { throw new Error('fake adb failure'); });
     await service.saveConfig(GAME, { retry: 1, retryDelayMs: 30 * 60_000 });
     const run = await service.runNow(GAME, ACCOUNT, 'task-1');
-    await eventually(async () => actions.length === 1);
+    await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === run.runId)?.status === 'failed');
+    // ★ Retries happen outside the lease: during the 30-minute hold the instance is free for gathering and others.
+    await eventually(async () => !service.isActiveForInstance(1));
+    expect(await readLeaseOwner(home, 1)).toBeNull();
+    const held = (await service.overview(GAME)).tasks[0]!;
+    expect(held.holdUntil).toBeGreaterThan(Date.now() + 29 * 60_000);
+    expect(held.nextRunAt).toBe(held.holdUntil);
     const started = Date.now();
     await service.cancelRun(GAME, run.runId);
     expect(Date.now() - started).toBeLessThan(1_000);
-    expect((await service.overview(GAME)).runs.find((row) => row.runId === run.runId)?.status).toBe('cancelled');
-    expect(service.isActiveForInstance(1)).toBe(false);
+    expect((await service.overview(GAME)).tasks[0]).toMatchObject({ holdUntil: null, retryLeft: 0 });
     expect(actions).toHaveLength(1);
+    // Cancel by task drops a pending retry the same way.
+    const again = await service.runNow(GAME, ACCOUNT, 'task-1');
+    await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === again.runId)?.status === 'failed');
+    await eventually(async () => (await service.overview(GAME)).tasks[0]?.holdUntil !== null);
+    expect((await service.cancelTask(GAME, ACCOUNT, 'task-1')).tasks[0]).toMatchObject({ holdUntil: null });
+  });
+
+  it('§十二 the time limit stops a run even while a device call hangs; gather is given back and the phase never sticks', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'wanlong-plan-service-'));
+    homes.push(home);
+    const events: string[] = [];
+    const device = fakeScriptDevice({ tap: async () => { events.push('tap'); await new Promise((resolve) => setTimeout(resolve, 400)); } });
+    const port: PlanHostPort = {
+      accounts: async () => [account],
+      instance: async () => ({ status: 'running', record: { createdAt: 'identity-1' } }),
+      templateDir: async () => '',
+      device: async () => device,
+      suspendForScript: async () => { events.push('yield'); return () => { events.push('restore'); }; },
+    };
+    const runner = new ScriptRunner(home, port, {
+      workerFactory: inProcessWorkers({ vision: fakeVision() }).factory, pacing: FAST_PACING, foregroundPollMs: 5,
+      deadlineSlackMs: 20, stopGraceMs: 50,
+    });
+    // One 「分钟」 of the task limit lasts 40 ms here.
+    const service = new PlanService(home, port, runner, { minuteMs: 40 });
+    services.push(service);
+    await service.start(GAME);
+    await service.saveScript(GAME, { ...script, steps: [{ id: 'tap-1', kind: 'tap', at: { x: 50, y: 50 } }, { id: 'tap-2', kind: 'tap', at: { x: 60, y: 60 } }] });
+    await service.savePlan(GAME, { accountId: ACCOUNT, enabled: true, updatedAt: 0,
+      tasks: [{ id: 'task-1', scriptId: script.id, enabled: true, trigger: { kind: 'manual' }, priority: 50, maxRunMinutes: 1 }] });
+    await service.saveConfig(GAME, { retry: 2, retryDelayMs: 0 });
+    const queued = await service.runNow(GAME, ACCOUNT, 'task-1');
+    await eventually(async () => (await service.overview(GAME)).tasks[0]?.phase === 'failed', 5000);
+    const overview = await service.overview(GAME);
+    expect(overview.runs.find((row) => row.runId === queued.runId)?.message).toContain('时间上限');
+    expect(runner.get(queued.runId)).toMatchObject({ status: 'failed', timedOut: true });
+    await eventually(async () => events.includes('restore'));
+    expect(events.filter((item) => item === 'yield')).toHaveLength(1); // a stopped run is never retried
+    expect(overview.tasks[0]).toMatchObject({ holdUntil: null, fails: 1 });
+    await eventually(async () => !service.isActiveForInstance(1));
   });
 
   it('only the scheduler lease owner may evaluate due tasks after another process edits plans', async () => {

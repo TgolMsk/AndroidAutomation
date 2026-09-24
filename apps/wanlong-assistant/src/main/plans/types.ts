@@ -3,6 +3,7 @@ import type {
   AiAssistResult, LogEntry, LogLevel, RunSnapshot, ScriptParamValue, ShotPolicy,
 } from '@avdm/automation/script';
 import type { GameAccount } from '../automation/accounts/types';
+import type { PlanConfigEvent, PlanOverview, PlanRun } from '../../shared/plan';
 
 /**
  * The JSON script DSL lives in `@avdm/automation/script` (game agnostic, renderer safe); it is re-exported
@@ -13,26 +14,14 @@ export type {
   RunStatus, ScriptDef, ScriptIssue, ScriptMeta, ScriptParamDef, ScriptParamValue, ScriptStep, ShotPolicy, StepBase, StepKind,
 } from '@avdm/automation/script';
 
-export type TaskTrigger = { kind: 'manual' } | { kind: 'daily'; at: string[] } | { kind: 'interval'; everyMinutes: number; window?: { from: string; to: string } };
-export interface PlanTask {
-  id: string;
-  scriptId: string;
-  enabled: boolean;
-  trigger: TaskTrigger;
-  priority: number;
-  params?: Record<string, string | number | boolean>;
-  maxRunMinutes: number;
-  note?: string;
-}
-export interface AccountPlan { accountId: string; enabled: boolean; tasks: PlanTask[]; updatedAt: number }
-export interface PlanConfig {
-  version: 1; enabled: boolean; catchUpMs: number; queueWaitMs: number; retry: number; retryDelayMs: number;
-  /** Script runs across all instances at once (gather rounds not counted); default 4, range 1–16. */
-  maxConcurrentScripts?: number;
-}
-export interface TaskRuntime { accountId: string; taskId: string; lastClaimedAt: number | null; lastStartedAt: number | null; lastEndedAt: number | null; lastResult: 'succeeded' | 'failed' | 'cancelled' | 'skipped' | null; lastError: string | null; runs: number; fails: number }
-export interface PlanRun { runId: string; gameId: string; accountId: string; accountName: string; instanceIndex: number; taskId: string; scriptId: string; priority: number; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped'; queuedAt: number; startedAt: number | null; endedAt: number | null; message: string; stepId: string | null }
-export interface PlanOverview { config: PlanConfig; plans: AccountPlan[]; runtime: TaskRuntime[]; runs: PlanRun[]; at: number }
+/**
+ * The plan contract (triggers, plans, config, runtime, run records, overview rows) lives in `src/shared/plan.ts`,
+ * shared with the renderer; re-exported here so main-process imports keep working.
+ */
+export type {
+  AccountPlan, PlanConfig, PlanConfigEvent, PlanOverview, PlanQueueEntry, PlanQueueView, PlanRun, PlanRunOrigin, PlanRunResult,
+  PlanRunStatus, PlanTask, PlanTaskPhase, PlanTaskState, TaskRuntime, TaskTrigger,
+} from '../../shared/plan';
 
 /** App settings defaults for script matching (original `matchOnce`): see `PlanHostPort.matchDefaults`. */
 export interface ScriptMatchDefaults {
@@ -65,13 +54,18 @@ export interface PlanHostPort {
   device(index: number): Promise<ScriptDevice>;
   templateDir(gameId: string, index: number): Promise<string>;
   onRun?(run: PlanRun): void;
+  /** The plan overview of a game changed (enqueue, start, end, toggle, save): the `plan-changed` push event. */
+  onChanged?(overview: PlanOverview): void;
+  /** The plan config of a game was saved: the `plan-config-changed` push event. */
+  onConfigChanged?(event: PlanConfigEvent): void;
   /**
    * Scripts take priority over gathering (original plan rule 1, DECISIONS A.4): before a plan or manual run takes the
-   * instance, the ETA scheduler yields it (`EtaScheduler.suspendForScript`: polite wait, then abort of the in-flight
-   * sample / dispatch) and the returned function gives it back after the run (the queue is re-read 15 s later).
-   * Gather auto being on never refuses a script. Without the port (tests) scripts just take the instance lease.
+   * instance, the ETA scheduler yields it (`EtaScheduler.suspendForScript`: polite wait of `graceMs` — the plan
+   * config's `preemptGraceMs` —, then abort of the in-flight sample / dispatch) and the returned function gives it
+   * back after the run (the queue is re-read 15 s later). Gather auto being on never refuses a script. Without the
+   * port (tests) scripts just take the instance lease.
    */
-  suspendForScript?(gameId: string, index: number, reason: string): Promise<() => void>;
+  suspendForScript?(gameId: string, index: number, reason: string, graceMs: number): Promise<() => void>;
   /** Default trace-shot policy (the app settings' `shotPolicy`); `onFail` when absent. */
   shotPolicy?(): Promise<ShotPolicy> | ShotPolicy;
   /**

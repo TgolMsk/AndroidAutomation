@@ -213,7 +213,18 @@ export interface RunSnapshot {
    * failed. Plans never retry such a run (original: the plan limit stops the run and a stopped run is not retried).
    */
   timedOut?: boolean;
+  /**
+   * Why a `failed` run failed, for callers that classify outcomes (plans: skip, fail or retry) without parsing the
+   * Chinese message: `GUARD` = an execution guard stopped it (instance replaced, account changed, game left the
+   * foreground); `START_CHECK` = the host refused the start before any input; otherwise the ScriptError code
+   * (`AI_RISK_BLOCKED`, `TIMEOUT`, `STEP_FAILED` …). Absent when unknown.
+   */
+  failureCode?: RunFailureCode;
 }
+
+/** See `RunSnapshot.failureCode`. */
+export type RunFailureCode = 'GUARD' | 'START_CHECK' | 'STEP_FAILED' | 'TIMEOUT' | 'SCRIPT_INVALID' | 'TEMPLATE_NOT_FOUND'
+  | 'CANCELLED' | 'AI_RISK_BLOCKED' | 'INVALID_ARGUMENT' | 'DEVICE' | 'UNKNOWN';
 
 // ── Logs ───────────────────────────────────────────────────────────────────
 

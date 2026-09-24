@@ -1,0 +1,396 @@
+/* 任务计划 page, task dialog and plan settings. Design tokens only; every class starts with `plans-`. */
+
+.plans-view {
+  display: grid;
+  gap: 14px;
+  max-width: 1240px;
+}
+
+.plans-view .notice {
+  margin-bottom: 0;
+}
+
+.plans-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.plans-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.plans-head p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.plans-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.plans-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 4px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+.plans-dim {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.plans-warn {
+  display: block;
+  margin-top: 2px;
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.plans-bad,
+.plans-inline-error {
+  color: var(--red);
+  font-size: 12px;
+}
+
+.plans-inline-error {
+  margin: 0;
+}
+
+.plans-sub {
+  display: block;
+  margin-top: 2px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plans-sub-strong {
+  display: block;
+  font-size: 12px;
+}
+
+.plans-error-text {
+  max-width: 200px;
+}
+
+.plans-empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 32px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.plans-empty strong {
+  color: var(--text);
+}
+
+.plans-scroll {
+  overflow-x: auto;
+}
+
+.plans-table td {
+  vertical-align: top;
+}
+
+.plans-table tr.is-muted td {
+  opacity: 0.62;
+}
+
+.plans-table tr.is-muted td:first-child,
+.plans-table tr.is-muted td:nth-child(2),
+.plans-table tr.is-muted td:last-child {
+  opacity: 1;
+}
+
+.plans-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plans-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.plans-danger:not(:disabled):hover {
+  color: var(--red);
+}
+
+.plans-queues {
+  display: grid;
+  gap: 4px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.plans-queues strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+/* ── Switch ── */
+
+.plans-switch {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  background: var(--panel-3);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+
+.plans-switch > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out);
+}
+
+.plans-switch.is-on {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+
+.plans-switch.is-on > span {
+  transform: translateX(14px);
+  background: var(--accent);
+}
+
+.plans-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.plans-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── Dialogs ── */
+
+.plans-form {
+  display: grid;
+  gap: 16px;
+}
+
+.plans-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plans-field-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.plans-field-label {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.plans-hint {
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.plans-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.plans-inline input[type='number'] {
+  width: 96px;
+}
+
+.plans-inline-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.plans-segmented {
+  display: inline-flex;
+  justify-self: start;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.plans-segmented button {
+  height: 28px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.plans-segmented button.is-active {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.plans-segmented button:hover:not(.is-active):not(:disabled) {
+  color: var(--text);
+}
+
+.plans-segmented button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.plans-daily {
+  display: grid;
+  gap: 4px;
+}
+
+.plans-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+
+.plans-chips input {
+  flex: 1;
+  min-width: 160px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.plans-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 4px 0 8px;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.plans-chip button {
+  display: inline-flex;
+  padding: 2px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.plans-chip button:hover:not(:disabled) {
+  background: var(--panel-3);
+}
+
+.plans-interval {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.plans-clock {
+  width: 76px;
+  font-family: var(--mono);
+}
+
+/* ── Legacy import ── */
+
+.plans-legacy {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.plans-legacy summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.plans-legacy-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
+.plans-legacy-body p {
+  margin: 0;
+}
+
+.plans-legacy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.plans-legacy-row select {
+  max-width: 260px;
+}
+
+@media (max-width: 720px) {
+  .plans-field-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
