@@ -12,7 +12,6 @@ import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { defaultSchedulerConfig, type SchedulerConfig } from '@avdm/automation/wanlong/pure';
 import type { SchedulerQueueState, SchedulerServiceStatus, SchedulerSetAutoOptions } from '../../../shared/ipc';
 import { avdm, errMsg } from '../../api';
-import { resumeInstance } from './pause-port';
 
 export interface GatherQueuesSnapshot {
   gameId: string;
@@ -26,16 +25,18 @@ export interface GatherQueuesSnapshot {
   loaded: boolean;
   /** Chinese reason the states could not be read; null when fine. */
   error: string | null;
-  /** Anti double-click: instances being sampled / switched / resumed from this window. */
+  /**
+   * Anti double-click: instances being sampled / switched from this window. (Resuming a pause is the alerts module's:
+   * `resumePause` guards its own double clicks.)
+   */
   sampling: Readonly<Record<number, true>>;
   autoBusy: Readonly<Record<number, true>>;
-  resuming: Readonly<Record<number, true>>;
 }
 
 function initial(gameId: string): GatherQueuesSnapshot {
   return {
     gameId, byInstance: {}, config: defaultSchedulerConfig(), status: null, loaded: false, error: null,
-    sampling: {}, autoBusy: {}, resuming: {},
+    sampling: {}, autoBusy: {},
   };
 }
 
@@ -167,20 +168,6 @@ export async function setQueueAuto(gameId: string, index: number, enabled: boole
   }
 }
 
-/** Resume a paused instance through the pause port (original alerts:resume). */
-export async function resumeQueue(gameId: string, index: number): Promise<string | null> {
-  if (snapshot.resuming[index]) return '这个实例正在恢复，等它完成再点。';
-  update((current) => ({ resuming: flag(current.resuming, index, true) }));
-  try {
-    upsertQueueState(await resumeInstance(gameId, index));
-    return null;
-  } catch (error) {
-    return describeSchedulerError(error);
-  } finally {
-    update((current) => ({ resuming: flag(current.resuming, index, false) }));
-  }
-}
-
 /** Save part of the scheduler's runtime config. null on success, else a Chinese reason. */
 export async function saveQueueConfig(gameId: string, patch: Partial<SchedulerConfig>): Promise<string | null> {
   try {
@@ -206,7 +193,6 @@ export interface GatherQueuesApi extends GatherQueuesSnapshot {
   reload(): Promise<void>;
   sample(index: number): Promise<string | null>;
   setAuto(index: number, enabled: boolean): Promise<string | null>;
-  resume(index: number): Promise<string | null>;
   saveConfig(patch: Partial<SchedulerConfig>): Promise<string | null>;
 }
 
@@ -222,7 +208,6 @@ export function useGatherQueues(gameId: string): GatherQueuesApi {
     reload,
     sample: (index) => sampleQueue(gameId, index),
     setAuto: (index, enabled) => setQueueAuto(gameId, index, enabled),
-    resume: (index) => resumeQueue(gameId, index),
     saveConfig: (patch) => saveQueueConfig(gameId, patch),
   };
 }

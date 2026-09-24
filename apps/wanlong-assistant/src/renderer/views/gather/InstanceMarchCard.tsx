@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import type { InstanceState } from '@avdm/core';
+import type { InstancePauseState } from '../../../shared/alerts';
 import type { SchedulerQueueState } from '../../../shared/ipc';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Icon } from '../../components/Icon';
+import { SemanticTag } from '../../components/SemanticTag';
 import { Spinner } from '../../components/StatusBadge';
 import type { GatherConfigBadge } from './config-model';
 import { InstanceDiagnosticsBadge } from './InstanceDiagnosticsBadge';
 import { MarchRow } from './MarchRow';
-import type { GatherPauseInfo } from './pause-port';
+import { describeScriptOccupancy, scriptHoldReason, type ScriptOccupancy } from './occupancy';
 import { formatAgo, formatClock, formatShort } from './present';
 import { CountPill, GatherSwitch, QueueBadge } from './widgets';
 
@@ -23,6 +25,11 @@ export function onlineState(instance: InstanceState | undefined): { dot: 'online
     case 'error': return { dot: 'error', text: '模拟器异常' };
     default: return { dot: 'off', text: '未开机' };
   }
+}
+
+/** DOM id of an instance's card (the paused-instances strip scrolls to it). */
+export function gatherCardId(index: number): string {
+  return `gather-card-${index}`;
 }
 
 /** Resume confirmation text (original Popconfirm). */
@@ -44,10 +51,12 @@ export interface InstanceMarchCardProps {
   toggling: boolean;
   resuming: boolean;
   /**
-   * Pause of the instance (pause port). ★ The red frame is judged by `pause.paused`, never by `!auto`: switching auto
-   * off by hand is normal and must not look alarming.
+   * The alerts module's pause record of the instance. ★ The red frame is judged by `pause.paused`, never by `!auto`:
+   * switching auto off by hand is normal and must not look alarming.
    */
-  pause: GatherPauseInfo;
+  pause: InstancePauseState;
+  /** Script runs holding or waiting for the instance (plans module): the pre-emption note and the refused actions. */
+  script?: ScriptOccupancy | null;
   isBase: boolean;
   badge: GatherConfigBadge | null;
   onToggleAuto(index: number, enabled: boolean): void;
@@ -64,7 +73,7 @@ export interface InstanceMarchCardProps {
  *   the 「恢复」 button stay outside.
  */
 export function InstanceMarchCard(props: InstanceMarchCardProps) {
-  const { index, name, instance, accountLabel, state, now, imminentMs, staleAfterMs, sampling, toggling, resuming, pause, isBase, badge } = props;
+  const { index, name, instance, accountLabel, state, now, imminentMs, staleAfterMs, sampling, toggling, resuming, pause, isBase, badge, script = null } = props;
   const [confirmResume, setConfirmResume] = useState(false);
   const paused = pause.paused;
   const online = onlineState(instance);
@@ -77,12 +86,14 @@ export function InstanceMarchCard(props: InstanceMarchCardProps) {
   const switchTitle = paused
     ? '这个实例被异常暂停了，自动调度已经关掉。请用旁边的「恢复」按钮重新开启 —— 那条路会同时清掉暂停记录，直接扳这个开关不会。暂停原因点卡头右上角的角标看。'
     : enableBlocked ?? '打开后，这个实例会在队列释放时自动被唤醒去派下一轮。关掉只保留倒计时展示，不会主动操作模拟器。';
+  const scriptHold = scriptHoldReason(script);
+  const occupancy = describeScriptOccupancy(script, state.auto);
   const sampleTitle = !running ? '实例未开机，无法采样。'
-    : paused ? '注意：这个实例已被异常暂停，但「立即采样」仍然会真的去操作模拟器读一次面板。游戏若还停在异常界面（登录页 / 公告框），这次采样多半也会失败。'
-      : '真的去开一次「部队管理」面板读当前状态，不派兵。一次采样要十几张截图，请不要连点。';
+    : scriptHold ?? (paused ? '注意：这个实例已被异常暂停，但「立即采样」仍然会真的去操作模拟器读一次面板。游戏若还停在异常界面（登录页 / 公告框），这次采样多半也会失败。'
+      : '真的去开一次「部队管理」面板读当前状态，不派兵。一次采样要十几张截图，请不要连点。');
 
   return (
-    <section className={`gather-card${paused ? ' is-paused' : ''}`} aria-label={`实例 #${index} ${name}`}>
+    <section id={gatherCardId(index)} className={`gather-card${paused ? ' is-paused' : ''}`} aria-label={`实例 #${index} ${name}`}>
       <header className="gather-card-head">
         <span className={`gather-dot is-${online.dot}`} aria-hidden="true" />
         <div className="gather-card-title">
@@ -95,6 +106,12 @@ export function InstanceMarchCard(props: InstanceMarchCardProps) {
 
       <div className="gather-card-body">
         {!state.auto && state.operating && <div className="gather-micro" role="status">设备操作正在收尾，自动派遣已关闭。</div>}
+        {occupancy && (
+          <div className="gather-occupancy" role="status" title={occupancy.tip}>
+            <SemanticTag tone={occupancy.tone}>{occupancy.text}</SemanticTag>
+            {occupancy.note && <span className="gather-micro">{occupancy.note}</span>}
+          </div>
+        )}
         {rows.length > 0
           ? rows.map((m) => <MarchRow key={`${index}:${m.slot}`} march={m} now={now} imminentMs={imminentMs} staleAfterMs={staleAfterMs} />)
           : neverSampled ? (
@@ -124,7 +141,7 @@ export function InstanceMarchCard(props: InstanceMarchCardProps) {
               {resuming ? <Spinner size={12} /> : <Icon name="play" size={13} />}恢复
             </button>
           )}
-          <button type="button" className="btn xs" title={sampleTitle} disabled={!running || busySampling || state.operating === true}
+          <button type="button" className="btn xs" title={sampleTitle} disabled={!running || busySampling || state.operating === true || scriptHold !== null}
             onClick={() => props.onSample(index)}>
             {busySampling ? <Spinner size={12} /> : <Icon name="refresh" size={13} />}立即采样
           </button>

@@ -17,6 +17,7 @@ export interface BatchCandidate {
   index: number;
   /** Instance running (booted). */
   up: boolean;
+  /** The alerts module has a pause record for it (never `!auto`). */
   paused: boolean;
   /** The game's base instance (only for cloning, never automated). */
   isBase: boolean;
@@ -27,6 +28,11 @@ export interface BatchCandidate {
   sampling: boolean;
   /** A device operation is still finishing. */
   operating: boolean;
+  /**
+   * A script run holds the instance (plans module; scripts pre-empt gathering): the scheduler refuses a sample until it
+   * ends, so a batch sample skips it instead of collecting refusals.
+   */
+  scriptRunning?: boolean;
 }
 
 /** Instances the batch really touches; the others grouped by reason, e.g. `未开机：#1、#3`. */
@@ -52,6 +58,7 @@ export function batchTargets(kind: BatchKind, candidates: readonly BatchCandidat
     else if (kind === 'on' && c.autoBusy) skipAs('开关正在切换', c.index);
     else if (kind === 'sample' && c.sampling) skipAs('正在采样', c.index);
     else if (kind === 'sample' && c.operating) skipAs('设备操作中', c.index);
+    else if (kind === 'sample' && c.scriptRunning) skipAs('脚本运行中（脚本优先）', c.index);
     else targets.push(c.index);
   }
   return { targets, skipped: [...skip].map(([reason, list]) => `${reason}：#${list.join('、#')}`) };

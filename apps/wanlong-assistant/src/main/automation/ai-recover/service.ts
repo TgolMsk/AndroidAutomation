@@ -18,6 +18,7 @@ import type { MatchResult, RawFrame, TemplateDraft, TemplateSet } from '@avdm/au
 import type { AiAssistResult } from '@avdm/automation/script';
 import { AppError, GAME_UPDATE_TPL, recoverUnknownWithUpdate, type OverlayConsult, type UnknownScreenRecovery } from '@avdm/automation/wanlong';
 import type { AdvisorScreen } from '../../../shared/ai';
+import { attentionStageOf } from '../../../shared/alerts';
 import { promptProfileOf } from '../advisor/profiles';
 import type { ScriptAiRequest } from '../../plans/types';
 import type { FrameComparer } from './frame-diff';
@@ -380,7 +381,7 @@ export class AiRecoveryService {
       onNeedsAttention: async (error) => {
         const info: AiAttentionInfo = {
           code: error.code, message: error.message,
-          stage: error.code === 'AI_RISK_BLOCKED' ? 'AI 操作风险评估' : '游戏资源更新',
+          stage: attentionStageOf(error.code),
         };
         await deps.onNeedsAttention?.(index, info, context);
       },

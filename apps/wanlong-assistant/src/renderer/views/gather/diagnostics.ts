@@ -11,7 +11,7 @@
  *   info    — explanation only, nothing to do
  */
 import type { InstanceQueueState } from '@avdm/automation/wanlong/pure';
-import type { GatherPauseInfo } from './pause-port';
+import { pauseTitle, type InstancePauseState } from '../../../shared/alerts';
 import { presentMarch } from './present';
 
 export type DiagnosticLevel = 'error' | 'warning' | 'info';
@@ -26,7 +26,8 @@ export interface DiagnosticItem {
 
 export interface CollectDiagnosticsOptions {
   state: InstanceQueueState;
-  pause: GatherPauseInfo;
+  /** The alerts module's pause record of the instance (the only source of 「paused」). */
+  pause: Pick<InstancePauseState, 'paused' | 'type' | 'reason' | 'detail'>;
   /**
    * Also collect each march row's reason. The instance table has no MarchRow, so a row reason such as 「坐标读不出」
    * has nowhere else to show; the overview cards do (the reason is on the row), so they pass false (default).
@@ -56,10 +57,10 @@ export function collectDiagnostics({
 }: CollectDiagnosticsOptions): DiagnosticItem[] {
   const items: DiagnosticItem[] = [];
 
-  // ① Paused — always first. The details (advice, time) are rendered by the pause details block; this only gives it
-  //    a line and makes the badge red.
+  // ① Paused — always first. The details (advice, time, scene shot, push result) are rendered by the alerts module's
+  //    PauseBanner in the drawer; this only gives it a line and makes the badge red.
   if (pause.paused) {
-    items.push({ level: 'error', title: pause.title || '已暂停', text: pause.reason ?? '没有记录原因。' });
+    items.push({ level: 'error', title: pauseTitle(pause), text: pause.reason ?? '没有记录原因。' });
   }
 
   // ② Sampling failed.

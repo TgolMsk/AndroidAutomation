@@ -13,7 +13,7 @@ import path from 'node:path';
 import type { MatchResult, RawFrame } from '@avdm/automation';
 import type { FreezeRecoveryIo, GatherCycleFact, KickedProbeResult } from '@avdm/automation/wanlong';
 import {
-  makeAlertEvent, pausesInstance, type AlertEvent, type AlertRecord, type AlertsConfigView, type InstancePauseState,
+  attentionStageOf, makeAlertEvent, pausesInstance, type AlertEvent, type AlertRecord, type AlertsConfigView, type InstancePauseState,
 } from '../../shared/alerts';
 import type { FreezeInstanceStatus } from '../../shared/ipc/alerts';
 import type { AutomationHostHooks } from '../automation/host';
@@ -225,7 +225,7 @@ export class AlertsService {
     }
     const raising = this.center.raiseInLock(makeAlertEvent({
       type: 'needsAttention', instanceIndex: index, reason: info.message,
-      detail: { 阶段: info.code === 'AI_RISK_BLOCKED' ? 'AI 操作风险评估' : '游戏资源更新', 自动操作: '已停止，处理后可恢复' },
+      detail: { 阶段: attentionStageOf(info.code), 自动操作: '已停止，处理后可恢复' },
     }), { schedulerPaused: true });
     this.attentionInFlight.add(index);
     try { await raising; } finally { this.attentionInFlight.delete(index); }

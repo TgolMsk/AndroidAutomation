@@ -6,7 +6,7 @@
  * screenshot on demand and offers 「恢复」 after a confirmation. Colours come from design tokens only (alerts.css).
  */
 import { useEffect, useState } from 'react';
-import { ALERT_SEVERITY_TONE, alertSpec, type InstancePauseState } from '../../../shared/alerts';
+import { ALERT_SEVERITY_TONE, alertSpec, isAiAttentionPause, type InstancePauseState } from '../../../shared/alerts';
 import { avdm, errMsg } from '../../api';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Icon } from '../../components/Icon';
@@ -15,6 +15,7 @@ import { Spinner } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
 import { beijingTime } from '../../format';
 import { resumePause, useAlerts, usePause } from '../../state/alerts';
+import { useNavigation } from '../../state/navigation';
 import './alerts.css';
 
 export interface PauseBannerProps {
@@ -54,6 +55,7 @@ export function PauseBanner({ index, instanceName, standalone = true, showResume
   const pause = usePause(index);
   const { resuming } = useAlerts();
   const toast = useToast();
+  const { navigate } = useNavigation();
   const [confirming, setConfirming] = useState(false);
   const [shotUrl, setShot] = useObjectUrl();
   const [shotLoading, setShotLoading] = useState(false);
@@ -104,6 +106,12 @@ export function PauseBanner({ index, instanceName, standalone = true, showResume
               {shotLoading ? <Spinner size={12} /> : <Icon name="camera" size={14} />}查看现场截图
             </button>
           : <span className="alerts-muted" title="留痕策略为「不留痕」，或者出事时截图本身也失败了。">无现场截图</span>}
+        {isAiAttentionPause(pause) && (
+          <button type="button" className="btn sm" onClick={() => navigate('ai')}
+            title="AI 判断这一下点击有风险，所以停了下来：它看到的弹窗、给出的风险与理由都记在「AI 处理」页的记录表里。">
+            <Icon name="search" size={14} />查看 AI 处理记录
+          </button>
+        )}
       </div>
       {confirming && (
         <ConfirmDialog

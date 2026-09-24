@@ -8,10 +8,10 @@ itself lives in `../instances/`.
 
 | File | Original | Role |
 |---|---|---|
-| `GatherOverviewView.tsx` | `GatherOverviewView.tsx` | 采集总览 / 群控倒计时: KPIs, paused-instance alert, one card per instance, config + run drawers |
-| `InstanceMarchCard.tsx` | `InstanceMarchCard.tsx` | card: online dot, account, `QueueBadge`, diagnostics badge, march rows, auto switch, 恢复 / 立即采样 / 配置 / 运行 |
+| `GatherOverviewView.tsx` | `GatherOverviewView.tsx` | 采集总览 / 群控倒计时: KPIs, the alerts module's paused-instances strip, one card per instance, config + run drawers |
+| `InstanceMarchCard.tsx` | `InstanceMarchCard.tsx` | card: online dot, account, `QueueBadge`, diagnostics badge, script occupancy note, march rows, auto switch, 恢复 / 立即采样 / 配置 / 运行 |
 | `MarchRow.tsx` | `MarchRow.tsx` | one march with resource badge, phase, coordinate, troop count, estimate badges, 「!」 hint, progress bar (stripes when unknown) |
-| `InstanceDiagnosticsBadge.tsx`, `diagnostics.ts` | same | count badge → drawer; pure `collectDiagnostics` / `worstLevel` / `attentionCount` |
+| `InstanceDiagnosticsBadge.tsx`, `diagnostics.ts` | same | count badge → drawer with the alerts module's `PauseBanner`; pure `collectDiagnostics` / `worstLevel` / `attentionCount` |
 | `InstanceGatherControls.tsx` | same | the instance table's 自动采集 cell (`describeGatherStatus` is the pure status line) |
 | `GatherConfigDrawer.tsx`, `GatherConfigView.tsx`, `ConfigField.tsx` | same | the full config form in a drawer with an unsaved-changes guard |
 | `config-model.ts`, `useGatherConfigBadges.ts` | `configStorage.ts`, `useGatherConfigBadges.ts` | origin / save target texts, `describeGatherConfigBadge`, scheduler-config mismatch |
@@ -20,7 +20,7 @@ itself lives in `../instances/`.
 | `batch.ts`, `useGatherControls.tsx` | `useInstanceGather.ts` + InstancesView `batchTargets` | skip rules, `describeBatchOutcome`, shared toggle / sample / resume / batch handlers |
 | `EnableAutoDialog.tsx` | batch 「全部开启」 confirm + the old 「我已核对探针结果」 checkbox | fresh read-only probe verdict per instance before enabling |
 | `InstanceRunDrawer.tsx` | (former single-instance gather page) | template set, read-only probe, 采集一轮 / 停止本轮, recent runs |
-| `pause-port.ts`, `PauseDetails.tsx` | `features/alerts` (pauses, resume, PauseBanner) | ★ the only place pauses are read — see below |
+| `occupancy.ts` | (plans × gather, new) | pure: a script run holding / plan rounds waiting for an instance → pre-emption note and the refused actions |
 | `resources.ts`, `widgets.tsx` | `types.ts`, `ResourceBadge.tsx` | glyph + token colour badges (no game art), switch, queue badge, hint bubble |
 
 ## Where the config lives (DECISIONS B「调度器」)
@@ -48,14 +48,27 @@ form shows defaults) or `settingsError` (the instance file is unreadable / incom
 set it still names). The form shows the reason and allows 「保存」 without edits; saving rewrites the account copy and
 rebuilds the instance file (the broken one is kept as `<i>.json.corrupt`). Runs stay strict and refuse with the reason.
 
-## Pause port (to be replaced by the alerts module)
+## Pauses: the alerts module's records (one source of truth)
 
-`pauseInfoOf(state)` reads only `SchedulerQueueState.pause`: the alerts module's `pauseOf` record, else the scheduler's
-own pause (its safety pause after `maxConsecutiveFailures`, its needs-attention pause), so no threshold is mirrored.
-`resumeInstance()` is `schedulerSetAuto(true)` today. Point both at the alerts IPC and replace `PauseDetails` with the
-full PauseBanner; no caller changes. Rules kept: paused ≠ `!auto`; resume only through its own confirmation.
-Known gaps until then (see the header of `pause-port.ts`): a resume after an app restart needs a passing probe, the
-scheduler's needs-attention pause is in memory only, and readiness pauses are not shown as paused.
+Every pause shown here is an alerts pause record (`renderer/state/alerts.ts`: `useAlerts()` / `pauseOf()`, kept live by
+`alert-pause-changed`): kicked, offline, consecutive failures, and the scheduler's own pauses — its safety pause after
+`maxConsecutiveFailures`, a needs-attention pause (game update / the AI's risk gate, from any chain through
+`EtaScheduler.raiseAttention`) and a readiness refusal — which the alerts module records too. The scheduler keeps no
+pause of its own (`SchedulerQueueState.pause` only mirrors the record through `pauseOf`), and nothing here derives a
+pause from `!auto` or a failure count. The red card frame, the red instance row, the status line, the diagnostics badge
+(the full `PauseBanner` with reason, advice, push result, scene shot and, for an AI pause, a link to 「AI 处理」) and the
+batch skip rule all read the record. 「恢复」 on a card or row is `resumePause(i)` → `resumeAlertPause`: it clears the
+record, the counters and the push cooldown and switches auto on outside the instance lock without a second probe gate
+(original alerts:resume); the auto switch stays locked while paused (the main process refuses it too).
+`pauseTitle()` adds the stage of a needs-attention pause (「需要人工介入（AI 操作风险评估）」).
+
+## Scripts pre-empt gathering (plans module)
+
+A script run (plan round or manual run) makes the scheduler yield before it takes the instance
+(`scheduler.suspendForScript`). `occupancy.ts` turns the plans module's pushed runs (`usePlanRuns`: the live
+`scriptRunByInstance` plus queued `PlanRun`s) into a note on the card and a 「为脚本让路」 status line, and disables what
+the main process would refuse while a script holds the instance — 立即采样 / 采样 (also skipped by a batch sample),
+采集一轮, and saving the config (it needs the instance lease briefly) — with that reason. Queued rounds only get a note.
 
 ## Deliberate differences
 

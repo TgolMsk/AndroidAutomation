@@ -15,6 +15,7 @@ import { Spinner } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
 import { displayStatus, isRunning } from '../../format';
 import { isRunActive, useActivity } from '../../state/activity';
+import { pauseOf, useAlerts } from '../../state/alerts';
 import { useNavigation } from '../../state/navigation';
 import { scriptRunBadge, usePlanRuns } from '../../state/plan-runs';
 import { useSelection } from '../../state/selection';
@@ -23,11 +24,12 @@ import { accountCellDisabledReason, accountOfIndex, boundTo, isBaseInstance, log
 import { CloneFromBaseDialog } from '../accounts/BaseInstanceCard';
 import { InstanceAccountCell } from '../accounts/InstanceAccountCell';
 import { useAccounts, useBaseInstance, useLoginSessions } from '../accounts/useAccounts';
+import { PausedInstancesStrip } from '../alerts/PauseBanner';
 import { batchTargets, type BatchKind } from '../gather/batch';
 import { configSwitchState } from '../gather/config-model';
 import { GatherConfigDrawer } from '../gather/GatherConfigDrawer';
 import { InstanceGatherControls } from '../gather/InstanceGatherControls';
-import { pauseInfoOf } from '../gather/pause-port';
+import { configSaveBlockedReason, scriptOccupancyOf } from '../gather/occupancy';
 import { useGatherConfigBadges } from '../gather/useGatherConfigBadges';
 import { useGatherControls } from '../gather/useGatherControls';
 import { useGatherQueues } from '../gather/queue-store';
@@ -79,7 +81,9 @@ export function InstancesView({ visible }: ViewProps) {
   const { navigate } = useNavigation();
   const { game, gameId, instances, instancesLoaded, instancesError, reloadInstances, index, setIndex, lockReason } = useSelection();
   const { runs } = useActivity();
-  const { scriptRunByInstance } = usePlanRuns();
+  const { scriptRunByInstance, planRuns } = usePlanRuns();
+  // The alerts module's pause records: the red row, the 「恢复」 button and the batch skip rule all read them.
+  const { pauses: alertPauses, resuming } = useAlerts();
   const { accounts, reload: reloadAccounts } = useAccounts(gameId || undefined);
   const sessions = useLoginSessions();
   const base = useBaseInstance(gameId || undefined, (view) => {
@@ -113,6 +117,8 @@ export function InstancesView({ visible }: ViewProps) {
 
   const byIndex = useMemo(() => new Map(instances.map((instance) => [instance.record.index, instance])), [instances]);
   const nameOf = (i: number) => byIndex.get(i)?.record.name ?? `实例 #${i}`;
+  const pauseAt = (i: number) => pauseOf(alertPauses, i)!;
+  const scriptOf = (i: number) => scriptOccupancyOf(i, scriptRunByInstance.get(i), planRuns);
   const boundAccountOf = (i: number) => {
     const account = accountOfIndex(accounts, i);
     return account && boundTo(account, byIndex.get(i)) ? account : null;
@@ -214,9 +220,9 @@ export function InstancesView({ visible }: ViewProps) {
         const i = instance.record.index;
         const state = queues.stateOf(i);
         return {
-          index: i, up: instance.status === 'running', paused: pauseInfoOf(state).paused, isBase: isBaseInstance(base.view, instance),
+          index: i, up: instance.status === 'running', paused: pauseAt(i).paused, isBase: isBaseInstance(base.view, instance),
           auto: state.auto, autoBusy: queues.autoBusy[i] === true, sampling: queues.sampling[i] === true || state.sampling,
-          operating: state.operating === true,
+          operating: state.operating === true, scriptRunning: scriptRunByInstance.has(i),
         };
       });
       const { targets, skipped } = batchTargets(kind, candidates);
@@ -303,6 +309,7 @@ export function InstancesView({ visible }: ViewProps) {
         <div className="notice warn" role="status"><Icon name="alert" /><div><strong>「自动采集」列暂时不可用</strong><div>{queues.error}</div></div></div>
       )}
       {instancesError && <p className="instances-error" role="alert">实例列表读取失败：{instancesError}</p>}
+      <PausedInstancesStrip current={index} onSelect={(target) => { if (selectable(target)) setIndex(target); }} />
       {lockReason && <p className="instances-note" role="status">{lockReason}</p>}
 
       <div className="instances-toolbar">
@@ -342,8 +349,11 @@ export function InstancesView({ visible }: ViewProps) {
                       const session = sessions.get(i) ?? null;
                       const warning = resolutionWarning(instance.record.spec);
                       const state = queues.stateOf(i, account?.id ?? null);
+                      const pause = pauseAt(i);
+                      const rowClass = [current ? 'selected' : selectable(i) ? 'instances-row-pick' : '', pause.paused ? 'instances-row-paused' : '']
+                        .filter(Boolean).join(' ');
                       return (
-                        <tr key={i} className={current ? 'selected' : selectable(i) ? 'instances-row-pick' : undefined}
+                        <tr key={i} className={rowClass || undefined}
                           aria-current={current ? 'true' : undefined} onClick={(event) => onRowClick(event, i)}>
                           <td>
                             <div className="instances-name">
@@ -381,8 +391,8 @@ export function InstancesView({ visible }: ViewProps) {
                           </td>
                           <td>
                             {gameId ? (
-                              <InstanceGatherControls instance={instance} state={state} pause={pauseInfoOf(state)} now={now}
-                                sampling={queues.sampling[i] === true} toggling={queues.autoBusy[i] === true} resuming={queues.resuming[i] === true}
+                              <InstanceGatherControls instance={instance} state={state} pause={pause} script={scriptOf(i)} now={now}
+                                sampling={queues.sampling[i] === true} toggling={queues.autoBusy[i] === true} resuming={resuming[i] === true}
                                 config={configSwitchState(configEntries[i])} configTip={badges[i]?.text} hasAccount={Boolean(account)} isBase={isBase}
                                 onToggleAuto={(target, on) => void controls.toggleAuto(target, on)} onSample={(target) => void controls.sample(target)}
                                 onResume={controls.resume} onOpenConfig={setConfigFor} onOpenAccounts={() => navigate('accounts')} />
@@ -474,6 +484,7 @@ export function InstancesView({ visible }: ViewProps) {
       {configFor !== null && gameId && (
         <GatherConfigDrawer gameId={gameId} index={configFor} instanceName={configInstance?.record.name ?? `实例 #${configFor}`}
           boundAccount={boundAccountOf(configFor)?.name ?? null} autoOn={queues.byInstance[configFor]?.auto === true}
+          saveBlockedReason={configSaveBlockedReason(scriptOf(configFor))}
           onClose={() => setConfigFor(null)} onSaved={() => { refreshBadges(); void queues.reload(); }} />
       )}
       {controls.dialog}

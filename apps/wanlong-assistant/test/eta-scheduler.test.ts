@@ -205,15 +205,13 @@ describe('EtaScheduler', () => {
     await until(() => !scheduler.getState(1).auto, '安全暂停');
     expect(paused).toHaveBeenCalledWith(1, 2, expect.stringContaining('连续 2 次失败'));
     expect(scheduler.listWakes()).toEqual([]);
-    // ★ The pause is in the queue state (the renderer never mirrors the configurable threshold).
-    expect(scheduler.getState(1).pause).toMatchObject({
-      kind: 'consecutiveFailures', source: 'scheduler', at: Date.now(), reason: expect.stringContaining('连续 2 次失败，自动调度已暂停：ADB 截图超时'),
-    });
-    // A pause hook (alerts records) wins over the scheduler's own pause.
-    scheduler.setHooks({ pauseOf: () => ({ reason: '告警记录', at: 1, kind: 'deviceOffline' }) });
-    expect(scheduler.getState(1).pause).toEqual({ reason: '告警记录', at: 1, kind: 'deviceOffline' });
+    // ★ One source of truth: the queue view never invents a pause of its own; the alerts module's record (raised from
+    //   onSafetyPause → onScheduleStop) is what `pause` shows, through the pauseOf hook.
+    expect(scheduler.getState(1).pause).toBeNull();
+    scheduler.setHooks({ pauseOf: () => ({ reason: '告警记录', at: 1, kind: 'consecutiveFailures' }) });
+    expect(scheduler.getState(1).pause).toEqual({ reason: '告警记录', at: 1, kind: 'consecutiveFailures' });
     scheduler.setHooks({ pauseOf: undefined });
-    // Switching auto on again clears it.
+    // Switching auto on again (the alerts resume path) resets the failure count.
     samples.push(async () => panel(2, 5));
     await scheduler.setAuto(1, true);
     expect(scheduler.getState(1)).toMatchObject({ auto: true, failureCount: 0, pause: null });
@@ -288,7 +286,8 @@ describe('EtaScheduler', () => {
     await until(() => attention.mock.calls.length > 0, '人工处理告警');
     expect(attention).toHaveBeenCalledWith(1, { code: 'GAME_UPDATE_REQUIRED', message: '游戏需要更新' });
     expect(scheduler.getState(1).failureCount).toBe(0);
-    expect(scheduler.getState(1).pause).toMatchObject({ kind: 'needsAttention', source: 'scheduler', reason: '需要人工处理：游戏需要更新' });
+    // The pause itself is the alerts module's record (the hook above); without one the queue view invents none.
+    expect(scheduler.getState(1).pause).toBeNull();
   });
 
   it('raises the host fallback alert for a human-needed pause while no module handles it', async () => {

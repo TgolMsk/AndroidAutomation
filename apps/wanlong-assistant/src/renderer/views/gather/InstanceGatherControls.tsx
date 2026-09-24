@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { InstanceState } from '@avdm/core';
+import { pauseTitle, type InstancePauseState } from '../../../shared/alerts';
 import type { SchedulerQueueState } from '../../../shared/ipc';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Icon } from '../../components/Icon';
@@ -8,7 +9,7 @@ import { Spinner } from '../../components/StatusBadge';
 import { InstanceDiagnosticsBadge } from './InstanceDiagnosticsBadge';
 import { resumeMessage } from './InstanceMarchCard';
 import type { ConfigSwitchState } from './config-model';
-import type { GatherPauseInfo } from './pause-port';
+import { describeScriptOccupancy, scriptHoldReason, type ScriptOccupancy } from './occupancy';
 import { formatAgo, formatClock } from './present';
 import { GatherSwitch, QueueBadge } from './widgets';
 
@@ -20,11 +21,16 @@ export interface StatusLine {
 }
 
 /**
- * The second line of the 自动采集 cell, highest priority first (original describeStatus, verbatim): paused > sampling >
- * finishing a device operation > last sample failed > next wake > last sample > never sampled. Pure.
+ * The second line of the 自动采集 cell, highest priority first (original describeStatus): paused (the alerts module's
+ * record) > yielding to a script (plans pre-emption) > sampling > finishing a device operation > last sample failed >
+ * next wake > last sample > never sampled. Pure.
  */
-export function describeGatherStatus(state: SchedulerQueueState, pause: GatherPauseInfo, sampling: boolean, now: number): StatusLine {
-  if (pause.paused) return { text: `已暂停 · ${pause.title || '已暂停'}`, tone: 'danger', tip: '点旁边的角标查看暂停原因与处置建议。' };
+export function describeGatherStatus(
+  state: SchedulerQueueState, pause: Pick<InstancePauseState, 'paused' | 'type' | 'detail'>, sampling: boolean, now: number,
+  script: ScriptOccupancy | null = null,
+): StatusLine {
+  if (pause.paused) return { text: `已暂停 · ${pauseTitle(pause)}`, tone: 'danger', tip: '点旁边的角标查看暂停原因、处置建议与现场截图。' };
+  if (state.auto && script?.running) return { text: '为脚本让路', tone: 'info', tip: describeScriptOccupancy(script, true)?.tip ?? null };
   if (sampling || state.sampling) return { text: '正在读「部队管理」面板…', tone: 'info', tip: null };
   if (!state.auto && state.operating) return { text: '设备操作收尾中', tone: 'warning', tip: '自动采集已关闭，正在等最后一次设备操作结束。' };
   const sampled = state.lastSampledAt > 0;
@@ -43,21 +49,27 @@ export function describeGatherStatus(state: SchedulerQueueState, pause: GatherPa
   return { text: '未采样', tone: null, tip: '还没读过这个实例的「部队管理」面板。' };
 }
 
-/** Why 采样 is disabled, or null when it can run. Pure (the same reason the tooltip shows). */
-export function sampleBlockedReason(status: string, sampling: boolean, operating: boolean): string | null {
+/**
+ * Why 采样 is disabled, or null when it can run. Pure (the same reason the tooltip shows). A script holding the
+ * instance refuses it in the main process too (scripts pre-empt gathering), so it is disabled with that reason.
+ */
+export function sampleBlockedReason(status: string, sampling: boolean, operating: boolean, script: ScriptOccupancy | null = null): string | null {
   if (status === 'starting' || status === 'booting') return '实例正在启动，等 Android 启动完成后才能采样。';
   if (status === 'stopping') return '实例正在关机，无法采样。';
   if (status === 'error') return '实例处于错误状态，请先重启实例再采样。';
   if (status !== 'running') return '实例未开机，无法采样。';
   if (sampling) return '正在读「部队管理」面板，等这次采样完成再点。';
   if (operating) return '这个实例正在进行设备操作（派兵或收尾），等它结束再采样。';
-  return null;
+  return scriptHoldReason(script);
 }
 
 export interface InstanceGatherControlsProps {
   instance: InstanceState;
   state: SchedulerQueueState;
-  pause: GatherPauseInfo;
+  /** The alerts module's pause record (the red state and 「恢复」 come from it, never from `!auto`). */
+  pause: InstancePauseState;
+  /** Script runs holding or waiting for the instance (plans module). */
+  script?: ScriptOccupancy | null;
   /** Coarse clock (the table ticks every 10 s). */
   now: number;
   sampling: boolean;
@@ -82,7 +94,7 @@ export interface InstanceGatherControlsProps {
  * 恢复, and the 「配置未启用」 / 「未绑定账号」 hints on the second. Same switch and same calls as the overview cards.
  */
 export function InstanceGatherControls(props: InstanceGatherControlsProps) {
-  const { instance, state, pause, now, sampling, toggling, resuming, config, configTip, hasAccount, isBase } = props;
+  const { instance, state, pause, now, sampling, toggling, resuming, config, configTip, hasAccount, isBase, script = null } = props;
   const [confirmResume, setConfirmResume] = useState(false);
   const index = instance.record.index;
   const paused = pause.paused;
@@ -98,11 +110,11 @@ export function InstanceGatherControls(props: InstanceGatherControlsProps) {
         : state.auto ? '关闭后只保留倒计时展示，不再主动操作这个模拟器（与「采集总览」页的「自动调度」是同一个开关）。'
           : '开启前先做一次只读探测并确认，之后先读一次「部队管理」面板，队列释放时自动唤醒去派下一轮采集队（与「采集总览」页的「自动调度」是同一个开关）。';
   // ★ One predicate for both the disabled state and its reason (a disabled button always says why).
-  const sampleBlocked = sampleBlockedReason(instance.status, busySampling, state.operating === true);
+  const sampleBlocked = sampleBlockedReason(instance.status, busySampling, state.operating === true, script);
   const sampleTip = sampleBlocked
     ?? (paused ? '注意：这个实例已被异常暂停，但「采样」仍然会真的去操作模拟器读一次面板。游戏若还停在异常界面，这次多半也会失败。'
       : '真的去开一次「部队管理」面板读当前队列状态，不派兵。一次采样十几张截图、几秒钟，请不要连点。');
-  const status = describeGatherStatus(state, pause, sampling, now);
+  const status = describeGatherStatus(state, pause, sampling, now, script);
 
   return (
     <div className="gather-cell">

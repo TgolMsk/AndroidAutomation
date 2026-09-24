@@ -1,5 +1,7 @@
 import { useState, type ReactNode } from 'react';
+import { errMsg } from '../../api';
 import { useToast } from '../../components/Toasts';
+import { resumePause } from '../../state/alerts';
 import { BATCH_VERB, collectOutcome, describeBatchOutcome, type BatchKind, type BatchOutcome } from './batch';
 import { EnableAutoDialog } from './EnableAutoDialog';
 import type { GatherQueuesApi } from './queue-store';
@@ -8,7 +10,10 @@ export interface GatherControls {
   /** The auto switch: enabling opens the confirm dialog with a fresh probe verdict; disabling runs at once. */
   toggleAuto(index: number, enabled: boolean): Promise<void>;
   sample(index: number): Promise<void>;
-  /** After the user confirmed 「恢复」. */
+  /**
+   * After the user confirmed 「恢复」: the alerts module's resume (original alerts:resume — clears the pause record, its
+   * counters and push cooldown, then switches auto on outside the instance lock without a second probe gate).
+   */
   resume(index: number): Promise<void>;
   /** Batch over targets already filtered by `batchTargets` (enabling goes through the confirm dialog). */
   runBatch(kind: BatchKind, targets: readonly number[], skipped: readonly string[]): Promise<void>;
@@ -46,12 +51,14 @@ export function useGatherControls(gameId: string, packageName: string, queues: G
   }
 
   async function resume(index: number): Promise<void> {
-    const error = await queues.resume(index);
-    if (error) toast.error(`实例 #${index} 恢复失败`, error);
-    else {
-      toast.push({ kind: 'success', title: `实例 #${index} 已恢复自动调度，正在重新读一次「部队管理」面板。` });
-      void queues.reload();
+    try {
+      await resumePause(index);
+    } catch (error) {
+      toast.error(`实例 #${index} 恢复失败`, errMsg(error));
+      return;
     }
+    toast.push({ kind: 'success', title: `实例 #${index} 已恢复自动调度，正在重新读一次「部队管理」面板。` });
+    void queues.reload();
   }
 
   async function runBatch(kind: BatchKind, targets: readonly number[], skipped: readonly string[]): Promise<void> {

@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react';
 import type { InstanceQueueState } from '@avdm/automation/wanlong/pure';
+import type { InstancePauseState } from '../../../shared/alerts';
 import { Icon } from '../../components/Icon';
 import { beijingTime } from '../../format';
+import { PauseBanner } from '../alerts/PauseBanner';
 import { attentionCount, collectDiagnostics, diagnosticsTip, worstLevel, type DiagnosticItem } from './diagnostics';
 import { MaskedDrawer } from './MaskedDrawer';
-import type { GatherPauseInfo } from './pause-port';
-import { PauseDetails } from './PauseDetails';
 import { CountPill } from './widgets';
 
 const LEVEL_TEXT: Record<DiagnosticItem['level'], string> = { error: '故障', warning: '提醒', info: '说明' };
@@ -14,7 +14,8 @@ export interface InstanceDiagnosticsBadgeProps {
   index: number;
   name: string;
   state: InstanceQueueState;
-  pause: GatherPauseInfo;
+  /** The alerts module's pause record (`usePause` / `pauseOf`). */
+  pause: InstancePauseState;
   /** The table has no MarchRow: collect row reasons too. The cards show them on the rows already. */
   rowReasons?: boolean;
   imminentMs?: number;
@@ -23,8 +24,9 @@ export interface InstanceDiagnosticsBadgeProps {
 
 /**
  * Diagnostics badge (original InstanceDiagnosticsBadge): folded it only says how many and how bad; clicking opens a
- * drawer with the pause details and every item. Nothing to report → nothing rendered. ★ Actions are not hidden in
- * here: 「恢复」 stays on the card / row, so the pause block is shown without its own resume button.
+ * drawer with the alerts module's PauseBanner (reason, advice, Beijing time, push result, scene shot) and every item.
+ * Nothing to report → nothing rendered. ★ Actions are not hidden in here: 「恢复」 stays on the card / row, so the
+ * banner is shown without its own resume button.
  */
 export function InstanceDiagnosticsBadge({ index, name, state, pause, rowReasons = false, imminentMs = 60_000, staleAfterMs = 60_000 }: InstanceDiagnosticsBadgeProps) {
   const [open, setOpen] = useState(false);
@@ -48,7 +50,7 @@ export function InstanceDiagnosticsBadge({ index, name, state, pause, rowReasons
       {open && (
         <MaskedDrawer label={`实例 #${index} 诊断`} title={`诊断 · #${index} ${name}`} width={560} onClose={() => setOpen(false)}>
           <div className="gather-diag-sections">
-            <PauseDetails pause={pause} instanceName={name} />
+            {pause.paused && <PauseBanner index={index} instanceName={name} showResume={false} />}
             {items.map((item, i) => (
               <div key={`${item.title}-${i}`} className="gather-diag-text">
                 <span className={`gather-diag-level is-${item.level}`}>{LEVEL_TEXT[item.level]} · {item.title}</span>

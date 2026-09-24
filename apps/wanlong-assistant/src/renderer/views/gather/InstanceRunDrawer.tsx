@@ -27,12 +27,14 @@ export function probeReady(report: AutomationProbeReport | null, game: Pick<Auto
  * the template set, the read-only probe (template scores against thresholds, foreground package), one manual gather
  * round with its stop, and the instance's recent runs. The auto switch itself lives on the card.
  */
-export function InstanceRunDrawer({ game, index, instance, autoOn, status, onClose }: {
+export function InstanceRunDrawer({ game, index, instance, autoOn, status, scriptBusy = null, onClose }: {
   game: AutomationGameSummary;
   index: number;
   instance: InstanceState | undefined;
   autoOn: boolean;
   status: SchedulerServiceStatus | null;
+  /** A script run holds the instance (plans module, scripts pre-empt gathering): a manual round is refused until it ends. */
+  scriptBusy?: string | null;
   onClose(): void;
 }) {
   const toast = useToast();
@@ -73,14 +75,15 @@ export function InstanceRunDrawer({ game, index, instance, autoOn, status, onClo
   const configEnabled = settings?.config['enabled'] === true;
   const canProbe = Boolean(ready && settings?.templateDir && !busy && !activeRun);
   const canRun = Boolean(ready && settings?.templateDir && launchReady && probeConfirmed && !busy && !activeRun && !autoOn && taskId &&
-    (game.id !== 'wanlong' || configEnabled));
+    !scriptBusy && (game.id !== 'wanlong' || configEnabled));
   const hint = !ready ? '先启动这个实例。'
     : !settings?.templateDir ? '先选择模板集。'
       : game.id === 'wanlong' && !configEnabled ? '先在采集配置里打开「启用自动采集」并保存。'
         : !launchReady ? probe?.launchReason ?? '先探测当前画面并通过启动检查。'
           : !probeConfirmed ? '核对探针结果后确认。'
             : autoOn ? '自动调度已开启；关闭后可手动采集一轮。'
-              : activeRun ? '这个实例已有任务在运行。' : '探针结果已核对，可以采集一轮。';
+              : activeRun ? '这个实例已有任务在运行。'
+                : scriptBusy ?? '探针结果已核对，可以采集一轮。';
 
   async function runProbe(): Promise<void> {
     if (!canProbe) return;

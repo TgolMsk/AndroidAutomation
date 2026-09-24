@@ -96,7 +96,11 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
   `hub.telegramChannel().sendPhoto/sendText`、回调数据 `alertCallbackData` / `parseAlertCallbackData`（`resume:0` / `relaunch:0` /
   `status:0`，与原版 `bot.ts` 相同）。★ 开始处理 `callback_query` 时调 `hub.setRemoteControlHandler(true)`（停止时 false），
   告警消息才会附加按钮，设置页的「机器人模块接入后生效」标注也随之去掉（配置视图的 `remoteControlAvailable`）。
-- 调度器 / 采集界面：队列视图的 `pause`（`SchedulerQueueState.pause`）与暂停记录同步（见铁律 2），也可以用 `usePause(i)`。
+- 调度器 / 采集界面：暂停记录是唯一来源 —— 调度器自己的安全暂停、「需要人工处理」暂停与就绪门槛暂停都记成暂停记录，
+  队列视图的 `pause`（`SchedulerQueueState.pause`）只经 `pauseOf` 镜像它（见铁律 2），调度器不另记一份。采集总览的红框卡片、
+  实例页的红色行、诊断角标（完整 `PauseBanner`）、批量采集的跳过规则都直接读 `useAlerts()` / `pauseOf()`，「恢复」走 `resumePause(i)`。
+  「需要人工介入」的 `detail.阶段` 用 `ATTENTION_STAGE` / `attentionStageOf()`（`shared/alerts.ts`，AI 执行器同用一份），
+  `pauseTitle()` 把它带进状态行；AI 风险暂停（`isAiAttentionPause`）的横幅上有「查看 AI 处理记录」。
 - 统计模块：暂停 / 恢复事件仍只从 `SchedulerHooks.onAutoChanged` 来；告警写进日账走 `ledgerAlertOf()` → `InsightsService.recordAlert()`。
 
 ## 验证

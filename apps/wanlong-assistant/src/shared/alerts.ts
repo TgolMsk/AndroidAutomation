@@ -1083,6 +1083,32 @@ export function pauseStateFromEvent(e: AlertEvent, notify: { notified: boolean |
   };
 }
 
+/**
+ * The 「阶段」 detail of a 「需要人工介入」 pause raised for GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED (original alert detail):
+ * which chain stopped the automation. One copy for the alerts module, the AI executor and the renderer.
+ */
+export const ATTENTION_STAGE = { aiRisk: 'AI 操作风险评估', gameUpdate: '游戏资源更新' } as const;
+
+export function attentionStageOf(code: string): string {
+  return code === 'AI_RISK_BLOCKED' ? ATTENTION_STAGE.aiRisk : ATTENTION_STAGE.gameUpdate;
+}
+
+/** The AI's risk gate (or its verdict) paused this instance: the 「AI 处理」 page has the record behind it. */
+export function isAiAttentionPause(pause: Pick<InstancePauseState, 'paused' | 'type' | 'detail'> | null | undefined): boolean {
+  return pause?.paused === true && pause.type === 'needsAttention' && pause.detail?.['阶段'] === ATTENTION_STAGE.aiRisk;
+}
+
+/**
+ * Short title of a pause for status lines and diagnostics: the alert type's title, plus the stage of a needs-attention
+ * pause (「需要人工介入（AI 操作风险评估）」), so an AI or update pause is told apart from a generic one at a glance.
+ */
+export function pauseTitle(pause: Pick<InstancePauseState, 'paused' | 'type' | 'detail'>): string {
+  if (!pause.paused) return '';
+  const title = pause.type ? ALERT_SPECS[pause.type].title : '已暂停';
+  const stage = pause.type === 'needsAttention' ? pause.detail?.['阶段'] : undefined;
+  return typeof stage === 'string' && stage ? `${title}（${stage}）` : title;
+}
+
 // ── History ────────────────────────────────────────────────────────────────
 
 export interface AlertRecord {

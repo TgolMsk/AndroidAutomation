@@ -8,17 +8,16 @@ export type {
 } from '@avdm/automation/wanlong/pure';
 
 /**
- * Why an instance's automatic schedule is paused: an alerts pause record (`pauseOf` hook), else the scheduler's own
- * safety pause (`consecutiveFailures`) or needs-attention pause. Null while running or never paused.
+ * Why an instance's automatic schedule is paused: the alerts module's pause record (`pauseOf` hook — the only source;
+ * the scheduler's safety pause, needs-attention pause and readiness refusals are all raised as alerts). Null while
+ * running or never paused. The renderer reads the full record (scene shot, push result) from the alerts store.
  */
 export interface SchedulerPauseInfo {
   reason: string;
-  /** When it paused (ms); 0 when unknown (a safety pause restored after a restart). */
+  /** When it paused (ms); 0 when unknown. */
   at: number;
-  /** Alert kind that paused it, e.g. deviceOffline / suspectedKicked / needsAttention / consecutiveFailures. */
+  /** Alert type that paused it, e.g. deviceOffline / suspectedKicked / needsAttention / consecutiveFailures / schedulePaused. */
   kind?: string;
-  /** `scheduler` for the scheduler's own pause; absent for an alerts pause record. */
-  source?: 'alerts' | 'scheduler';
 }
 
 /** One instance's queue as the renderer sees it: the game's queue model plus the assistant's bookkeeping. */
@@ -26,7 +25,7 @@ export interface SchedulerQueueState extends InstanceQueueState {
   gameId: string;
   /** Consecutive real failures (samples or cycles); non-failure outcomes reset it. */
   failureCount: number;
-  /** Set while the instance is paused (alerts record or the scheduler's own pause); null otherwise. */
+  /** Set while an alerts pause record holds the instance; null otherwise. */
   pause: SchedulerPauseInfo | null;
   /** Another process owns the scheduler for this game; this window only shows state. */
   readOnly?: boolean;

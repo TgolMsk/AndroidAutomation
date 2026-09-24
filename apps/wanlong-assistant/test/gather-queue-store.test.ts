@@ -9,6 +9,10 @@ const { avdm } = vi.hoisted(() => ({
     schedulerSample: vi.fn(),
     schedulerSetAuto: vi.fn(),
     saveSchedulerConfig: vi.fn(),
+    alertsConfig: vi.fn(),
+    alertPauses: vi.fn(),
+    alertHistory: vi.fn(),
+    resumeAlertPause: vi.fn(),
     on: vi.fn(() => () => undefined),
   },
 }));
@@ -18,6 +22,7 @@ vi.mock('../src/renderer/api', () => ({
 }));
 
 const store = await import('../src/renderer/views/gather/queue-store');
+const alerts = await import('../src/renderer/state/alerts');
 
 function state(index: number, patch: Partial<SchedulerQueueState> = {}): SchedulerQueueState {
   return { ...store.emptyQueueState(index, null, 'wanlong'), ...patch };
@@ -78,11 +83,22 @@ describe('queue store (original marchStore semantics)', () => {
     expect(placeholder).toMatchObject({ instanceIndex: 9, accountId: 'acc', queueUsed: null, queueTotal: null, lastSampledAt: 0, auto: false, pause: null });
   });
 
-  it('resume goes through the pause port (schedulerSetAuto today) with its own double-click guard', async () => {
-    avdm.schedulerSetAuto.mockResolvedValueOnce(state(5, { auto: true }));
-    expect(await store.resumeQueue('wanlong', 5)).toBeNull();
-    expect(avdm.schedulerSetAuto).toHaveBeenCalledWith('wanlong', 5, true);
+  it('saving the scheduler config returns the Chinese reason of a refusal', async () => {
     avdm.saveSchedulerConfig.mockRejectedValueOnce(new Error('另一个万龙助手进程正在管理调度'));
     expect(await store.saveQueueConfig('wanlong', { slackSeconds: 90 })).toBe('另一个万龙助手进程正在管理调度');
+  });
+
+  it('resume is the alerts module\'s (resumeAlertPause, no probe gate), never the user\'s auto switch; double clicks refused', async () => {
+    // The queue store has no resume of its own any more: one path, one source of truth for pauses.
+    expect('resumeQueue' in store).toBe(false);
+    let finish!: (value: unknown) => void;
+    avdm.resumeAlertPause.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const first = alerts.resumePause(5);
+    await expect(alerts.resumePause(5)).rejects.toThrow('这个实例正在恢复，等它完成再点。');
+    finish({ instanceIndex: 5, paused: false });
+    await expect(first).resolves.toMatchObject({ instanceIndex: 5, paused: false });
+    expect(avdm.resumeAlertPause).toHaveBeenCalledTimes(1);
+    expect(avdm.resumeAlertPause).toHaveBeenCalledWith(5);
+    expect(avdm.schedulerSetAuto).not.toHaveBeenCalled();
   });
 });

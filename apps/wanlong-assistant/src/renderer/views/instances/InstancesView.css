@@ -67,6 +67,11 @@
   cursor: pointer;
 }
 
+/* An alert paused this instance (alerts pause record, never `!auto`): the same red as the gather overview's card. */
+.instances-table tbody tr.instances-row-paused > td:first-child {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
 .instances-head h2 {
   display: flex;
   align-items: center;

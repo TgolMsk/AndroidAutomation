@@ -105,11 +105,6 @@ interface Runtime {
   /** Script runs holding the instance (suspendForScript). While > 0 nothing new starts. */
   scriptHolds: number;
   operatingDepth: number;
-  /**
-   * The scheduler's own pause (safety pause after `maxConsecutiveFailures`, needs-attention pause), shown in the queue
-   * view while auto stays off and no alerts pause record covers it. Cleared when auto is switched on again.
-   */
-  pause?: SchedulerPauseInfo;
 }
 
 interface SampleOptions {
@@ -982,7 +977,6 @@ export class EtaScheduler {
     if (rt.failureCount < this.maxFailures) return false;
     const reason = `连续 ${rt.failureCount} 次失败，自动调度已暂停：${message}`;
     this.log('error', `实例 #${index} ${reason}`);
-    rt.pause = { reason, at: this.now(), kind: 'consecutiveFailures', source: 'scheduler' };
     this.emit(() => this.options.onSafetyPause?.(index, rt.failureCount, reason));
     void this.setAuto(index, false, reason).catch(() => undefined);
     return true;
@@ -1015,9 +1009,6 @@ export class EtaScheduler {
       this.log('info', `实例 #${index} 已处于暂停状态，本次不重复告警：${info.message}`);
       return;
     }
-    // The scheduler's own needs-attention pause for the queue view (an alerts pause record, when present, wins in
-    // `view()`); set before auto goes off so the publish that switches it off already carries the reason.
-    this.rt(index).pause = { reason: `需要人工处理：${info.message}`, at: this.now(), kind: 'needsAttention', source: 'scheduler' };
     const hook = this.hooks.onNeedsAttention;
     if (hook) {
       try { await hook(index, info); }
@@ -1092,14 +1083,12 @@ export class EtaScheduler {
     rt.failureCount = 0;
     rt.lastHealthProbeAt = undefined;
     rt.cooldownUntil = undefined;
-    rt.pause = undefined;
   }
 
   /** Flip the flag, abort on disable and notify only on a real flip (the single source of pause/resume events). */
   private applyAuto(rt: Runtime, enabled: boolean, reason?: string): void {
     const flipped = rt.state.auto !== enabled;
     if (flipped) rt.cooldownUntil = undefined;
-    if (enabled) rt.pause = undefined;
     if (!enabled) {
       rt.autoController?.abort(new SchedulerError('RUN_ABORTED', reason ? `自动调度已停止：${reason}` : '自动调度已停止。'));
       this.timers.cancel(rt.state.instanceIndex);
@@ -1122,8 +1111,9 @@ export class EtaScheduler {
   private view(rt: Runtime): SchedulerQueueState {
     const s = rt.state;
     let pause: SchedulerPauseInfo | null = null;
+    // ★ One source of truth: the alerts module's pause records (every scheduler pause — the safety pause, a
+    //   needs-attention pause, a readiness refusal — is raised as one). The queue view never invents a pause.
     try { pause = this.hooks.pauseOf?.(s.instanceIndex) ?? null; } catch { pause = null; }
-    pause ??= this.ownPause(rt);
     return {
       ...s,
       marches: s.marches.map((m) => ({ ...m, commanders: m.commanders.map((c) => ({ ...c })) })),
@@ -1134,17 +1124,6 @@ export class EtaScheduler {
       pause,
       ...(this.readOnly ? { readOnly: true } : {}),
     };
-  }
-
-  /**
-   * The scheduler's own pause when no alerts record covers it (single authority for the threshold: `maxFailures`, so
-   * the renderer never mirrors it). After a restart only the persisted failure count is left to show the safety pause.
-   */
-  private ownPause(rt: Runtime): SchedulerPauseInfo | null {
-    if (rt.state.auto) return null;
-    if (rt.pause) return { ...rt.pause };
-    if (rt.failureCount < this.maxFailures) return null;
-    return { reason: `连续 ${rt.failureCount} 次失败，自动调度已暂停。`, at: 0, kind: 'consecutiveFailures', source: 'scheduler' };
   }
 
   private publish(rt: Runtime): void {

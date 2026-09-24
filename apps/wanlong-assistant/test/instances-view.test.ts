@@ -7,7 +7,11 @@ import { describeGatherStatus, sampleBlockedReason } from '../src/renderer/views
 import { onlineState, resumeMessage } from '../src/renderer/views/gather/InstanceMarchCard';
 import { probeVerdict } from '../src/renderer/views/gather/EnableAutoDialog';
 import { probeReady } from '../src/renderer/views/gather/InstanceRunDrawer';
-import { notPaused, pauseInfoOf } from '../src/renderer/views/gather/pause-port';
+import { scriptOccupancyOf } from '../src/renderer/views/gather/occupancy';
+import { emptyPauseState, makeAlertEvent, pauseStateFromEvent } from '../src/shared/alerts';
+import type { ScriptRunSnapshot } from '../src/main/plans/types';
+
+const notPaused = emptyPauseState;
 
 const NOW = 1_800_000_000_000;
 const PKG = 'com.lilithgames.samo.android.cn';
@@ -65,8 +69,10 @@ describe('instance list: search, status filter, running count', () => {
 
 describe('auto-gather cell status line (priority order, original describeStatus)', () => {
   it('paused > sampling > finishing > failed > next wake > last sample > never', () => {
-    const paused = pauseInfoOf(state({ pause: { reason: 'x', at: NOW, kind: 'deviceOffline' } }));
+    // The pause is the alerts module's record (never derived from the queue state or `!auto`).
+    const paused = pauseStateFromEvent(makeAlertEvent({ type: 'deviceOffline', instanceIndex: 1, reason: 'x', at: NOW }), { notified: true, notifyError: null });
     expect(describeGatherStatus(state({ sampling: true, error: 'e' }), paused, false, NOW)).toMatchObject({ text: '已暂停 · 模拟器或游戏掉线', tone: 'danger' });
+    expect(describeGatherStatus(state({ pause: { reason: 'x', at: NOW, kind: 'deviceOffline' } }), notPaused(1), false, NOW).text).toBe('未采样');
     expect(describeGatherStatus(state({ error: 'e' }), notPaused(1), true, NOW)).toMatchObject({ text: '正在读「部队管理」面板…', tone: 'info' });
     expect(describeGatherStatus(state({ operating: true, error: 'e' }), notPaused(1), false, NOW)).toMatchObject({ text: '设备操作收尾中', tone: 'warning' });
     expect(describeGatherStatus(state({ error: '游戏不在前台' }), notPaused(1), false, NOW)).toMatchObject({ text: '一直没能采样成功', tone: 'danger' });
@@ -75,6 +81,17 @@ describe('auto-gather cell status line (priority order, original describeStatus)
     expect(wake).toMatchObject({ text: '下次唤醒 12:00:00', tone: null, tip: '队列释放校验（已退避 2 次）（北京时间）' });
     expect(describeGatherStatus(state({ lastSampleOk: true, lastSampledAt: NOW - 30_000 }), notPaused(1), false, NOW).text).toBe('上次采样 30 秒前');
     expect(describeGatherStatus(state(), notPaused(1), false, NOW).text).toBe('未采样');
+  });
+
+  it('a script holding the instance shows as yielding while auto is on (plans pre-emption), below a pause', () => {
+    const script = scriptOccupancyOf(1, { runId: 'r1', instanceIndex: 1, scriptName: '日常领取', status: 'running', source: 'plan' } as ScriptRunSnapshot, []);
+    const auto = state({ auto: true, lastSampleOk: true, lastSampledAt: NOW - 5_000, nextWakeAt: null, nextWakeReason: '为脚本让路：计划任务' });
+    expect(describeGatherStatus(auto, notPaused(1), false, NOW, script)).toMatchObject({ text: '为脚本让路', tone: 'info' });
+    expect(describeGatherStatus(auto, notPaused(1), false, NOW, script).tip).toContain('「日常领取」（计划任务）');
+    // Auto off: the 当前执行 column already names the script; the gather line keeps its own story.
+    expect(describeGatherStatus(state({ lastSampleOk: true, lastSampledAt: NOW - 30_000 }), notPaused(1), false, NOW, script).text).toBe('上次采样 30 秒前');
+    const paused = pauseStateFromEvent(makeAlertEvent({ type: 'suspectedKicked', instanceIndex: 1, reason: 'x', at: NOW }), { notified: null, notifyError: null });
+    expect(describeGatherStatus(auto, paused, false, NOW, script).text).toBe('已暂停 · 疑似被顶号');
   });
 });
 
@@ -88,6 +105,10 @@ describe('auto-gather cell actions (a disabled action always says why)', () => {
     expect(sampleBlockedReason('stopped', false, false)).toBe('实例未开机，无法采样。');
     expect(sampleBlockedReason('running', true, true)).toContain('等这次采样完成');
     expect(sampleBlockedReason('running', false, true)).toContain('设备操作');
+    // Scripts pre-empt gathering: the scheduler refuses a sample while one holds the instance, so say so up front.
+    const script = scriptOccupancyOf(1, { runId: 'r1', instanceIndex: 1, scriptName: '日常领取', status: 'paused', source: 'manual' } as ScriptRunSnapshot, []);
+    expect(sampleBlockedReason('running', false, false, script)).toBe('脚本「日常领取」正在这个实例上运行（脚本优先），等它结束再操作。');
+    expect(sampleBlockedReason('running', false, false, scriptOccupancyOf(1, undefined, [{ runId: 'q', instanceIndex: 1, status: 'queued' }]))).toBeNull();
   });
 
   it('当前执行 shows step progress, or rounds and steps in loop mode (original)', () => {

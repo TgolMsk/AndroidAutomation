@@ -32,6 +32,11 @@ export interface GatherConfigViewProps {
   onSaved?(index: number): void;
   /** Unsaved edits exist: the drawer guards its close with it. */
   onDirtyChange?(dirty: boolean): void;
+  /**
+   * Why saving is refused right now because something else holds the instance lease (a script run: scripts pre-empt
+   * gathering and keep the lease until they end; saving takes it briefly). Editing stays possible; null when free.
+   */
+  saveBlockedReason?: string | null;
 }
 
 /** Backoff list text box: keeps the raw text while typing (so 「30, 」 is not eaten) and reports the parsed list. */
@@ -54,7 +59,7 @@ function BackoffInput({ value, onChange }: { value: number[]; onChange(next: num
  * ★ The most important sentence of the page (repeated in the level section): the levels here are search FLOORS.
  *   The game returns points of level >= the searched value; searching 5 and getting 7 is normal and better.
  */
-export function GatherConfigView({ gameId, index, boundAccount, autoOn, onSaved, onDirtyChange }: GatherConfigViewProps) {
+export function GatherConfigView({ gameId, index, boundAccount, autoOn, onSaved, onDirtyChange, saveBlockedReason = null }: GatherConfigViewProps) {
   const toast = useToast();
   const queues = useGatherQueues(gameId);
   const [settings, setSettings] = useState<AutomationSettings | null>(null);
@@ -203,6 +208,12 @@ export function GatherConfigView({ gameId, index, boundAccount, autoOn, onSaved,
           <div>{text}</div>
         </div>
       ))}
+      {saveBlockedReason && (
+        <div className="notice info" role="status">
+          <Icon name="info" />
+          <div>{saveBlockedReason}现在可以先改，结束后再点「保存」。</div>
+        </div>
+      )}
       {settings?.configReplaced && (
         <div className="notice warn" role="status">
           <Icon name="alert" />
@@ -570,7 +581,8 @@ export function GatherConfigView({ gameId, index, boundAccount, autoOn, onSaved,
         <div className="gather-inline">
           <button type="button" className="btn sm" onClick={openIo}><Icon name="download" />导出 / 导入</button>
           <button type="button" className="btn sm" onClick={() => setResetting(true)}><Icon name="restart" />恢复默认</button>
-          <button type="button" className="btn sm primary" disabled={saving || blocked || (!dirty && !needsSave)} onClick={() => void save()}>
+          <button type="button" className="btn sm primary" disabled={saving || blocked || (!dirty && !needsSave) || Boolean(saveBlockedReason)}
+            title={saveBlockedReason ?? undefined} onClick={() => void save()}>
             {saving ? <Spinner size={12} /> : <Icon name="check" />}保存
           </button>
         </div>

@@ -6,15 +6,17 @@ import { StatTile } from '../../components/StatTile';
 import { Spinner } from '../../components/StatusBadge';
 import { useCountdownTick } from '../../hooks/useCountdownTick';
 import { isRunActive, useActivity } from '../../state/activity';
+import { pauseOf, useAlerts } from '../../state/alerts';
 import { usePlanRuns } from '../../state/plan-runs';
 import { useSelection } from '../../state/selection';
 import { accountOfIndex, boundTo, isBaseInstance } from '../accounts/account-model';
 import { useAccounts, useBaseInstance } from '../accounts/useAccounts';
+import { PausedInstancesStrip } from '../alerts/PauseBanner';
 import type { ViewProps } from '../types';
 import { GatherConfigDrawer } from './GatherConfigDrawer';
-import { InstanceMarchCard } from './InstanceMarchCard';
+import { InstanceMarchCard, gatherCardId } from './InstanceMarchCard';
 import { InstanceRunDrawer } from './InstanceRunDrawer';
-import { pauseInfoOf, pausedIndexes } from './pause-port';
+import { configSaveBlockedReason, scriptHoldReason, scriptOccupancyOf } from './occupancy';
 import { countdownWindows, formatAgo, formatClock, formatShort, summarizeQueues } from './present';
 import { useGatherConfigBadges } from './useGatherConfigBadges';
 import { useGatherControls } from './useGatherControls';
@@ -29,12 +31,15 @@ import './gather.css';
  * Only two things touch the emulator: 「立即采样」 and the scheduler's own wakes / calibrations.
  */
 export function GatherOverviewView({ visible }: ViewProps) {
-  const { game, gameId, targets, index: selectedIndex, instancesLoaded, instancesError, reloadInstances } = useSelection();
+  const { game, gameId, targets, index: selectedIndex, setIndex, lockReason, instancesLoaded, instancesError, reloadInstances } = useSelection();
   const { accounts } = useAccounts(gameId || undefined);
   const base = useBaseInstance(gameId || undefined);
   const queues = useGatherQueues(gameId);
   const { runs } = useActivity();
-  const { activePlanRuns } = usePlanRuns();
+  const { activePlanRuns, planRuns, scriptRunByInstance } = usePlanRuns();
+  // ★ Pauses have one source: the alerts module's pause records (alert-pause-changed keeps them live). The red frame,
+  //   「恢复」 and the diagnostics badge all read them; `!auto` alone is never a pause.
+  const { pauses: alertPauses, resuming } = useAlerts();
   const now = useCountdownTick(visible);
   const [configFor, setConfigFor] = useState<number | null>(null);
   const [runFor, setRunFor] = useState<number | null>(null);
@@ -55,15 +60,24 @@ export function GatherOverviewView({ visible }: ViewProps) {
   const states = useMemo(() => targets.map((target) => queues.stateOf(target.index, boundAccountOf(target.index)?.id ?? null)),
     // stateOf is a fresh closure each render; what it reads is the snapshot map and the accounts.
     [targets, queues.byInstance, accounts]);
-  const pauses = useMemo(() => states.map((state) => pauseInfoOf(state)), [states]);
+  const pauses = useMemo(() => targets.map((target) => pauseOf(alertPauses, target.index)!), [targets, alertPauses]);
+  const scripts = useMemo(() => targets.map((target) => scriptOccupancyOf(target.index, scriptRunByInstance.get(target.index), planRuns)),
+    [targets, scriptRunByInstance, planRuns]);
   const sum = useMemo(() => summarizeQueues(states), [states]);
-  const pausedList = pausedIndexes(pauses);
+  const pausedCount = pauses.filter((pause) => pause.paused).length;
+  const scriptOf = (i: number) => scriptOccupancyOf(i, scriptRunByInstance.get(i), planRuns);
   const activeTasks = runs.filter(isRunActive).length + activePlanRuns;
 
   if (!game) return null;
 
   const nextFreeText = sum.nextFreeAt == null ? '—' : sum.nextFreeAt <= now ? '已到期' : formatShort(sum.nextFreeAt - now);
   const configTarget = configFor === null ? null : { index: configFor, name: nameOf(configFor), account: boundAccountOf(configFor)?.name ?? null };
+
+  /** A chip of the paused-instances strip: make it the current instance (unless a page holds the lock) and show its card. */
+  function focusPaused(i: number): void {
+    if (!lockReason && i !== selectedIndex) setIndex(i);
+    document.getElementById(gatherCardId(i))?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
 
   async function refresh(): Promise<void> {
     setRefreshing(true);
@@ -100,11 +114,11 @@ export function GatherOverviewView({ visible }: ViewProps) {
       {queues.status && !queues.status.owner && (
         <div className="notice info" role="status"><Icon name="info" /><div>{queues.status.message ?? '另一个万龙助手进程正在管理自动采集调度，本窗口只显示状态。'}</div></div>
       )}
-      {pausedList.length > 0 && (
-        <div className="notice bad" role="alert"><Icon name="alert" /><div>
-          <strong>{pausedList.length} 个实例已被暂停，需要人工介入</strong>
-          <div>已暂停：{pausedList.map((i) => `#${i}`).join('、')}。自动调度已关掉，不会再操作这些实例的游戏；原因点下面红框卡片右上角的角标查看，处理完在卡片底部点「恢复」。</div>
-        </div></div>
+      <PausedInstancesStrip current={selectedIndex} onSelect={focusPaused} />
+      {pausedCount > 0 && (
+        <p className="gather-micro gather-pause-hint">
+          自动调度已关掉，不会再操作这些实例的游戏。点上面的实例找到它的红框卡片：原因、处置建议与现场截图在卡片右上角的角标里，处理完在卡片底部点「恢复」。
+        </p>
       )}
 
       <section className="gather-summary" aria-label="采集汇总">
@@ -149,7 +163,7 @@ export function GatherOverviewView({ visible }: ViewProps) {
                   accountLabel={account ? bound ? account.name : `${account.name}（实例已替换）` : '未绑定账号'}
                   state={states[i]!} now={now} imminentMs={imminentMs} staleAfterMs={staleAfterMs}
                   sampling={queues.sampling[target.index] === true} toggling={queues.autoBusy[target.index] === true}
-                  resuming={queues.resuming[target.index] === true} pause={pauses[i]!}
+                  resuming={resuming[target.index] === true} pause={pauses[i]!} script={scripts[i] ?? null}
                   isBase={isBaseInstance(base.view, target.instance)} badge={badges[target.index] ?? null}
                   onToggleAuto={(idx, on) => void controls.toggleAuto(idx, on)} onSample={(idx) => void controls.sample(idx)}
                   onResume={controls.resume} onOpenConfig={setConfigFor} onOpenRun={setRunFor} />
@@ -161,11 +175,12 @@ export function GatherOverviewView({ visible }: ViewProps) {
       {configTarget && (
         <GatherConfigDrawer gameId={gameId} index={configTarget.index} instanceName={configTarget.name} boundAccount={configTarget.account}
           autoOn={queues.byInstance[configTarget.index]?.auto === true} onClose={() => setConfigFor(null)}
+          saveBlockedReason={configSaveBlockedReason(scriptOf(configTarget.index))}
           onSaved={() => { refreshBadges(); void queues.reload(); }} />
       )}
       {runFor !== null && (
         <InstanceRunDrawer game={game} index={runFor} instance={instanceOf(runFor)} autoOn={queues.byInstance[runFor]?.auto === true}
-          status={queues.status} onClose={() => setRunFor(null)} />
+          status={queues.status} scriptBusy={scriptHoldReason(scriptOf(runFor))} onClose={() => setRunFor(null)} />
       )}
       {controls.dialog}
     </div>

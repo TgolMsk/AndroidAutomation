@@ -95,8 +95,9 @@ ScheduleCompat (compat.ts)              旧 AutomationSchedule 视图（渲染�
 - **模板变更立即失效**：宿主订阅自己的 `onTemplatesChanged`（保存 / 删除 / 导入），立刻让所有视觉 worker 丢弃编译缓存；
   worker 里按 manifest 指纹的比对保留为兜底（别的进程 / tplkit 在盘上改了模板集）。
 - 连续 8 次真失败（可配 `maxConsecutiveFailures`）自动暂停并调用 `onScheduleStop` 告警 —— 本仓库原有的安全阀，原版没有。
-  这次暂停（以及「需要人工处理」暂停）写进队列视图的 `SchedulerQueueState.pause`（`source: 'scheduler'`），`pauseOf` 钩子
-  （告警模块的暂停记录）优先；重启后只剩落盘的失败计数时仍按阈值显示安全暂停。界面只读 `pause`，不再自己镜像阈值。
+  这次暂停、「需要人工处理」暂停与就绪门槛暂停都由告警模块记成暂停记录（`onScheduleStop` / `onNeedsAttention` /
+  `onSchedulePause`），队列视图的 `SchedulerQueueState.pause` 只来自 `pauseOf` 钩子（告警记录，唯一来源），调度器自己不另记一份；
+  界面直接读告警模块的暂停记录与 `resumeAlertPause`，不镜像阈值。
 
 ## 给后续模块的接口
 

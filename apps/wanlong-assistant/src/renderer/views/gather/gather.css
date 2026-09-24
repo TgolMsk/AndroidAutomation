@@ -530,35 +530,20 @@
 .gather-diag-level.is-warning { color: var(--amber); }
 .gather-diag-level.is-info { color: var(--text-dim); }
 
-/* ── pause details (pause port) ── */
+/* ── script occupancy (plans pre-emption note on the card) ── */
 
-.gather-pause {
-  display: grid;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--red);
-  border-radius: var(--radius);
-  background: var(--red-bg);
-}
-
-.gather-pause-head {
+.gather-occupancy {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--red);
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
-.gather-pause-details summary {
-  cursor: pointer;
-  color: var(--text-2);
-  font-size: 12px;
-}
+/* ── paused-instances strip hint (the strip itself is the alerts module's) ── */
 
-.gather-pause-reason,
-.gather-pause-advice {
-  margin-top: 4px;
-  line-height: 1.55;
+.gather-pause-hint {
+  margin: -4px 0 0;
 }
 
 /* ── drawers ── */
