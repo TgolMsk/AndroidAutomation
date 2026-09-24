@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRuntimeState, wanlongPlugin, type GatherCycleResult } from '@avdm/automation/wanlong';
 import { AutomationHost } from '../src/main/automation/host';
+import type { TemplateJob, TemplateJobOutput } from '../src/main/automation/template-jobs';
 import type { ManagerHost } from '../src/main/manager-host';
 
 const { broadcast } = vi.hoisted(() => ({ broadcast: vi.fn() }));
@@ -211,5 +212,38 @@ describe('AutomationHost single-cycle gathering', () => {
     await expect(enabling).rejects.toThrow('已有自动化任务');
     expect((await host.schedules()).some((schedule) => schedule.enabled)).toBe(false);
     await host.stop(started.runId);
+  });
+
+  it('tests a template with the app settings threshold and shrink the script engine uses (original matchOnce)', async () => {
+    const defaults = { threshold: 0.9, shrink: 3 };
+    const tuned = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, controlledRunner(), undefined,
+      { matchDefaults: () => defaults });
+    const match = { templateId: 'plain', found: true, score: 0.95, x: 0, y: 0, w: 10, h: 10, centerX: 5, centerY: 5, threshold: 0.9, elapsedMs: 1 };
+    try {
+      const set = { id: 'set', name: '模板集', refWidth: 2560, refHeight: 1440, directory: home, templates: [
+        { id: 'plain', bounds: { x: 0, y: 0, w: 10, h: 10 } },
+        { id: 'own', bounds: { x: 0, y: 0, w: 10, h: 10 }, threshold: 0.8 },
+      ] } as unknown as Awaited<ReturnType<AutomationHost['templateSet']>>;
+      vi.spyOn(tuned, 'templateSet').mockResolvedValue(set);
+      vi.spyOn((tuned as unknown as { templates: { image: () => Promise<Uint8Array> } }).templates, 'image').mockResolvedValue(new Uint8Array(8));
+      const jobs = vi.fn(async (_job: TemplateJob): Promise<TemplateJobOutput> => ({ ok: true, kind: 'test', match }));
+      tuned.templateJobRunner = jobs;
+      await tuned.testTemplate('wanlong', 1, 'plain');
+      expect(jobs.mock.calls[0]![0]).toMatchObject({ kind: 'test', shrink: 3, definition: { id: 'plain', threshold: 0.9 } });
+      // A template's own threshold still wins; the shrink follows the setting; a threshold typed into the test is kept.
+      defaults.shrink = 1;
+      await tuned.testTemplate('wanlong', 1, 'own', { threshold: 0.7 });
+      expect(jobs.mock.calls[1]![0]).toMatchObject({ kind: 'test', shrink: 1, threshold: 0.7, definition: { id: 'own', threshold: 0.8 } });
+      // Without the hook the vision defaults apply.
+      vi.spyOn(host, 'templateSet').mockResolvedValue(set);
+      vi.spyOn((host as unknown as { templates: { image: () => Promise<Uint8Array> } }).templates, 'image').mockResolvedValue(new Uint8Array(8));
+      const plain = vi.fn(async (_job: TemplateJob): Promise<TemplateJobOutput> => ({ ok: true, kind: 'test', match }));
+      host.templateJobRunner = plain;
+      await host.testTemplate('wanlong', 1, 'plain');
+      expect(plain.mock.calls[0]![0]).not.toHaveProperty('shrink');
+      expect((plain.mock.calls[0]![0] as { definition: { threshold?: number } }).definition.threshold).toBeUndefined();
+    } finally {
+      await tuned.dispose();
+    }
   });
 });

@@ -62,13 +62,15 @@ describe('assistant environment self-check', () => {
     }));
     expect(report.ok).toBe(false);
     const failed = report.items.filter((item) => item.level === 'fail');
-    expect(failed.map((item) => item.key)).toEqual(['env:manager', 'adbServer', 'instances', 'templates', 'dataDir', 'opencv', 'sharp', 'disk']);
+    expect(failed.map((item) => item.key)).toEqual(['env:manager', 'instances', 'templates', 'dataDir', 'opencv', 'sharp', 'disk']);
+    // An unreachable manager is not blamed on a 5037 conflict: the adb server line only points back up.
+    expect(report.items.find((item) => item.key === 'adbServer')).toMatchObject({ level: 'warn', ok: true, detail: '无法检查：先解决上面的「模拟器管理器」一项' });
     for (const item of failed) {
       expect(item.ok).toBe(false);
       expect(item.detail).toMatch(/[一-龥]|探测失败/);
       expect(item.hint, item.key).toMatch(/[一-龥]/);
     }
-    expect(healthProblemSummary(report)).toBe('环境自检发现 8 个问题：模拟器管理器、adb 服务（127.0.0.1:5037）、实例分辨率、模板集、助手数据目录可写、视觉引擎（OpenCV WASM）、图像处理（sharp / libvips）、磁盘余量');
+    expect(healthProblemSummary(report)).toBe('环境自检发现 7 个问题：模拟器管理器、实例分辨率、模板集、助手数据目录可写、视觉引擎（OpenCV WASM）、图像处理（sharp / libvips）、磁盘余量');
   });
 
   it('runs adb start-server and explains a 5037 conflict (original checkAdbServer)', async () => {
@@ -88,6 +90,15 @@ describe('assistant environment self-check', () => {
     }));
     expect(missing.items.find((item) => item.key === 'adbServer')).toMatchObject({ level: 'fail', detail: 'adb 不可用，先解决上面的「adb」一项' });
     expect(adbServer).not.toHaveBeenCalled();
+    // Nor when the manager could not be reached at all (its error is not a port conflict).
+    const unreachable = await runAssistantHealthCheck(deps({
+      environment: async () => { throw new Error('模拟器管理器未就绪'); },
+      adbServer: async () => { throw new Error('模拟器管理器未就绪'); },
+    }));
+    const skipped = unreachable.items.find((item) => item.key === 'adbServer')!;
+    expect(skipped).toMatchObject({ level: 'warn', ok: true, group: 'environment' });
+    expect(skipped.detail).not.toContain('5037');
+    expect(skipped.hint).toBeUndefined();
   });
 
   it('times a hanging probe out instead of waiting forever', async () => {

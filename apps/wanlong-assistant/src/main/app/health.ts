@@ -151,8 +151,12 @@ export async function runAssistantHealthCheck(deps: HealthDeps): Promise<HealthR
 
   if (deps.adbServer) {
     const adbServer = deps.adbServer;
-    const adbMissing = items.some((entry) => entry.key === 'env:adb' && entry.level === 'fail');
-    items.push(adbMissing
+    const failed = (key: string) => items.some((entry) => entry.key === key && entry.level === 'fail');
+    // Original checkAdbServer only ran against a resolvable adb: when the manager itself is unreachable the probe
+    // would fail with the manager's error and send the user after a 5037 conflict that does not exist.
+    items.push(failed('env:manager')
+      ? item('adbServer', ADB_SERVER_LABEL, 'warn', '无法检查：先解决上面的「模拟器管理器」一项', undefined, 'environment')
+      : failed('env:adb')
       ? item('adbServer', ADB_SERVER_LABEL, 'fail', 'adb 不可用，先解决上面的「adb」一项', undefined, 'environment')
       : await settle('adbServer', ADB_SERVER_LABEL, HEALTH_ADB_SERVER_TIMEOUT_MS, ADB_SERVER_HINT, async () => {
         try { await adbServer(); }

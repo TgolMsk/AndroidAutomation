@@ -15,7 +15,7 @@ import { DeviceTools } from './app/device-tools';
 import { AppHealth, runAssistantHealthCheck, type HealthTemplateTarget } from './app/health';
 import { instanceAccess, readLeaseOwner, readLeaseOwners } from './app/instance-access';
 import { rememberingCodec, SecretMemory } from './app/log-secrets';
-import { InstanceOccupancy } from './app/occupancy';
+import { InstanceOccupancy, perInstanceSource } from './app/occupancy';
 import { configuredSettingsIndices, listInstanceTemplateSets } from './app/paths';
 import { AppSettingsStore } from './app/settings-store';
 import { announceHealth, announceServiceFailures } from './app/startup';
@@ -63,6 +63,11 @@ bootstrapApp({
     /** Services that talk to devices get this host: every adb call runs on its instance's lane (read-only paths too). */
     const deviceHost = deviceLanes.host(services.host);
     const deviceTools = new DeviceTools(deviceHost);
+    /** Script matching defaults from the app settings (script runs and 「测试模板」 use the same pair). */
+    const matchDefaults = (): { threshold: number; shrink: number } => {
+      const settings = appSettings.get();
+      return { threshold: settings.matchThreshold, shrink: settings.shrink };
+    };
 
     // ── insights (stats / notifications) ──
     const insights = new InsightsService(home, { codec: rememberingCodec(safeStorageCodec, logSecrets) });
@@ -81,6 +86,8 @@ bootstrapApp({
       onScheduleStop: (gameId, index, count) => insights.recordScheduleStop(gameId, index, count),
       automationReadiness: (gameId, index) => accounts.readiness(gameId, index),
       onSchedulePause: (gameId, index, reason) => insights.recordSchedulePause(gameId, index, reason),
+      // 「测试模板」 hits or misses exactly as a script run would (same threshold / shrink as the script worker).
+      matchDefaults,
     });
     // Template edits (save / delete / import) make compiled templates stale: tell the renderer; cache owners
     // (vision workers, sampler, resources, AI harvest) subscribe through automation.onTemplatesChanged too.
@@ -147,11 +154,7 @@ bootstrapApp({
       // and the matching defaults (threshold of templates without their own, downsampling factor) handed to the
       // script worker. Awaiting `ready` keeps a run started right after launch off the built-in defaults.
       shotPolicy: async () => { await appSettings.ready; return appSettings.get().shotPolicy; },
-      matchDefaults: async () => {
-        await appSettings.ready;
-        const settings = appSettings.get();
-        return { threshold: settings.matchThreshold, shrink: settings.shrink };
-      },
+      matchDefaults: async () => { await appSettings.ready; return matchDefaults(); },
     }, scriptRunner);
 
     // ── monitoring (failure / freeze / kicked detection) ──
@@ -209,8 +212,11 @@ bootstrapApp({
       .map((run) => ({ index: run.index, label: run.status === 'stopping' ? '停止采集' : '运行采集', source: 'gather', blocking: true })));
     occupancy.register('schedule', async () => (await automation.schedules()).filter((item) => item.enabled)
       .map((item) => ({ index: item.index, label: '自动采集已开启', source: 'schedule', blocking: false })));
-    occupancy.register('plans', async (index) => (await knownIndices(index)).filter((i) => plans.isActiveForInstance(i))
-      .map((i) => ({ index: i, label: '运行脚本计划', source: 'plans', blocking: true })));
+    occupancy.register('plans', perInstanceSource(knownIndices, (i) => plans.isActiveForInstance(i),
+      { label: '运行脚本计划', source: 'plans', blocking: true }));
+    // Standing automation, like an enabled gather schedule: stopping the instance only needs a confirmation.
+    occupancy.register('planSchedule', perInstanceSource(knownIndices, (i) => plans.hasEnabledPlanForInstance('wanlong', i),
+      { label: '已启用脚本计划', source: 'plans', blocking: false }));
     occupancy.register('login', async (index) => (await knownIndices(index)).flatMap((i) => {
       const session = accounts.loginSession(i);
       return session && loginActive(session.phase) ? [{ index: i, label: '进行账号登录', source: 'login', blocking: true }] : [];

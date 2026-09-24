@@ -13,6 +13,8 @@ export interface TemplateTestJob {
   image: Uint8Array;
   roi?: Rect;
   threshold?: number;
+  /** Downsampling factor (app settings `shrink`, as for script matching) for frame and template; the vision default when absent. */
+  shrink?: number;
 }
 
 /** Full coverage check: compile every template of the set the way the gather flow does (glyphs at shrink 1). */
@@ -87,8 +89,8 @@ export async function runTemplateJob(job: TemplateJob): Promise<TemplateJobOutpu
       const diff = await buildDiffAlpha(job.frames, job.crop, { tolerance: job.tolerance });
       return { ok: true, kind: 'diffAlpha', alphaPng: diff.alphaPng, coverage: diff.coverage };
     }
-    const frame = await prepareFrame(job.frame, { refWidth: job.set.refWidth, refHeight: job.set.refHeight });
-    const template = await prepareTemplate(job.image, job.definition, job.set);
+    const template = await prepareTemplate(job.image, job.definition, job.set, job.shrink);
+    const frame = await prepareFrame(job.frame, { refWidth: job.set.refWidth, refHeight: job.set.refHeight, shrink: template.shrink });
     const match = await matchTemplate(frame, template, { roi: job.roi, threshold: job.threshold });
     return { ok: true, kind: 'test', match };
   } catch (error) {

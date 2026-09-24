@@ -150,13 +150,13 @@ describe('PlanService integration with fake device', () => {
     expect(service.isActiveForInstance(1)).toBe(false);
   });
 
-  it('labels the instance lease and applies the settings shot policy to the worker (per-step shots only under 「每步都留痕」)', async () => {
+  it('labels the instance lease and writes explicit screenshot steps whatever the shot policy (per-step shots only under 「每步都留痕」)', async () => {
     let owner: LeaseOwner | null = null;
     const { service, port, home } = await setup(() => false, async () => { owner = await readLeaseOwner(home, 1); });
     let policy: 'never' | 'always' = 'never';
     port.shotPolicy = () => policy;
     await service.saveScript(GAME, { ...script, steps: [
-      { id: 'tap-1', kind: 'tap', at: { x: 50, y: 50 } },
+      { id: 'tap-1', kind: 'tap', at: { x: 50, y: 50 }, capture: true },
       { id: 'shot-1', kind: 'screenshot', label: 'scene' },
     ] });
     const shotsOf = (runId: string) => readdir(path.join(home, 'automation', 'games', GAME, 'runs', runId, 'shots')).catch(() => [] as string[]);
@@ -167,8 +167,9 @@ describe('PlanService integration with fake device', () => {
     const quiet = await service.runNow(GAME, ACCOUNT, 'task-1');
     await finished(quiet.runId);
     expect(owner).toMatchObject({ label: '运行脚本计划', pid: process.pid });
-    // A screenshot step is an explicit request: kept even under 「不留痕」 (original worker/actions.ts).
-    expect(await shotsOf(quiet.runId)).toEqual(['0001-scene.jpg']);
+    // Original worker/actions.ts: a screenshot step (and step.capture === true) is saved even under 「不留痕」;
+    // the port has no shot-policy hook for them at all (the engine decides from the run's policy).
+    expect(await shotsOf(quiet.runId)).toEqual(['0001-tap-1-ok.jpg', '0002-scene.jpg']);
     policy = 'always';
     const traced = await service.runNow(GAME, ACCOUNT, 'task-1');
     await finished(traced.runId);

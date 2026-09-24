@@ -9,7 +9,7 @@ import {
 } from '../src/main/app/instance-access';
 import { DeviceLaneCancelledError } from '../src/main/device/lane';
 import { WANLONG_ERROR_CODES, isRetryLaterCode } from '../src/shared/errors';
-import { InstanceOccupancy } from '../src/main/app/occupancy';
+import { InstanceOccupancy, perInstanceSource } from '../src/main/app/occupancy';
 import { describeOccupancy, lifecycleConfirmation, lifecycleNeedsConfirm } from '../src/shared/occupancy';
 import type { OccupancyHolder } from '../src/shared/ipc';
 
@@ -208,6 +208,27 @@ describe('InstanceOccupancy (who is using an instance)', () => {
     occupancy.register('plans', source);
     expect(await occupancy.holders(6)).toEqual([{ index: 6, label: '运行脚本计划', source: 'plans', blocking: true }]);
     expect(source).toHaveBeenCalledWith(6);
+  });
+
+  it('asks before stopping an instance with enabled script plans, as for an enabled gather schedule', async () => {
+    const enabledPlans = new Set([2]);
+    const test = vi.fn(async (index: number) => enabledPlans.has(index));
+    const occupancy = new InstanceOccupancy();
+    occupancy.register('planSchedule', perInstanceSource(async (index) => (index === undefined ? [1, 2, 3] : [index]), test,
+      { label: '已启用脚本计划', source: 'plans', blocking: false }));
+    occupancy.register('schedule', () => [schedule]);
+    const planned: OccupancyHolder = { index: 2, label: '已启用脚本计划', source: 'plans', blocking: false };
+    expect(await occupancy.holders(2)).toEqual([planned]);
+    expect(test).toHaveBeenCalledTimes(1);
+    expect(await occupancy.holders(3)).toEqual([]);
+    expect(await occupancy.all()).toEqual(expect.arrayContaining([planned, schedule]));
+    // Standing automation never blocks the update gate …
+    expect(await occupancy.anyBusy()).toBeNull();
+    // … but stop / restart / remove ask the same way for both kinds.
+    for (const holders of [[planned], [{ ...schedule, index: 2 }]]) {
+      expect(lifecycleNeedsConfirm('stop', holders)).toBe(true);
+      expect(lifecycleConfirmation('remove', [2], holders)).toMatchObject({ needed: true, warning: expect.stringContaining('开启了自动化') });
+    }
   });
 
   it('makes the update gate wait for a lease held by another assistant process', async () => {

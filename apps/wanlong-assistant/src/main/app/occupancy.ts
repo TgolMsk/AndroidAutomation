@@ -8,6 +8,22 @@ import type { InstanceAccess, LeaseOwner } from './instance-access';
  */
 export type OccupancySource = (index?: number) => readonly OccupancyHolder[] | Promise<readonly OccupancyHolder[]>;
 
+/**
+ * A source for services that can only answer one instance at a time: `test(i)` for every index `indices(index)`
+ * yields (just `index` when the guard asks about one instance), each hit becoming `holder` on that instance.
+ */
+export function perInstanceSource(
+  indices: (index?: number) => Promise<readonly number[]>,
+  test: (index: number) => boolean | Promise<boolean>,
+  holder: Omit<OccupancyHolder, 'index'>,
+): OccupancySource {
+  return async (index) => {
+    const list = await indices(index);
+    const hits = await Promise.all(list.map(async (i) => ((await test(i)) ? i : null)));
+    return hits.filter((i): i is number => i !== null).map((i) => ({ ...holder, index: i }));
+  };
+}
+
 export interface OccupancyOptions {
   /** The in-process occupancy table (always consulted, reported as source `access`). */
   access?: Pick<InstanceAccess, 'holders'>;

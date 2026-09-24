@@ -63,6 +63,11 @@ export interface AutomationHostHooks {
   automationReadiness?: (gameId: string, index: number) => Promise<{ ready: boolean; reason?: string }>;
   /** A scheduled wake the accounts gate refused: the schedule is paused (not a failure) and `reason` is user-facing. */
   onSchedulePause?: (gameId: string, index: number, reason: string) => Promise<void>;
+  /**
+   * App settings defaults for script matching (threshold of templates without their own, downsampling factor).
+   * 「测试模板」 uses the same values so a test hits or misses exactly as a script run would (original matchOnce).
+   */
+  matchDefaults?: () => { threshold: number; shrink: number };
 }
 
 interface ActiveAutomationRun {
@@ -255,12 +260,18 @@ export class AutomationHost {
   async testTemplate(gameId: string, index: number, id: string, options: TemplateTestOptions = {}): Promise<TemplateTestResult> {
     const set = await this.templateSet(gameId, index);
     if (!set) throw new Error('请先选择或创建模板集');
-    const definition = set.templates.find((item) => item.id === id);
-    if (!definition) throw new AppError('TEMPLATE_NOT_FOUND', `模板集「${set.name}」里没有 id 为 ${id} 的模板`);
+    const stored = set.templates.find((item) => item.id === id);
+    if (!stored) throw new AppError('TEMPLATE_NOT_FOUND', `模板集「${set.name}」里没有 id 为 ${id} 的模板`);
     const [{ frame, foregroundPackage }, image] = await Promise.all([
       this.captureReadOnly(gameId, index), this.templates.image(set.directory, id),
     ]);
-    const output = await this.runTemplateJob({ kind: 'test', frame, set, definition, image, roi: options.roi, threshold: options.threshold });
+    // Same values as a script run (original matchOnce): the settings threshold for templates without their own and the
+    // settings shrink; a threshold typed into the test itself still wins.
+    const defaults = this.hooks.matchDefaults?.();
+    const definition = defaults && stored.threshold === undefined ? { ...stored, threshold: defaults.threshold } : stored;
+    const output = await this.runTemplateJob({
+      kind: 'test', frame, set, definition, image, roi: options.roi, threshold: options.threshold, ...(defaults ? { shrink: defaults.shrink } : {}),
+    });
     if (output.kind !== 'test') throw new Error('模板测试未返回结果');
     const png = await rawFrameToPng(frame);
     return { match: output.match, preview: { png, width: frame.width, height: frame.height, capturedAt: frame.capturedAt, foregroundPackage } };

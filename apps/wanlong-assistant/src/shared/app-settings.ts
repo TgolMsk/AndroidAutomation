@@ -8,7 +8,11 @@
  * polling interval map to core settings shared with the desktop manager (`maxRunning`, `healthIntervalSec`).
  */
 
-/** Which screenshots are kept on disk (script screenshot steps, alert evidence; gather failure scenes once wired). */
+/**
+ * Which screenshots are kept on disk: alert evidence, the script engine's failed-step shots and 「每步都留痕」 step
+ * shots (default of runs that chose no policy); gather scenes once wired. Explicit script screenshots are not
+ * governed by it: see `keepShot`.
+ */
 export type ShotPolicy = 'never' | 'onFail' | 'always';
 
 /** Lowest level written to the persistent app log; warn and error are always kept (packaged apps have no console). */
@@ -145,43 +149,15 @@ export function mergeAppSettings(current: AppSettings, patch: unknown): AppSetti
 
 /**
  * Whether a screenshot is kept under `policy`. `failure` = a failure scene (gather failure, alert evidence, a failed
- * script step); `process` = routine step evidence; `requested` = a shot the user explicitly asked for (bot /shot,
- * a script `shot` action), which only `never` suppresses.
+ * script step unless the step says `capture: false`); `process` = routine evidence (a success shot after every script
+ * step without its own `capture`, gather process shots); `requested` = the disk copy of a shot the user asked for from
+ * outside a script (the bot's /shot), which only `never` suppresses.
+ *
+ * A script's own `screenshot` step and `capture: true` never ask: the original saved them under every policy
+ * (worker/actions.ts, worker/engine.ts).
  */
 export function keepShot(policy: ShotPolicy, kind: 'failure' | 'process' | 'requested'): boolean {
   if (policy === 'never') return false;
   if (policy === 'always') return true;
   return kind !== 'process';
-}
-
-/** Original AppSettings keys that have no counterpart here, with the reason shown to the user on import. */
-const LEGACY_DROPPED: Readonly<Record<string, string>> = {
-  emulator: '模拟器种类由多开管理器（AVD）决定',
-  adbPath: 'adb 由多开管理器的 SDK 提供',
-  mumutoolPath: '模拟器命令行工具由多开管理器的 SDK 提供',
-  dataDir: '数据目录固定为 AVDM_HOME',
-  refWidth: '参考分辨率由游戏模块与模板集决定',
-  refHeight: '参考分辨率由游戏模块与模板集决定',
-  maxConcurrentInstances: '同时运行实例上限与多开管理器共用，请在「设置 → 模拟器参数」里手动确认',
-  instancePollIntervalMs: '实例状态轮询间隔与多开管理器共用，请在「设置 → 模拟器参数」里手动确认',
-};
-
-/**
- * Values worth carrying over from the original panel's `settings.json` (explicit 「导入旧版数据」 only, never
- * automatic): the fields that still exist and are valid here. Everything else is listed in `ignored` with a reason.
- */
-export function legacyAppSettingsPatch(raw: unknown): { patch: Partial<AppSettings>; ignored: string[] } {
-  if (!isRecord(raw)) return { patch: {}, ignored: ['旧版设置文件不是 JSON 对象'] };
-  const patch: Record<string, unknown> = {};
-  const ignored: string[] = [];
-  for (const [key, value] of Object.entries(raw)) {
-    if ((APP_SETTINGS_KEYS as readonly string[]).includes(key)) {
-      const problem = appSettingProblem(key as keyof AppSettings, value);
-      if (problem) ignored.push(`${key}：${problem}`);
-      else patch[key] = value;
-    } else if (key in LEGACY_DROPPED) {
-      ignored.push(`${key}：${LEGACY_DROPPED[key]}`);
-    }
-  }
-  return { patch: patch as Partial<AppSettings>, ignored };
 }

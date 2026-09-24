@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppSettingsStore } from '../src/main/app/settings-store';
 import {
-  APP_SETTINGS_KEYS, defaultAppSettings, keepShot, legacyAppSettingsPatch, mergeAppSettings, parseStoredAppSettings, type AppSettings,
+  APP_SETTINGS_KEYS, defaultAppSettings, keepShot, mergeAppSettings, parseStoredAppSettings, type AppSettings,
 } from '../src/shared/app-settings';
 
 let home: string;
@@ -48,21 +48,6 @@ describe('app settings defaults and validation (shared, pure)', () => {
     expect(() => mergeAppSettings(base, { shotPolicy: 'sometimes' })).toThrow('截图留痕策略');
     expect(() => mergeAppSettings(base, { locale: 'en' })).toThrow('界面语言目前只支持简体中文');
     expect(() => mergeAppSettings(base, null)).toThrow('应用设置无效');
-  });
-
-  it('carries over only the still-meaningful fields of the original panel settings (explicit import)', () => {
-    const original = {
-      emulator: 'mumu', adbPath: 'D:\\tool\\MuMuPlayer\\nx_main\\adb.exe', mumutoolPath: '', dataDir: 'D:\\wl', refWidth: 2560, refHeight: 1440,
-      shrink: 2, matchThreshold: 0.9, maxConcurrentInstances: 4, minCaptureIntervalMs: 100, shotPolicy: 'always',
-      instancePollIntervalMs: 3000, locale: 'zh-CN',
-    };
-    const { patch, ignored } = legacyAppSettingsPatch(original);
-    expect(patch).toEqual({ shrink: 2, matchThreshold: 0.9, shotPolicy: 'always', locale: 'zh-CN' });
-    expect(ignored).toContain('minCaptureIntervalMs：单实例最小截图间隔必须是 200 到 5000 毫秒的整数');
-    expect(ignored.some((line) => line.startsWith('maxConcurrentInstances：') && line.includes('手动确认'))).toBe(true);
-    expect(ignored.some((line) => line.startsWith('adbPath：'))).toBe(true);
-    expect(mergeAppSettings(defaultAppSettings(), patch)).toMatchObject(patch);
-    expect(legacyAppSettingsPatch('x')).toEqual({ patch: {}, ignored: ['旧版设置文件不是 JSON 对象'] });
   });
 
   it('decides which screenshots are kept by the shot policy', () => {

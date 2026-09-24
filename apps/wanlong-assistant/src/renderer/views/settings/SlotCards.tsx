@@ -1,6 +1,7 @@
 /**
- * Mount points for settings that other modules own. Each one says where the setting lives today and links there;
- * the owning module replaces its entry in `cards.ts` with its own card component (one line, no other edit).
+ * Mount points for settings that other modules own. Each one says only what exists in this build and where it
+ * lives, and links there; the owning module replaces its entry in `cards.ts` with its own card component (one
+ * line, no other edit) and describes its new switches there.
  */
 import { useEffect, useState } from 'react';
 import { avdm } from '../../api';
@@ -38,7 +39,7 @@ export function BotSlotCard() {
   return (
     <SlotCard
       title="机器人" icon="terminal"
-      lines={['Telegram 机器人（查看状态、截图）的开关、Chat ID 与授权用户 ID 在「数据统计」页的通知设置里。', '暂停、恢复、重新拉起等控制类动作默认关闭，需要显式开启。']}
+      lines={['Telegram 只读机器人的开关、Chat ID 与授权用户 ID 在「数据统计」页的通知设置里。', '目前只能查看：/status 看实例状态，/shot <编号> 取当前游戏画面。']}
       link={{ label: '前往数据统计', view: 'stats' }}
     />
   );
@@ -49,7 +50,7 @@ export function AiSlotCard() {
   return (
     <SlotCard
       title="AI 处理" icon="chip"
-      lines={['视觉大模型接口、限频与冷却、处理记录都在「AI 处理」页。', '自动点击关闭弹窗与模板自学习默认关闭；关着时只记录建议。']}
+      lines={['视觉模型接口、每小时请求上限与同实例冷却、分析记录都在「AI 处理」页。', '目前 AI 只给建议与风险判断，点击和保存模板都由你决定。']}
       link={{ label: '前往 AI 处理', view: 'ai' }}
     />
   );
@@ -76,7 +77,7 @@ export function LegacyImportSlotCard() {
   return (
     <SlotCard
       title="导入旧版数据" icon="package"
-      lines={['原万龙面板的脚本与任务计划：在「脚本与模板 → 脚本」页使用「导入旧版」。', '导入的自动化一律默认关闭；凭据类配置需确认后才会加密保存。']}
+      lines={['原万龙面板的脚本：在「脚本与模板 → 脚本」页用「导入旧脚本 JSON」，导入后逐条校验、不会自动执行。', '原万龙面板的任务计划：在「运行记录 → 任务计划」页用「导入旧 plans.json」映射到当前账号，导入的计划默认关闭。']}
       link={{ label: '前往脚本', view: 'scripts' }}
     />
   );
