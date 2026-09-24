@@ -1,0 +1,142 @@
+/* 设置 → Telegram 机器人测试卡片（原版 features/bot/bot.css）。Tokens only; every class starts with `bot-`. */
+
+.bot-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.bot-note,
+.bot-muted {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.bot-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.bot-quick,
+.bot-form,
+.bot-tags,
+.bot-keyboard-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bot-form {
+  align-items: flex-end;
+}
+
+.bot-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.bot-field select {
+  min-width: 200px;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.bot-field select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.bot-error {
+  margin: 0;
+  color: var(--red);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+/* The reply: photo, caption, text and buttons as the phone gets them. */
+.bot-result {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  min-width: 0;
+}
+
+.bot-result-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.bot-photo {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.bot-photo-img {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.bot-photo figcaption {
+  display: grid;
+  gap: 4px;
+}
+
+.bot-caption,
+.bot-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.bot-caption {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* The bot's reply text: monospace, line breaks kept — exactly what the phone shows. */
+.bot-text {
+  max-height: 360px;
+  overflow: auto;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.bot-keyboard {
+  display: grid;
+  gap: 6px;
+}

@@ -269,14 +269,17 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
         </section>
 
         <section className="alerts-section" aria-label="手机机器人">
-          <h3 className="alerts-section-title">手机机器人<small>只响应上面的 Chat ID 与下面的授权用户</small></h3>
-          <SwitchRow title="允许手机查看状态与截图" help="在授权会话里用 /status 查看实例状态，/shot 1 取实例 #1 的当前游戏画面。默认关闭。"
+          <h3 className="alerts-section-title">手机机器人<small>只响应上面的 Chat ID 与下面的授权用户 · {view.remoteControlAvailable ? '机器人运行中' : '机器人未运行'}</small></h3>
+          <SwitchRow title="允许手机查看状态与截图"
+            help={<>在授权会话里用底部菜单或命令查看：/status 实例状态、/accounts 账号列表、/stats 今日统计、/shot 1 取实例 #1 的当前画面（前台不是游戏也照拍并注明，
+              方便看是不是崩到了桌面）。截图会把游戏画面发到 Telegram 的服务器上。默认关闭。</>}
             checked={draft.telegram.remoteReadOnlyEnabled} disabled={disabled} onChange={(remoteReadOnlyEnabled) => change({ remoteReadOnlyEnabled })} />
           <SwitchRow
-            title={view.remoteControlAvailable ? '允许手机远程操作' : '允许手机远程操作（机器人模块接入后生效）'}
-            help={view.remoteControlAvailable
-              ? '打开后，会暂停任务的告警消息下面带「恢复自动调度」「重启游戏并恢复」「查看状态」按钮，由机器人执行、只认授权用户。默认关闭；它不会顺带打开上面的查看状态与截图。'
-              : '这一版还没有处理这些按钮的机器人：打开也不会在告警消息下面附加任何按钮，也不会顺带打开上面的查看状态与截图。默认关闭。'}
+            title="允许手机远程操作"
+            help={<>打开后，授权用户可以在手机上<strong>真的操作这台电脑上的模拟器</strong>：/pause、/resume 关开自动调度；/relaunch 点掉顶号 / 断线弹窗、
+              用 monkey 重启游戏后恢复调度；/resources 进游戏「道具 → 资源统计」读表再退回主界面；会暂停任务的告警消息下面也会带「恢复自动调度」
+              「重启游戏并恢复」按钮。风险：拿到你 Telegram 账号的人也能做这些事；对方设备还在线时远程恢复会再次被顶号。点击只在模板命中弹窗时才发生，
+              采集脚本、登录正在占用实例时会被拒绝。默认关闭；它不会顺带打开上面的查看状态与截图。</>}
             checked={draft.telegram.remoteControlEnabled} disabled={disabled} onChange={(remoteControlEnabled) => change({ remoteControlEnabled })}
           />
           <label className="alerts-field">
@@ -286,7 +289,7 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
           </label>
           {botProblems.length > 0 && <ul className="alerts-problems">{botProblems.map((problem) => <li key={problem}>{problem}</li>)}</ul>}
           <div className="alerts-actions">
-            <button type="button" className="btn sm" disabled={disabled || dirty || !view.telegram.remoteReadOnlyEnabled} onClick={() => void testBot()}>{busy === 'bot' ? <Spinner size={12} /> : <Icon name="external" size={14} />}测试机器人连接</button>
+            <button type="button" className="btn sm" disabled={disabled || dirty || (!view.telegram.remoteReadOnlyEnabled && !view.telegram.remoteControlEnabled)} onClick={() => void testBot()}>{busy === 'bot' ? <Spinner size={12} /> : <Icon name="external" size={14} />}测试机器人连接</button>
             {dirty && <span className="alerts-help">先保存再测试。</span>}
           </div>
         </section>

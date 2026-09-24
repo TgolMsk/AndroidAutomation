@@ -151,7 +151,11 @@ export class TelegramNotifier {
     const problems = validateTelegramConfig(cfg);
     if (problems.length > 0) return skippedNotifyResult('telegram', 'notConfigured', problems.join('；'), this.now());
     const body = note ? `${renderAlertText(event)}\n${note}` : renderAlertText(event);
-    const keyboard = buildAlertKeyboard(event, { remoteControlEnabled: cfg.remoteControlEnabled && (this.deps.controlHandled?.() ?? false) });
+    // Buttons only while a bot in this process answers them, and only the ones its switches allow.
+    const handled = this.deps.controlHandled?.() ?? false;
+    const keyboard = buildAlertKeyboard(event, {
+      remoteControlEnabled: cfg.remoteControlEnabled && handled, remoteReadOnlyEnabled: cfg.remoteReadOnlyEnabled && handled,
+    });
     return this.postWithRetry('sendMessage', () => textPayload(cfg.chatId.trim(), body, keyboard), cfg);
   }
 

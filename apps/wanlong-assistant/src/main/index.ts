@@ -28,7 +28,7 @@ import { broadcast, setBroadcastLogSink } from './events';
 import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
 import { AlertsService, createAvdFreezeRecoveryIo, KICKED_TEMPLATE_IDS, ledgerAlertOf, safeStorageCodec } from './alerts';
-import { ReadOnlyTelegramBot } from './monitoring';
+import { BotService } from './bot';
 import { ShotStore } from './scheduler/shots';
 import { PlanService, ScriptRunner } from './plans';
 import { ResourcesService } from './resources/service';
@@ -249,7 +249,7 @@ bootstrapApp({
       onRaised: (record) => broadcast('alert-raised', record),
       onConfigChanged: (view) => {
         broadcast('alert-config-changed', view);
-        void remoteBot.restart().catch((error: unknown) => alertLog.warn(`只读机器人按新配置重启失败：${describeThrown(error)}`));
+        void remoteBot.restart().catch((error: unknown) => alertLog.warn(`机器人按新配置重启失败：${describeThrown(error)}`));
       },
       gamePackage: wanlongPackage,
     });
@@ -321,20 +321,51 @@ bootstrapApp({
     scriptRunner.setAiAssist((request) => aiRecovery.assistScript(request));
 
     // ── bot (Telegram) ──
-    const remoteBot = new ReadOnlyTelegramBot({
-      config: () => alerts.hub.readOnlyBotConfig(),
-      async statuses() {
-        const [states, schedules] = await Promise.all([
-          (await services.host.get()).list(), automation.schedules(),
-        ]);
+    // Buttons and commands on the phone (see src/main/bot/README.md). ★ Read actions need 「允许手机查看状态与截图」, control
+    // actions 「允许手机远程操作」 (both default off); only the configured Chat ID AND the authorized user are served.
+    // Device actions run inside the scheduler's instance lock; resume runs outside it. Statistics / resource-table
+    // ports are plugged in by that module's section with `remoteBot.setPorts({ readResources, dailyStatsText })`.
+    const botLog = appLog.scoped('bot');
+    const remoteBot: BotService = new BotService({
+      home,
+      gamePackage: wanlongPackage,
+      referenceSize: gamePlugin('wanlong').referenceSize ?? { width: 2560, height: 1440 },
+      config: async () => { await alerts.hub.ready; return alerts.hub.currentTelegramConfig(); },
+      accounts: async () => (await accounts.list('wanlong')).map((account) => ({
+        name: account.name, enabled: account.enabled, binding: account.binding, loginReady: account.login.status === 'ready',
+      })),
+      instances: async () => {
+        const [states, base] = await Promise.all([(await services.host.get()).list(), provisioner.baseIdentity('wanlong')]);
+        // ★ Only index / name / status / identity: an InstanceState carries a gRPC token.
         return states.map((state) => ({
-          index: state.record.index, name: state.record.name, instanceStatus: state.status,
-          automationStatus: schedules.some((item) => item.index === state.record.index && item.gameId === 'wanlong' && item.enabled)
-            ? '自动续跑中' : '未自动续跑',
+          index: state.record.index, name: state.record.name, status: state.status, createdAt: state.record.createdAt,
+          base: Boolean(base && base.index === state.record.index && base.createdAt === state.record.createdAt),
         }));
       },
-      screenshot: async (index) => (await automation.captureReadOnly('wanlong', index)).frame,
-      log: (message) => console.warn('[wanlong/bot]', message),
+      schedulerState: (index) => automation.eta.getState(index),
+      pauseOf: (index) => {
+        const pause = alerts.center.pauseInfo(index);
+        return { paused: pause !== null, reason: pause?.reason ?? null };
+      },
+      // Manual pause = the user's schedule switch (supersedes an enable still probing); no statistics event here.
+      pauseInstance: (index) => automation.setSchedule('wanlong', index, false),
+      // ★ Outside the lock. An alert pause is cleared by the alerts module (counters, cooldown, 「已恢复」 notice);
+      //   anything else goes through the user's schedule switch with its gates (readiness, first-enable probe).
+      resumeInstance: async (index) => {
+        if (alerts.center.isPaused(index)) return alerts.resume(index);
+        return automation.setSchedule('wanlong', index, true);
+      },
+      exclusive: (index, what, fn) => automation.eta.exclusive(index, what, fn),
+      manager: () => deviceHost.get(),
+      lane: (index, work) => deviceLanes.run(index, work),
+      matchTemplates: (index, raw, ids) => automation.matchTemplates(index, raw, ids),
+      shotPolicy: () => appSettings.get().shotPolicy,
+      log: (level, message, index) => botLog[level](message, undefined, index),
+      onStatus: (status) => {
+        // Alert buttons are attached only while this bot answers them.
+        alerts.hub.setRemoteControlHandler(status.running);
+        broadcast('bot-status', status);
+      },
     });
 
     // ── app (occupancy sources, self-check) ──
@@ -487,7 +518,7 @@ bootstrapApp({
           // After the scheduler restored its switches: close pauses of deleted / resumed instances, carry the rest.
           { name: '暂停状态核对', impact: '重启前的暂停可能多算或少算', run: () => stats.reconcilePauses() },
           { name: '脚本计划', impact: '定时脚本不会自动运行', run: () => plans.start('wanlong') },
-          { name: '只读机器人', impact: 'Telegram 机器人不会响应', run: () => remoteBot.start() },
+          { name: 'Telegram 机器人', impact: '手机上的机器人命令与告警消息下面的按钮不会响应', run: async () => { await remoteBot.start(); } },
           { name: '应用内更新', impact: '启动后不会自动检查新版本', run: () => updates.start() },
         ]);
         serviceHealth.report(failures);
@@ -500,7 +531,7 @@ bootstrapApp({
       async dispose() {
         await runServiceSteps('stop', [
           { name: '应用内更新', run: () => updates.dispose() },
-          { name: '只读机器人', run: () => remoteBot.stop() },
+          { name: 'Telegram 机器人', run: () => remoteBot.dispose() },
           // Aborts freeze restarts first (quitting must not wait minutes), then flushes pauses and pushes.
           { name: '异常告警', run: () => alerts.dispose() },
           { name: '脚本计划', run: () => plans.shutdown() },

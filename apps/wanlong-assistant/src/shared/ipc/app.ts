@@ -77,7 +77,7 @@ export interface AppLogQuery {
 export type AppPathKey =
   | 'home' | 'automation' | 'appSettings' | 'logs' | 'gatherSettings' | 'gatherState' | 'templates' | 'scripts'
   | 'plans' | 'scriptRuns' | 'gatherShots' | 'monitoringShots' | 'accounts' | 'insights' | 'advisor' | 'scheduler'
-  | 'leases';
+  | 'leases' | 'botShots';
 
 export interface AppPathEntry {
   key: AppPathKey;

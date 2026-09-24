@@ -985,23 +985,31 @@ export function parseAlertCallbackData(data: string): { action: AlertCallbackAct
 }
 
 /**
- * Buttons under a pushed alert, only while remote control is on and the event concerns a real instance: pausing
- * events get resume / relaunch / status, `instanceResumed` gets status; the test push gets none.
+ * Buttons under a pushed alert, only for a real instance and only the ones the phone may use: 「恢复」 and 「重启游戏」
+ * need remote control, 「查看状态」 needs the read-only switch (the bot refuses the rest, a dead button would only
+ * confuse). Pausing events get resume / relaunch / status, `instanceResumed` gets status; the test push gets none.
+ * `remoteReadOnlyEnabled` absent = follows `remoteControlEnabled` (the original's single switch).
  */
-export function buildAlertKeyboard(event: Pick<AlertEvent, 'type' | 'instanceIndex'>, cfg: Pick<TelegramConfig, 'remoteControlEnabled'>): AlertInlineKeyboard | undefined {
-  if (!cfg.remoteControlEnabled || event.instanceIndex < 0) return undefined;
+export function buildAlertKeyboard(
+  event: Pick<AlertEvent, 'type' | 'instanceIndex'>,
+  cfg: Pick<TelegramConfig, 'remoteControlEnabled'> & Partial<Pick<TelegramConfig, 'remoteReadOnlyEnabled'>>,
+): AlertInlineKeyboard | undefined {
+  if (event.instanceIndex < 0) return undefined;
+  const control = cfg.remoteControlEnabled;
+  const read = cfg.remoteReadOnlyEnabled ?? cfg.remoteControlEnabled;
   const i = event.instanceIndex;
+  const status = [{ text: '📊 查看状态', callback_data: alertCallbackData('status', i) }];
+  const rows: AlertInlineKeyboard['inline_keyboard'] = [];
   if (pausesInstance(event.type)) {
-    return {
-      inline_keyboard: [
-        [{ text: '▶️ 恢复自动调度', callback_data: alertCallbackData('resume', i) }],
-        [{ text: '🔁 重启游戏并恢复', callback_data: alertCallbackData('relaunch', i) }],
-        [{ text: '📊 查看状态', callback_data: alertCallbackData('status', i) }],
-      ],
-    };
+    if (control) {
+      rows.push([{ text: '▶️ 恢复自动调度', callback_data: alertCallbackData('resume', i) }]);
+      rows.push([{ text: '🔁 重启游戏并恢复', callback_data: alertCallbackData('relaunch', i) }]);
+    }
+    if (read) rows.push(status);
+  } else if (event.type === 'instanceResumed' && read) {
+    rows.push(status);
   }
-  if (event.type === 'instanceResumed') return { inline_keyboard: [[{ text: '📊 查看状态', callback_data: alertCallbackData('status', i) }]] };
-  return undefined;
+  return rows.length > 0 ? { inline_keyboard: rows } : undefined;
 }
 
 // ══════════════════════════════════════════════════════════════════════════

@@ -21,16 +21,6 @@ function SlotCard({ title, icon, lines, link }: {
   );
 }
 
-/** 机器人 (bot module). */
-export function BotSlotCard() {
-  return (
-    <SlotCard
-      title="机器人" icon="terminal"
-      lines={['机器人的开关、Chat ID 与授权用户 ID 在上面「通知与推送」卡片的「手机机器人」一节。', '目前只能查看：/status 看实例状态，/shot <编号> 取当前游戏画面。']}
-    />
-  );
-}
-
 /** 导入旧版数据 (legacy import module). */
 export function LegacyImportSlotCard() {
   return (

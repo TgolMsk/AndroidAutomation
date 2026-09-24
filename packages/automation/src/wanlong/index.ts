@@ -79,3 +79,9 @@ export type {
   FreezeRecoveryIo, FreezeRecoveryOptions, FreezeRecoveryResult, FreezeRecoveryStage, InstanceProbe,
 } from './freezeRecovery.js';
 export { FREEZE_RECOVERY_DEFAULTS, FREEZE_STAGE_TEXT, recoverFrozenInstance } from './freezeRecovery.js';
+
+// ── bot 模块：顶号 / 断线之后的游戏恢复序列（机器人「重启游戏并恢复」） ──
+export type { GameRecoveryIo, RecoverGameOptions, RecoverKickedHit, RefPoint } from './recoverGame.js';
+export {
+  RECOVER_GAME_DEFAULTS, RECOVER_KICKED_DIALOG, RECOVER_NETWORK_LOST, RECOVER_NOTHING_TO_DO, recoverGame,
+} from './recoverGame.js';

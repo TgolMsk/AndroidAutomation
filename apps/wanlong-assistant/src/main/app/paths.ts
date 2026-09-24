@@ -32,6 +32,10 @@ const PATH_SPECS: readonly PathSpec[] = [
   { key: 'scripts', label: '脚本库', kind: 'dir', segments: ['automation', 'games', '{game}', 'scripts'], description: '每个脚本一个 JSON 文件' },
   { key: 'plans', label: '任务计划', kind: 'file', segments: ['automation', 'games', '{game}', 'plans.json'], description: '计划表、运行记账与最近的执行记录' },
   { key: 'scriptRuns', label: '脚本执行记录', kind: 'dir', segments: ['automation', 'games', '{game}', 'runs'], description: '每次执行的事件日志与步骤截图' },
+  {
+    key: 'botShots', label: '机器人截图', kind: 'dir', segments: ['automation', '{game}', 'bot-shots'],
+    description: 'Telegram 机器人发出的截图留底（「不留痕」时不存；保留 14 天、最多 300 张）',
+  },
   { key: 'monitoringShots', label: '告警现场截图', kind: 'dir', segments: ['automation', 'monitoring', 'shots'], description: '掉线、卡死等告警的现场截图（保留 14 天）' },
   { key: 'accounts', label: '账号', kind: 'file', segments: ['automation', 'accounts.json'], description: '账号与实例绑定（不保存手机号与验证码）' },
   { key: 'insights', label: '数据统计与通知', kind: 'dir', segments: ['automation', 'insights'], description: '按北京日期分的统计日账与推送配置' },

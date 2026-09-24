@@ -19,12 +19,19 @@ import type {
   InsightAlertKind, NotificationConfigPatch, NotificationConfigView, NotificationTestResult, RemoteBotConfigPatch,
   RemoteBotConfigView,
 } from '../automation/insights/contracts';
-import type { ReadOnlyBotConfig } from '../monitoring/telegram-readonly';
 import { LocalNotifier, type ShowLocalNotification } from './local';
 import { AlertsConfigStore, type SecretCodec } from './store';
 import { TelegramNotifier, type FetchLike } from './telegram';
 
 export type AlertLogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+/** The read-only switch with its credentials (kept for the settings tests; the bot reads `currentTelegramConfig()`). */
+export interface ReadOnlyBotConfig {
+  enabled: boolean;
+  botToken: string;
+  chatId: string;
+  userId: string;
+}
 
 /** Shape-valid stand-in for a saved token that could not be decrypted (validation only; never sent). */
 const SHAPE_OK_PLACEHOLDER = '00000000:PLACEHOLDER_LOCAL_SHAPE_CHECK_ONLY';

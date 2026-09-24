@@ -1,20 +1,20 @@
 import type { InsightsApi } from '../../shared/ipc';
 import type { AlertsService } from '../alerts';
 import type { InsightsService } from '../automation/insights';
-import type { ReadOnlyTelegramBot } from '../monitoring';
+import type { BotService } from '../bot';
 import type { DomainHandlers } from './types';
 import { asIndex, game, optionalIndex, patchObject } from './validate';
 
 export interface InsightsServices {
   insights: InsightsService;
-  remoteBot: ReadOnlyTelegramBot;
+  remoteBot: BotService;
   /** Notification settings are global alerts settings now; these methods stay for compatibility. */
   alerts: AlertsService;
 }
 
-async function reloadBot(remoteBot: ReadOnlyTelegramBot): Promise<void> {
+async function reloadBot(remoteBot: BotService): Promise<void> {
   await remoteBot.restart().catch((error: unknown) =>
-    console.warn('[wanlong] 只读机器人重载失败', error instanceof Error ? error.message : String(error)));
+    console.warn('[wanlong] 机器人重载失败', error instanceof Error ? error.message : String(error)));
 }
 
 export const insightsHandlers: DomainHandlers<InsightsApi, InsightsServices> = {

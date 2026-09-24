@@ -60,8 +60,9 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
 - Bot Token 只以 **safeStorage 密文**存在 `automation/alerts/config.json`（原版是明文 `alerts.json`；这里沿用本仓库的钥匙串加固）。
 - 过 IPC 只送 `toAlertsConfigView()`（类型上就没有 `botToken` 键，打码为全遮 `••••••••`，连后 4 位都不给）。
 - 写日志只写 `redactAlertsConfig()`；每一处 `catch` 先 `scrubSecret(describeThrown(e), token)`；抓异常只取 message + cause，不取 stack。
-- 明文 Token 只有 `NotifyHub.currentTelegramConfig()` / `readOnlyBotConfig()` 两个出口，仅限主进程的机器人模块使用。
-  `readOnlyBotConfig()` 只看「允许手机查看状态与截图」（`remoteReadOnlyEnabled`）：远程操作开关绝不顺带打开 /status、/shot。
+- 明文 Token 只有 `NotifyHub.currentTelegramConfig()` / `readOnlyBotConfig()` 两个出口，仅限主进程使用；机器人模块
+  （`src/main/bot`）读 `currentTelegramConfig()`，按两个开关各管各的动作：查看类只看「允许手机查看状态与截图」，操作类只看
+  「允许手机远程操作」，远程操作开关绝不顺带打开 /status、/shot。
 - 改完推送相关代码必须跑 `test/alerts-telegram.test.ts`（含泄露实测：URL 塞进 message / cause / stack / 响应体 / 断流，扫结果、日志、视图、磁盘上每个文件）。
 
 ## 与原版的差异（及原因）
@@ -69,7 +70,7 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
 | 项 | 原版 | 这里 | 原因 |
 |---|---|---|---|
 | 卡死自动重启 | 默认开 | `freezeRestartEnabled` 默认**关**，关着时只推「疑似模拟器卡死」（每段卡死一次），采样连续失败仍按掉线暂停 | DECISIONS A.3：动模拟器的自动化必须显式开启 |
-| 远程控制按钮 | 默认开 | `remoteControlEnabled` / `remoteReadOnlyEnabled` 默认关，需授权用户 ID；各管各的（控制开关不会打开只读机器人）；按钮只在有机器人处理回调时才附加（`hub.setRemoteControlHandler(true)`，由机器人模块接入时调用；之前设置页标注「机器人模块接入后生效」） | DECISIONS A.3；没人处理的按钮在手机上会一直转圈 |
+| 远程控制按钮 | 默认开 | `remoteControlEnabled` / `remoteReadOnlyEnabled` 默认关，需授权用户 ID；各管各的（控制开关不会打开只读机器人）；按钮只在机器人正在运行时才附加（机器人启动 / 停止时调 `hub.setRemoteControlHandler(running)`），且只附加开关允许的那几个：「恢复 / 重启游戏」要远程操作，「查看状态」要查看开关 | DECISIONS A.3；没人处理的按钮在手机上会一直转圈 |
 | 恢复 | 任何实例都能 `resume` | 只恢复生效中的暂停，其余用中文拒绝 | 首次开启自动调度要走宿主的只读探针 + 确认门槛（DECISIONS C） |
 | 重启方式 | MuMu `control restart` / 雷电 `quit+launch` | `stop({ force: true })` + `start()`（SIGKILL 保留快照失效标记 → 冷启动） | DECISIONS C：Android Emulator 的 Quick Boot 会把卡住的现场存进快照 |
 | Token 存储 / 打码 | 明文 alerts.json / 显示后 4 位 | safeStorage 密文 / 全遮 | 本仓库原有的钥匙串加固，不回退 |

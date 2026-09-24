@@ -126,14 +126,21 @@ describe('Telegram channel (original section 三)', () => {
   });
 
   it('adds the remote-control buttons only when remote control is on AND a bot handles their callbacks', async () => {
-    await notifier([], { remoteControlEnabled: true }, tg.impl, true).send(sampleEvent());
-    const body = JSON.parse(tg.calls[0]!.body) as { reply_markup?: { inline_keyboard: Array<Array<{ callback_data: string }>> } };
-    expect(body.reply_markup?.inline_keyboard.flat().map((button) => button.callback_data)).toEqual(['resume:3', 'relaunch:3', 'status:3']);
-    // ★ No handler yet (the bot module is not wired): a button nobody answers would spin forever on the phone.
-    await notifier([], { remoteControlEnabled: true }, tg.impl, false).send(sampleEvent());
-    expect('reply_markup' in (JSON.parse(tg.calls[1]!.body) as Record<string, unknown>)).toBe(false);
+    const buttons = (call: number): string[] | undefined =>
+      (JSON.parse(tg.calls[call]!.body) as { reply_markup?: { inline_keyboard: Array<Array<{ callback_data: string }>> } })
+        .reply_markup?.inline_keyboard.flat().map((button) => button.callback_data);
+    await notifier([], { remoteControlEnabled: true, remoteReadOnlyEnabled: true }, tg.impl, true).send(sampleEvent());
+    expect(buttons(0)).toEqual(['resume:3', 'relaunch:3', 'status:3']);
+    // ★ No bot running: a button nobody answers would spin forever on the phone.
+    await notifier([], { remoteControlEnabled: true, remoteReadOnlyEnabled: true }, tg.impl, false).send(sampleEvent());
+    expect(buttons(1)).toBeUndefined();
     await notifier([], { remoteControlEnabled: false }, tg.impl, true).send(sampleEvent());
-    expect('reply_markup' in (JSON.parse(tg.calls[2]!.body) as Record<string, unknown>)).toBe(false);
+    expect(buttons(2)).toBeUndefined();
+    // Each switch attaches only its own buttons (the bot refuses the others).
+    await notifier([], { remoteControlEnabled: true, remoteReadOnlyEnabled: false }, tg.impl, true).send(sampleEvent());
+    expect(buttons(3)).toEqual(['resume:3', 'relaunch:3']);
+    await notifier([], { remoteControlEnabled: false, remoteReadOnlyEnabled: true }, tg.impl, true).send(sampleEvent());
+    expect(buttons(4)).toEqual(['status:3']);
   });
 
   it.each([401, 404])('HTTP %i is a bad token: guidance names @BotFather, one request only, attempts = 1', async (status) => {
