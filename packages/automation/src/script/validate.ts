@@ -490,10 +490,27 @@ export function referencedTemplateIds(script: Pick<ScriptDef, 'steps'>): string[
   return [...out];
 }
 
-/** Whether the first step that actually runs is a `launchApp` (a cold-start prologue may begin off-game). */
-export function startsWithLaunch(script: Pick<ScriptDef, 'steps'>): boolean {
-  const first = script.steps.find((step) => step.kind !== 'label' && step.kind !== 'log');
-  return first?.kind === 'launchApp' && first.when === undefined;
+/**
+ * Whether the script may begin with the game off-screen (a cold-start prologue): the first step that actually
+ * runs is a `launchApp`, or an `if` "the game is not in the foreground" whose then-branch starts that way (the
+ * keep-alive pattern). Input stays guarded by the host (foreground re-check before every input).
+ * `packageName` is the game package the foreground condition must name (default: the script's own).
+ */
+export function startsWithLaunch(script: Pick<ScriptDef, 'steps'> & { packageName?: string }, packageName?: string): boolean {
+  return blockStartsWithLaunch(script.steps, packageName ?? script.packageName);
+}
+
+function blockStartsWithLaunch(steps: readonly ScriptStep[], packageName: string | undefined): boolean {
+  const first = steps.find((step) => step.kind !== 'label' && step.kind !== 'log');
+  if (!first || first.when !== undefined) return false;
+  if (first.kind === 'launchApp') return true;
+  return first.kind === 'if' && !!packageName && gameMissing(first.cond, packageName) && blockStartsWithLaunch(first.then, packageName);
+}
+
+/** `not foreground(pkg)` or `foreground(pkg, equals: false)`. */
+function gameMissing(cond: Condition, packageName: string): boolean {
+  if (cond.kind === 'not') return cond.of.kind === 'foreground' && cond.of.packageName === packageName && (cond.of.equals ?? true);
+  return cond.kind === 'foreground' && cond.packageName === packageName && cond.equals === false;
 }
 
 /** Light metadata for lists. */

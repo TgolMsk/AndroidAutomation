@@ -33,7 +33,7 @@ export * from './script/runtime.js';
 export {
   validateScript, fatalIssues, blockingIssues, formatIssues, walkSteps, countSteps, referencedTemplateIds, startsWithLaunch,
   scriptMeta, interpolate, mergeParams, describeCondition, describeRect,
-  builtinScripts, getBuiltinScript, builtinScriptMetas, isBuiltinScriptId, BUILTIN_SCRIPT_PREFIX, SCRIPT_LIMITS, SCRIPT_ID,
+  builtinScripts, getBuiltinScript, builtinScriptMetas, isBuiltinScriptId, builtinCopyId, BUILTIN_SCRIPT_PREFIX, SCRIPT_LIMITS, SCRIPT_ID,
   LOG_LEVEL_ORDER, TERMINAL_RUN_STATUSES, SHOT_POLICIES,
 } from './script/index.js';
 export type {

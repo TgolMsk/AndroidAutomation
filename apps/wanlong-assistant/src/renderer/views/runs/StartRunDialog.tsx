@@ -62,7 +62,8 @@ export function StartRunDialog({ gameId, instances, busy, initialIndex, onStarte
   const [index, setIndex] = useState<number | null>(initialIndex);
   const [scriptId, setScriptId] = useState('');
   const [accountId, setAccountId] = useState('');
-  const [shotPolicy, setShotPolicy] = useState<ShotPolicy>('onFail');
+  // '' = follow the app setting (main resolves it); only an explicit choice is sent.
+  const [shotPolicy, setShotPolicy] = useState<ShotPolicy | ''>('');
   const [minutes, setMinutes] = useState('60');
   const [def, setDef] = useState<ScriptDef | null>(null);
   const [defError, setDefError] = useState<string | null>(null);
@@ -130,7 +131,7 @@ export function StartRunDialog({ gameId, instances, busy, initialIndex, onStarte
     setBusyAction('start');
     try {
       const snapshot = await avdm.scriptRun(gameId, index, scriptId, {
-        accountId: accountId || undefined, params, shotPolicy, maxRunMinutes: minutesValue,
+        accountId: accountId || undefined, params, ...(shotPolicy ? { shotPolicy } : {}), maxRunMinutes: minutesValue,
       });
       toast.push({ kind: 'success', title: '已启动执行', detail: `${snapshot.scriptName} → 实例 #${snapshot.instanceIndex}` });
       onStarted(snapshot);
@@ -189,7 +190,8 @@ export function StartRunDialog({ gameId, instances, busy, initialIndex, onStarte
         </label>
         <label className="field">
           <span className="field-label">截图留痕策略</span>
-          <select value={shotPolicy} onChange={(event) => setShotPolicy(event.target.value as ShotPolicy)}>
+          <select value={shotPolicy} onChange={(event) => setShotPolicy(event.target.value as ShotPolicy | '')}>
+            <option value="">跟随应用设置（默认）</option>
             {SHOT_POLICY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>

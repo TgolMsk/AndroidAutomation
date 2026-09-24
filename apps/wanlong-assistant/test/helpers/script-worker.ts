@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import sharp from 'sharp';
 import type { MatchResult, PreparedFrame, PreparedTemplate, RawFrame } from '@avdm/automation';
 import { attachScriptWorker, type ScriptWorkerDeps } from '../../src/main/plans/script-worker-core';
 import type { ScriptMainToWorker, ScriptWorkerLike, ScriptWorkerPort, ScriptWorkerToMain } from '../../src/main/plans/script-protocol';
@@ -92,4 +95,15 @@ export async function eventually(check: () => boolean | Promise<boolean>, timeou
     if (Date.now() > deadline) throw new Error('条件未在期限内满足');
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+/** A minimal template set directory (8×8 grey PNGs, reference 100×100) holding `ids`. */
+export async function writeTemplateSet(dir: string, ids: readonly string[], id = 'set'): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#808080' } }).png().toBuffer();
+  for (const templateId of ids) await writeFile(path.join(dir, `${templateId}.png`), png);
+  await writeFile(path.join(dir, 'manifest.json'), JSON.stringify({ id, name: 'S', refWidth: 100, refHeight: 100,
+    templates: ids.map((templateId) => ({ id: templateId, name: templateId, file: `${templateId}.png`, authoredWidth: 100, authoredHeight: 100,
+      bounds: { x: 0, y: 0, w: 8, h: 8 } })) }));
+  return dir;
 }

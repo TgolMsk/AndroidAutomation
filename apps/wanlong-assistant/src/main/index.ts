@@ -101,6 +101,8 @@ bootstrapApp({
       gatherScheduleEnabled: async (gameId, index) =>
         (await automation.schedules()).some((item) => item.gameId === gameId && item.index === index && item.enabled),
       onRun: (run) => broadcast('plan-run', { kind: 'plan', run }),
+      // shotPolicy: the app settings' default (DECISIONS C) — wire `() => appSettings.get().shotPolicy` here once
+      // the app-settings service is merged; until then runs without an explicit policy use 'onFail'.
     }, scriptRunner);
 
     // ── monitoring (failure / freeze / kicked detection) ──

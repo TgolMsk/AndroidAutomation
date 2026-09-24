@@ -6,13 +6,13 @@
 | 文件 | 内容 | 出口 |
 | --- | --- | --- |
 | `types.ts` | 16 种步骤、8 种条件、失败处置、参数定义、运行快照 / 统计、日志、AI 求助契约 | `@avdm/automation/script`（纯） |
-| `validate.ts` | 静态体检：致命错误（拒绝保存 / 读取）/ 普通错误（可存草稿、拒绝执行）/ 警告；`countSteps`、`referencedTemplateIds`、`startsWithLaunch` | 纯 |
+| `validate.ts` | 静态体检：致命错误（拒绝保存 / 读取）/ 普通错误（可存草稿、拒绝执行）/ 警告；`countSteps`、`referencedTemplateIds`、`startsWithLaunch`（首步是启动游戏，或「如果游戏不在前台 → 先启动游戏」的保活写法时，允许游戏不在前台就开跑） | 纯 |
 | `interpolate.ts` | `{{ key }}`（括号内可有空格，未知键原样保留）；`mergeParams`（脚本默认 < 账号 < 任务 < 临时请求） | 纯 |
 | `describe.ts` | `describeCondition` / `describeRect` 中文摘要 | 纯 |
-| `builtin.ts` | 两个只读示例（`builtin_` 前缀保留），按当前游戏包名生成 | 纯 |
+| `builtin.ts` | 两个只读示例（`builtin_` 前缀保留），按当前游戏包名生成；`builtinCopyId` 给「另存为」挑一个不重复的 id（`_copy`、`_copy2` …），绝不覆盖用户已改过的副本 | 纯 |
 | `context.ts` | `ScriptContext`：取帧（最小间隔 400ms + 0–120ms 抖动、同帧复用、并发共享、输入后作废）、三套坐标、模板匹配、前台 1 秒缓存、留痕、状态节流（≤4 次/秒）、匹配调试（≤3 批/秒） | 包根 |
 | `conditions.ts` / `actions.ts` | 同一帧上的条件求值（带中文原因）；动作原语（长按=一次 shell 的 motionevent，中文走端口的 inputText） | 包根 |
-| `engine.ts` | `ScriptEngine`：控制流不进重试 / onFail、嵌套失败终止整次运行、goto / loop 超限即失败、每块 20 万次、restartApp ≤10、步骤超时（超时的尝试不会再发输入）、脚本级循环、暂停在步骤边界、`maxRunMs`、`ExecutionGuardError` 绕过一切处置 | 包根 |
+| `engine.ts` | `ScriptEngine`：控制流不进重试 / onFail、嵌套失败终止整次运行、goto / loop 超限即失败、每块 20 万次、restartApp ≤10、步骤超时（超时的尝试不会再发输入）、脚本级循环、暂停在步骤边界、`maxRunMs`（停止 / 超时时不再等 AI 顾问）、`ExecutionGuardError` 绕过一切处置；开头日志里的文本参数只记字数（可能是账号、密码、验证码） | 包根 |
 | `logger.ts` | `RunLogger`：100ms 一批，缓冲上限 4000，溢出只报一次 | 包根 |
 | `shots.ts` | 留痕 = 最近一帧编码 JPEG（1280 宽 q72），绝不 `screencap -p` | 包根 |
 

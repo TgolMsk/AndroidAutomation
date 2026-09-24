@@ -6,10 +6,12 @@ import {
   startsWithLaunch, TERMINAL_RUN_STATUSES, type AiAssistResult, type LogEntry, type LogLevel, type RunSnapshot, type RunStatus,
   type ScriptDef, type ScriptParamValue, type ShotPolicy,
 } from '@avdm/automation/script';
+import { forwardedDeviceError, RunnerMessageError, safeErrorMessage } from './device-errors';
 import { imeBroadcastCommand, needsUnicodeInput, readImeStatus } from './ime';
 import { KEEP_RUNS, RunLogStore } from './run-logs';
-import type {
-  ScriptDeviceRequest, ScriptMainToWorker, ScriptWorkerInput, ScriptWorkerLike, ScriptWorkerToMain,
+import {
+  AI_CONSULT_TIMEOUT_MS, type ScriptDeviceRequest, type ScriptMainToWorker, type ScriptWorkerInput, type ScriptWorkerLike,
+  type ScriptWorkerToMain,
 } from './script-protocol';
 import type {
   RunLogsEvent, RunMatchesEvent, ScriptAiAssist, ScriptDevice, ScriptRunSnapshot, ScriptRunSource,
@@ -33,6 +35,13 @@ export interface ScriptRunnerOptions {
   aiAssist?: ScriptAiAssist | null;
   /** Graceful stop: time for the current step to finish before the thread is terminated. */
   stopGraceMs?: number;
+  /**
+   * Main-side backstop of `maxRunMs`: the engine's own timer ends the run on time; this one fires this much later
+   * only when the thread did not (blocked event loop, a device call or AI consult it cannot interrupt).
+   */
+  deadlineSlackMs?: number;
+  /** How long a stopped run still waits for an AI advisor that ignores its abort signal. */
+  aiAbortGraceMs?: number;
   foregroundTimeoutMs?: number;
   foregroundPollMs?: number;
   /** Pacing overrides handed to the worker (tests). */
@@ -78,6 +87,9 @@ interface RunEntry {
 export const MAX_FINISHED_KEPT = 50;
 /** Graceful stop window before the thread is terminated (original STOP_GRACE_MS). */
 export const STOP_GRACE_MS = 10_000;
+/** The main-side run limit fires this long after `maxRunMs` (the worker's own limit normally ends the run first). */
+export const DEADLINE_SLACK_MS = 30_000;
+const AI_ABORT_GRACE_MS = 5_000;
 const FOREGROUND_TIMEOUT_MS = 60_000;
 const FOREGROUND_POLL_MS = 1000;
 
@@ -86,7 +98,12 @@ function errorMessage(error: unknown): string {
 }
 
 function checkAbort(signal: AbortSignal): void {
-  if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('脚本执行已结束');
+  if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new RunnerMessageError('脚本执行已结束');
+}
+
+function limitMessage(maxRunMs: number): string {
+  // Same wording as the engine's own limit.
+  return `脚本运行超过本次时间上限（${Math.round(maxRunMs / 6000) / 10} 分钟），已停止。`;
 }
 
 function isTerminal(status: RunStatus): boolean {
@@ -282,10 +299,14 @@ export class ScriptRunner {
     catch (error) {
       return Promise.resolve(this.close(entry, 'failed', `无法启动脚本执行线程：${errorMessage(error)}`));
     }
+    // Aborted on stop (not only on finish): an advisor still looking at the screen must stop touching it.
+    const aiStop = new AbortController();
     let approved = false;
     let settled = false;
     let deviceQueue: Promise<void> = Promise.resolve();
     let stopTimer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let overrun: string | null = null;
     const queue = (operation: () => Promise<void>): Promise<void> => {
       const call = deviceQueue.then(operation);
       // The tail always resolves; callers still see the failure.
@@ -298,13 +319,18 @@ export class ScriptRunner {
     };
 
     return new Promise<ScriptRunSnapshot>((resolve) => {
-      const finish = (status: RunStatus, error: string | null, final?: RunSnapshot): void => {
+      const finish = (reported: RunStatus, reportedError: string | null, final?: RunSnapshot): void => {
         if (settled) return;
         settled = true;
         options.signal?.removeEventListener('abort', onExternalAbort);
         if (stopTimer) clearTimeout(stopTimer);
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+        // Stopped by the main-side run limit: that is a failure, not a user stop.
+        const status: RunStatus = overrun && reported === 'aborted' ? 'failed' : reported;
+        const error = overrun && reported === 'aborted' ? overrun : reportedError;
         // Queued requests are refused from now on; calls already in flight must settle before the lease goes.
-        controller.abort(new Error('脚本执行已结束'));
+        controller.abort(new RunnerMessageError('脚本执行已结束'));
+        aiStop.abort(new RunnerMessageError('脚本执行已结束'));
         void (async () => {
           await deviceQueue;
           entry.post = undefined;
@@ -318,6 +344,7 @@ export class ScriptRunner {
       const requestStop = (reason: string): void => {
         if (settled || entry.stopReason) return;
         entry.stopReason = reason;
+        aiStop.abort(new RunnerMessageError(reason));
         if (!isTerminal(entry.snapshot.status)) {
           entry.snapshot.status = 'stopping';
           this.notify(entry);
@@ -335,6 +362,16 @@ export class ScriptRunner {
       }
       entry.post = post;
       entry.requestStop = requestStop;
+      const maxRunMs = options.maxRunMs ?? 0;
+      if (maxRunMs > 0) {
+        deadlineTimer = setTimeout(() => {
+          if (settled || entry.stopReason) return;
+          overrun = limitMessage(maxRunMs);
+          this.runnerLog(entry, 'error', `${overrun}执行线程没有按时结束，由主进程强制收尾。`);
+          requestStop(overrun);
+        }, Math.min(maxRunMs + (this.options.deadlineSlackMs ?? DEADLINE_SLACK_MS), 2_147_483_647));
+        (deadlineTimer as { unref?: () => void }).unref?.();
+      }
 
       worker.on('message', (message: ScriptWorkerToMain) => {
         if (settled) return;
@@ -349,15 +386,15 @@ export class ScriptRunner {
             void queue(async () => {
               checkAbort(signal);
               await this.assertIdentity(options);
-              if (!startsWithLaunch(options.script)) await this.assertForeground(options, await this.host.device(options.instanceIndex));
+              if (!startsWithLaunch(options.script, options.packageName)) await this.assertForeground(options, await this.host.device(options.instanceIndex));
               checkAbort(signal);
               if (settled || entry.stopReason) return;
               approved = true;
               post({ type: 'go' });
             }).catch((error: unknown) => {
-              const text = `启动检查未通过：${errorMessage(error)}`;
-              this.runnerLog(entry, 'error', text);
-              finish('failed', errorMessage(error));
+              const reason = safeErrorMessage(error);
+              this.runnerLog(entry, 'error', `启动检查未通过：${reason}`);
+              finish('failed', reason);
             });
             return;
           case 'status':
@@ -375,7 +412,11 @@ export class ScriptRunner {
             }
             return;
           case 'aiConsult':
-            void this.relayAi(message, options, signal).then((result) => post({ type: 'aiResult', requestId: message.requestId, result }));
+            // In the device queue: the advisor may tap, so the lease waits for it like for any device call.
+            void queue(async () => {
+              const result = await this.relayAi(message, options, aiStop.signal);
+              post({ type: 'aiResult', requestId: message.requestId, result });
+            });
             return;
           case 'finished':
             finish(message.snapshot.status, message.snapshot.error, message.snapshot);
@@ -435,23 +476,41 @@ export class ScriptRunner {
     return copy(entry.snapshot);
   }
 
-  /** ★ Always answers: the worker is idle on this await, so a missing answer would stall it for 3 minutes. */
+  /**
+   * ★ Always answers, and within bounds: the worker is idle on this await, and the run's device queue (so the
+   * lease) waits for it. A stop aborts `signal`; an advisor that ignores it is given up on after a short grace.
+   */
   private async relayAi(message: Extract<ScriptWorkerToMain, { type: 'aiConsult' }>, options: ScriptExecuteOptions, signal: AbortSignal): Promise<AiAssistResult> {
     const assist = this.aiAssist;
     if (!assist) return { handled: false, message: 'AI 顾问没有接入执行链路，本次跳过。' };
+    if (signal.aborted) return { handled: false, message: '执行已停止，不再等待 AI 顾问。' };
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    let onAbort: (() => void) | undefined;
+    const bounded = new Promise<AiAssistResult>((resolve) => {
+      const give = (text: string): void => resolve({ handled: false, message: text });
+      timers.push(setTimeout(() => give('AI 顾问超时没有回应，按未处理继续。'), AI_CONSULT_TIMEOUT_MS));
+      onAbort = (): void => { timers.push(setTimeout(() => give('执行已停止，不再等待 AI 顾问。'), this.options.aiAbortGraceMs ?? AI_ABORT_GRACE_MS)); };
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
     try {
-      return await assist({
-        gameId: options.gameId, runId: options.runId, instanceIndex: options.instanceIndex, scriptId: options.script.id,
-        templateSetId: options.script.templateSetId ?? null, templateDir: options.templateDir,
-        stepId: message.stepId, reason: message.reason, expectTemplateIds: message.expectTemplateIds, signal,
-      });
+      return await Promise.race([
+        assist({
+          gameId: options.gameId, runId: options.runId, instanceIndex: options.instanceIndex, scriptId: options.script.id,
+          templateSetId: options.script.templateSetId ?? null, templateDir: options.templateDir,
+          stepId: message.stepId, reason: message.reason, expectTemplateIds: message.expectTemplateIds, signal,
+        }),
+        bounded,
+      ]);
     } catch (error) {
       const code = (error as { code?: unknown })?.code;
       return {
         handled: false,
-        message: `AI 顾问出错，按未处理继续：${errorMessage(error)}`,
+        message: `AI 顾问出错，按未处理继续：${safeErrorMessage(error)}`,
         requiresAttention: code === 'AI_RISK_BLOCKED' || code === 'GAME_UPDATE_REQUIRED',
       };
+    } finally {
+      for (const timer of timers) clearTimeout(timer);
+      if (onAbort) signal.removeEventListener('abort', onAbort);
     }
   }
 
@@ -486,7 +545,7 @@ export class ScriptRunner {
     for (;;) {
       checkAbort(signal);
       if (await device.foregroundPackage() === options.packageName) return;
-      if (Date.now() >= deadline) throw new Error(`启动游戏后 ${Math.round(timeout / 1000)} 秒仍未进入前台`);
+      if (Date.now() >= deadline) throw new RunnerMessageError(`启动游戏后 ${Math.round(timeout / 1000)} 秒仍未进入前台`);
       await new Promise<void>((resolve) => {
         const timer = setTimeout(() => { signal.removeEventListener('abort', wake); resolve(); }, poll);
         const wake = (): void => { clearTimeout(timer); resolve(); };
@@ -502,7 +561,7 @@ export class ScriptRunner {
     const reply = (value?: RawFrame | string | null, transfer?: ArrayBuffer[]): void => post({ type: 'response', id: request.id, ok: true, value }, transfer);
     try {
       checkAbort(signal);
-      if (!approved) throw new Error('启动检查通过前禁止操作设备');
+      if (!approved) throw new RunnerMessageError('启动检查通过前禁止操作设备');
       if (request.op === 'shot') {
         const [file, bytes] = request.args;
         reply(await this.logs.saveShot(options.gameId, options.runId, file, bytes));
@@ -526,7 +585,7 @@ export class ScriptRunner {
         case 'key': await this.guardInput(options, device, signal); await device.keyevent(request.args[0]); break;
         case 'longPress': {
           const [x, y, ms] = request.args;
-          if (![x, y, ms].every((value) => Number.isFinite(value) && value >= 0)) throw new Error('长按参数无效');
+          if (![x, y, ms].every((value) => Number.isFinite(value) && value >= 0)) throw new RunnerMessageError('长按参数无效');
           await this.guardInput(options, device, signal);
           // ★ DOWN / sleep / UP in ONE shell so nothing can run between them (never a swipe).
           await device.shell(`input motionevent DOWN ${Math.round(x)} ${Math.round(y)}; sleep ${(ms / 1000).toFixed(3)}; input motionevent UP ${Math.round(x)} ${Math.round(y)}`,
@@ -539,7 +598,7 @@ export class ScriptRunner {
           if (needsUnicodeInput(value)) {
             const ime = await readImeStatus(device, options.instanceIndex);
             if (!ime.available) {
-              throw new Error(`文本含中文等非 ASCII 字符，但实例 #${options.instanceIndex} 没有可用的 ADBKeyboard 输入法：${ime.message}`);
+              throw new RunnerMessageError(`文本含中文等非 ASCII 字符，但实例 #${options.instanceIndex} 没有可用的 ADBKeyboard 输入法：${ime.message}`);
             }
             await this.guardInput(options, device, signal);
             await device.shell(imeBroadcastCommand(value), { timeoutMs: 15_000 });
@@ -550,7 +609,7 @@ export class ScriptRunner {
         }
         case 'launchApp': {
           const [pkg, cold] = request.args;
-          if (pkg !== options.packageName) throw new Error(`脚本只能启动当前游戏（${options.packageName}），禁止启动其他应用`);
+          if (pkg !== options.packageName) throw new RunnerMessageError(`脚本只能启动当前游戏（${options.packageName}），禁止启动其他应用`);
           await this.assertIdentity(options);
           checkAbort(signal);
           if (cold) await device.stopApp(pkg);
@@ -563,7 +622,7 @@ export class ScriptRunner {
         }
         case 'stopApp': {
           const [pkg] = request.args;
-          if (pkg !== options.packageName) throw new Error(`脚本只能停止当前游戏（${options.packageName}），禁止停止其他应用`);
+          if (pkg !== options.packageName) throw new RunnerMessageError(`脚本只能停止当前游戏（${options.packageName}），禁止停止其他应用`);
           await this.assertIdentity(options);
           checkAbort(signal);
           await device.stopApp(pkg);
@@ -573,7 +632,8 @@ export class ScriptRunner {
       checkAbort(signal);
       reply();
     } catch (error) {
-      post({ type: 'response', id: request.id, ok: false, error: errorMessage(error), guard: isExecutionGuardError(error) });
+      // ★ Never the raw device error: it carries the adb command line (serial, typed text or its base64).
+      post({ type: 'response', id: request.id, ok: false, error: forwardedDeviceError(request.op, error, request.args), guard: isExecutionGuardError(error) });
     }
   }
 }

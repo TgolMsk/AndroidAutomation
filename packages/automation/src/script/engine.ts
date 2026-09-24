@@ -23,7 +23,7 @@ import { execStep } from './actions.js';
 import { StepScope, type ScriptContext } from './context.js';
 import { describeCondition } from './describe.js';
 import { ScriptError, isExecutionGuardError } from './errors.js';
-import type { Condition, FailPolicy, RunSnapshot, RunStatus, ScriptStep } from './types.js';
+import type { Condition, FailPolicy, RunSnapshot, RunStatus, ScriptParamDef, ScriptParamValue, ScriptStep } from './types.js';
 
 export const DEFAULT_MAX_ITERATIONS = 1000;
 export const DEFAULT_MAX_GOTO = 1000;
@@ -56,6 +56,19 @@ export interface ScriptEngineOptions {
   restartSettleMs?: number;
   /** Aborting it stops the run like `stop()`. */
   signal?: AbortSignal;
+}
+
+/**
+ * Parameters for the start line. Free-text values are masked: they are what text steps type (account names,
+ * passwords, codes) and the log is persisted. Numbers, switches and enum choices are shown as they are.
+ */
+export function loggableParams(defs: readonly ScriptParamDef[] | undefined, params: Readonly<Record<string, ScriptParamValue>>): Record<string, ScriptParamValue> {
+  const out: Record<string, ScriptParamValue> = {};
+  for (const [key, value] of Object.entries(params)) {
+    const def = defs?.find((item) => item.key === key);
+    out[key] = typeof value === 'string' && def?.type !== 'enum' ? `（${value.length} 字，已隐藏）` : value;
+  }
+  return out;
 }
 
 export class ScriptEngine {
@@ -134,7 +147,7 @@ export class ScriptEngine {
     ctx.snapshot.startedAt = ctx.now();
     if (!this.stopping) ctx.setStatus('running');
     ctx.log('info', `开始执行脚本「${ctx.script.name}」v${ctx.script.version}（实例 #${ctx.instanceIndex}）` +
-      `${ctx.snapshot.accountName ? `，账号：${ctx.snapshot.accountName}` : ''}`, { scriptId: ctx.script.id, params: { ...ctx.params } });
+      `${ctx.snapshot.accountName ? `，账号：${ctx.snapshot.accountName}` : ''}`, { scriptId: ctx.script.id, params: loggableParams(ctx.script.params, ctx.params) });
 
     let restarts = 0;
     try {
@@ -361,11 +374,12 @@ export class ScriptEngine {
     ctx.log('debug', `步骤「${stepName}」重试耗尽，问一下 AI 顾问…`, undefined, { stepId: step.id });
     let answer;
     try {
-      answer = await ctx.consultAi({
+      // A stop or the whole-run limit must not wait for the advisor (up to 3 minutes): answer "not handled".
+      answer = await ctx.raceAbort(ctx.consultAi({
         stepId: step.id,
         reason: `步骤「${stepName}」重试 ${Math.max(0, step.retry ?? 0)} 次后仍然失败：${error.message}`,
         expectTemplateIds: expectedTemplateIds(step),
-      });
+      }), { handled: false, message: '执行已停止，不再等待 AI 顾问。' });
     } catch (cause) {
       ctx.log('debug', `AI 顾问出错，按未处理继续：${cause instanceof Error ? cause.message : String(cause)}`, undefined, { stepId: step.id });
       return { retried: false, error };

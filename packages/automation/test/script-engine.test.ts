@@ -260,6 +260,14 @@ describe('script engine: stop, pause, shots', () => {
     expect(JSON.stringify(h.logs)).not.toContain('secret-123');
   });
 
+  it('the start line masks free-text parameters (they may be passwords or codes)', async () => {
+    const h = harness(script([tap('a')], { params: [{ key: 'mode', label: '模式', type: 'enum', options: [{ value: 'wood', label: '木' }] }] }));
+    (h.ctx as unknown as { params: Record<string, string | number> }).params = { password: 'p@ss-777', mode: 'wood', count: 3 };
+    await h.run();
+    expect(JSON.stringify(h.logs)).not.toContain('p@ss-777');
+    expect(h.logs[0]?.data).toMatchObject({ params: { password: '（8 字，已隐藏）', mode: 'wood', count: 3 } });
+  });
+
   it('writes a Chinese finish summary before the final status', async () => {
     const h = harness(script([tap('a')]));
     await h.run();
@@ -364,6 +372,31 @@ describe('script engine: AI consult', () => {
     expect(result.error).toBe('检测到顶号弹窗');
     expect(vision.calls).toBe(1);
     expect(blocked.logs.find((line) => line.level === 'error' && line.stepId === 'a' && line.message.startsWith('步骤'))?.data).toMatchObject({ code: 'AI_RISK_BLOCKED' });
+  });
+
+  it('the whole-run limit does not wait for a pending advisor', async () => {
+    const pending = new Promise<never>(() => undefined);
+    const h = harness(script([{ id: 'a', kind: 'tapTemplate', templateId: 'btn' }], { templateSetId: 'set' }),
+      { templates: ['btn'], consult: () => pending, engine: { maxRunMs: 60 } });
+    const started = Date.now();
+    const result = await h.run();
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('时间上限');
+    expect(h.consults).toHaveLength(1);
+  });
+
+  it('a stop while the advisor is looking ends the run as aborted without retrying the step', async () => {
+    const vision = fakeVision(() => false);
+    const h = harness(script([{ id: 'a', kind: 'tapTemplate', templateId: 'btn' }], { templateSetId: 'set' }),
+      { vision, templates: ['btn'], consult: () => new Promise(() => undefined) });
+    const running = h.run();
+    for (let i = 0; i < 100 && !h.consults.length; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    h.engine.stop();
+    const result = await running;
+    expect(result.status).toBe('aborted');
+    expect(vision.calls).toBe(1);
+    expect(h.device.actions).toEqual([]);
   });
 
   it('a not-handled or throwing advisor leaves the original failure', async () => {

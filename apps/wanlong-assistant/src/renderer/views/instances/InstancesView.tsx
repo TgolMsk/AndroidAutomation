@@ -5,6 +5,7 @@ import { Spinner, StatusBadge } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
 import { displayStatus, isRunning } from '../../format';
 import { isRunActive, useActivity } from '../../state/activity';
+import { scriptRunBadge, usePlanRuns } from '../../state/plan-runs';
 import { useSelection } from '../../state/selection';
 import type { ViewProps } from '../types';
 import './InstancesView.css';
@@ -18,6 +19,7 @@ export function InstancesView(_props: ViewProps) {
   const toast = useToast();
   const { instances, instancesLoaded, instancesError, reloadInstances, index, setIndex, lockReason, gameId } = useSelection();
   const { runs, schedules } = useActivity();
+  const { scriptRunByInstance } = usePlanRuns();
   const [busy, setBusy] = useState<number | null>(null);
 
   const selectable = (target: number): boolean => target !== index && !lockReason;
@@ -48,13 +50,14 @@ export function InstancesView(_props: ViewProps) {
         : instances.length === 0 ? <p className="instances-empty">还没有模拟器实例。请先在模拟器管理器中创建并启动一个实例。</p>
           : <div className="table-wrap instances-scroll">
             <table className="inst-table instances-table">
-              <thead><tr><th>序号</th><th>名称</th><th>状态</th><th>连接</th><th>自动采集</th><th aria-label="操作" /></tr></thead>
+              <thead><tr><th>序号</th><th>名称</th><th>状态</th><th>连接</th><th>自动采集</th><th>脚本</th><th aria-label="操作" /></tr></thead>
               <tbody>
                 {instances.map((instance) => {
                   const i = instance.record.index;
                   const current = i === index;
                   const run = runs.find((item) => item.index === i && isRunActive(item));
                   const scheduled = schedules.some((item) => item.gameId === gameId && item.index === i && item.enabled);
+                  const script = scriptRunByInstance.get(i);
                   return (
                     <tr key={i} className={current ? 'selected' : selectable(i) ? 'instances-row-pick' : undefined}
                       aria-current={current ? 'true' : undefined} onClick={(event) => onRowClick(event, i)}>
@@ -63,6 +66,7 @@ export function InstancesView(_props: ViewProps) {
                       <td><StatusBadge status={displayStatus(instance)} /></td>
                       <td className="mono dim">{isRunning(instance) ? instance.ports.serial : '—'}</td>
                       <td>{run ? <span className="tag ok">{run.status === 'stopping' ? '正在停止' : '采集中'}</span> : scheduled ? <span className="tag">自动续跑</span> : <span className="dim">—</span>}</td>
+                      <td>{script ? <span className={`tag ${script.status === 'paused' ? 'warn' : 'ok'}`} title={`${script.scriptName}（${script.source === 'plan' ? '计划任务' : '临时运行'}）`}>{scriptRunBadge(script)}</span> : <span className="dim">—</span>}</td>
                       <td className="instances-actions">
                         <button className="btn xs" onClick={() => setIndex(i)} disabled={!selectable(i)} title={lockReason ?? undefined}>{current ? '当前实例' : '设为当前'}</button>
                         <button className="icon-btn small" onClick={() => void openLive(i)} disabled={!isRunning(instance) || busy !== null} title="打开实时画面" aria-label={`打开实例 #${i} 的实时画面`}>

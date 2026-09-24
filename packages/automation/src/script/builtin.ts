@@ -91,6 +91,20 @@ export function isBuiltinScriptId(id: string): boolean {
   return id.startsWith(BUILTIN_SCRIPT_PREFIX);
 }
 
+/**
+ * A free id for the editable copy of a built-in example (「另存为」): `<name>_copy`, then `<name>_copy2`, `_copy3` …
+ * Never one of `takenIds`, so saving the example again never overwrites a copy the user already edited.
+ */
+export function builtinCopyId(builtinId: string, takenIds: Iterable<string>): string {
+  const name = builtinId.startsWith(BUILTIN_SCRIPT_PREFIX) ? builtinId.slice(BUILTIN_SCRIPT_PREFIX.length) : builtinId;
+  const base = `${name || 'script'}_copy`;
+  const taken = new Set(takenIds);
+  for (let n = 1; ; n += 1) {
+    const id = n === 1 ? base : `${base}${n}`;
+    if (!taken.has(id)) return id;
+  }
+}
+
 /** Fresh copies of every built-in script, targeting `packageName` (the current game). */
 export function builtinScripts(packageName?: string): ScriptDef[] {
   return BUILDERS.map((build) => build(packageName));

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LogEntry } from '@avdm/automation/script';
 import type { PlanRun, ScriptRunSnapshot } from '../src/main/plans/types';
-import { countActiveScriptWork, upsertSnapshot } from '../src/renderer/state/plan-runs';
+import { countActiveScriptWork, scriptRunBadge, scriptRunsByInstance, upsertSnapshot } from '../src/renderer/state/plan-runs';
 import { LOG_RING_CAPACITY, RunLogBuffer, matchesFilter } from '../src/renderer/state/run-log-store';
 import { buildRunRows, coerceParam, defaultParams, formatDuration, hitRate, logClock, progressLabel, shortData } from '../src/renderer/views/runs/run-rows';
 
@@ -59,6 +59,20 @@ describe('run log ring buffer (original logStore.ts)', () => {
 });
 
 describe('execution monitor helpers', () => {
+  it('maps each instance to its live script run for the instance list and picker badges', () => {
+    const map = scriptRunsByInstance([
+      snapshot('new', { instanceIndex: 1, status: 'paused', startedAt: 300 }),
+      snapshot('old', { instanceIndex: 1, status: 'running', startedAt: 100 }),
+      snapshot('done', { instanceIndex: 2, status: 'succeeded' }),
+      snapshot('other', { instanceIndex: 3, status: 'stopping' }),
+    ]);
+    expect([...map.keys()].sort()).toEqual([1, 3]);
+    expect(map.get(1)?.runId).toBe('new');
+    expect(scriptRunBadge(map.get(1)!)).toBe('脚本已暂停');
+    expect(scriptRunBadge(map.get(3)!)).toBe('脚本停止中');
+    expect(scriptRunBadge({ status: 'running' })).toBe('脚本运行中');
+  });
+
   it('merges live snapshots with plan records, active first', () => {
     const rows = buildRunRows(
       [planRun('queued-1', 'queued'), planRun('live-1', 'running'), planRun('old', 'skipped', { message: '等待实例超时', queuedAt: 10 })],

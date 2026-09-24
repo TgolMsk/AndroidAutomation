@@ -138,8 +138,15 @@ export interface ScriptAiRequest {
   stepId: string | null;
   reason: string;
   expectTemplateIds: string[];
+  /**
+   * Aborted when the run is stopped (user stop, whole-run limit, shutdown) or ends: from then on the advisor must
+   * not touch the device. The run's lease waits for the handler, at most a few seconds after the abort.
+   */
   signal: AbortSignal;
 }
 
-/** Never throws; the runner answers the worker even if it does. */
+/**
+ * Should not throw (the runner answers the worker even if it does). Runs inside the run's device queue, so the
+ * handler may use the instance while the worker waits; it is bounded by 180 s.
+ */
 export type ScriptAiAssist = (request: ScriptAiRequest) => Promise<AiAssistResult>;

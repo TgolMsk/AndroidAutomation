@@ -8,7 +8,9 @@ import { ScriptRunner, type ScriptExecuteOptions, type ScriptRunnerOptions } fro
 import { attachScriptWorker } from '../src/main/plans/script-worker-core';
 import type { ScriptMainToWorker, ScriptWorkerLike, ScriptWorkerToMain } from '../src/main/plans/script-protocol';
 import type { RunLogsEvent, ScriptDef, ScriptRunSnapshot } from '../src/main/plans/types';
-import { FAST_PACING, PKG, eventually, fakeScriptDevice, fakeVision, inProcessWorkers, type FakeScriptDevice } from './helpers/script-worker';
+import { AvdmError } from '@avdm/core';
+import { getBuiltinScript } from '@avdm/automation/script';
+import { FAST_PACING, PKG, eventually, fakeScriptDevice, fakeVision, inProcessWorkers, writeTemplateSet, type FakeScriptDevice } from './helpers/script-worker';
 
 const RUN = '00000000-0000-4000-8000-0000000000b1';
 const script = (steps: ScriptDef['steps'], extra: Partial<ScriptDef> = {}): ScriptDef => ({ id: 'test', name: '测试', version: '1.0.0', packageName: PKG,
@@ -162,6 +164,45 @@ describe('ScriptRunner protocol (main side of the worker RPC)', () => {
     expect(answers[2]).toEqual({ handled: true, message: '关掉了' });
   });
 
+  it('the main-side run limit ends a run whose thread does not respond, as a time-limit failure', async () => {
+    const worker = new FakeWorker((message, self) => {
+      if (message.type === 'start') self.emitMessage({ type: 'ready', templates: 0, refWidth: 100, refHeight: 100, shrink: 2 });
+      // 'go' and 'stop' are ignored: a blocked event loop never runs the engine's own deadline.
+    });
+    const ctx = runner(fakeScriptDevice(), { workerFactory: () => worker, deadlineSlackMs: 10, stopGraceMs: 30 });
+    const started = Date.now();
+    const result = await ctx.runner.execute(options(script([]), { maxRunMs: 40 }));
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('时间上限');
+    expect(worker.terminated).toBe(true);
+    expect(worker.sent.map((message) => message.type)).toEqual(expect.arrayContaining(['stop', 'abort']));
+    expect(ctx.logs.flatMap((event) => event.entries).some((line) => line.message.includes('主进程强制收尾'))).toBe(true);
+  });
+
+  it('a stop does not wait for an AI advisor that ignores its abort signal', async () => {
+    let seen: AbortSignal | null = null;
+    const answers: unknown[] = [];
+    const worker = new FakeWorker((message, self) => {
+      if (message.type === 'start') self.emitMessage({ type: 'ready', templates: 0, refWidth: 100, refHeight: 100, shrink: 2 });
+      if (message.type === 'go') self.emitMessage({ type: 'aiConsult', requestId: 'ai-1', stepId: 's', reason: '卡住了', expectTemplateIds: [] });
+      if (message.type === 'aiResult') { answers.push(message.result); self.emitMessage({ type: 'finished', snapshot: finishedSnapshot('aborted') }); }
+    });
+    const ctx = runner(fakeScriptDevice(), {
+      workerFactory: () => worker, stopGraceMs: 5000, aiAbortGraceMs: 20,
+      aiAssist: (request) => { seen = request.signal; return new Promise(() => undefined); },
+    });
+    const running = ctx.runner.execute(options(script([])));
+    await eventually(() => seen !== null);
+    const started = Date.now();
+    await ctx.runner.stop(RUN);
+    const result = await running;
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(seen!.aborted).toBe(true);
+    expect(answers[0]).toMatchObject({ handled: false, message: expect.stringContaining('执行已停止') });
+    expect(result.status).toBe('aborted');
+  });
+
   it('reserve makes the instance busy synchronously and blocks a second claim', () => {
     const { runner: value } = runner(fakeScriptDevice());
     const release = value.reserve(4, 'run-a');
@@ -247,6 +288,69 @@ describe('ScriptRunner with the real worker core', () => {
     const typed = await runner(withIme).runner.execute({ ...options(script([{ id: 't', kind: 'text', text: '你好' }])), runId: '00000000-0000-4000-8000-0000000000c1' });
     expect(typed.status).toBe('succeeded');
     expect(withIme.shells.at(-1)).toBe(`am broadcast -a ADB_INPUT_B64 --es msg ${Buffer.from('你好').toString('base64')}`);
+  });
+
+  it('★ a failed text step never persists the typed text, its base64 or the device serial', async () => {
+    const SECRET = 'hunter2%sPw';
+    const SERIAL = 'emulator-5554';
+    const adbLine = (command: string) => `/sdk/platform-tools/adb -s ${SERIAL} shell ${command}`;
+    const failure = (command: string, detail: string) =>
+      new AvdmError('COMMAND_FAILED', `${adbLine(command)} 失败: Command failed: ${adbLine(command)}\n${detail}`);
+    const reasons: string[] = [];
+    const device = fakeScriptDevice({
+      text: async (value) => { throw failure(`input text ${value.replace('%s', '%%s')}`, 'error: device offline'); },
+    });
+    const ctx = runner(device, { aiAssist: async (request) => { reasons.push(request.reason); return { handled: false, message: '未处理' }; } });
+    const result = await ctx.runner.execute(options(script([{ id: 'pw', kind: 'text', text: '{{password}}', retry: 1, retryDelayMs: 0 }]), { params: { password: SECRET } }));
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe(`输入文本失败（${SECRET.length} 字）：模拟器连接已断开`);
+
+    const unicode = '密码是一二三';
+    const base64 = Buffer.from(unicode, 'utf8').toString('base64');
+    const withIme = fakeScriptDevice({
+      shell: async (command) => {
+        if (command.startsWith('pm list packages')) return 'package:com.android.adbkeyboard\n';
+        if (command === 'ime list -s') return 'com.android.adbkeyboard/.AdbIME\n';
+        if (command.startsWith('settings get secure default_input_method')) return 'com.android.adbkeyboard/.AdbIME\n';
+        throw failure(command, `Broadcasting: Intent { act=ADB_INPUT_B64 (has extras) } ${base64}\nerror: closed`);
+      },
+    });
+    const imeCtx = runner(withIme);
+    const imeResult = await imeCtx.runner.execute({ ...options(script([{ id: 'cn', kind: 'text', text: unicode }])), runId: '00000000-0000-4000-8000-0000000000c2' });
+    expect(imeResult.status).toBe('failed');
+    expect(imeResult.error).toBe(`输入文本失败（${unicode.length} 字）：模拟器连接已断开`);
+
+    const tapFail = fakeScriptDevice({ tap: async (x, y) => { throw failure(`input tap ${x} ${y}`, 'error: closed'); } });
+    const tapCtx = runner(tapFail);
+    const tapResult = await tapCtx.runner.execute({ ...options(script([{ id: 't', kind: 'tap', at: { x: 5, y: 5 } }])), runId: '00000000-0000-4000-8000-0000000000c3' });
+    expect(tapResult.status).toBe('failed');
+    expect(tapResult.error).toContain('adb 命令失败');
+
+    const runsDir = path.join(home, 'automation', 'games', 'wanlong', 'runs');
+    const persisted = [
+      await readFile(path.join(runsDir, RUN, 'events.ndjson'), 'utf8'),
+      await readFile(path.join(runsDir, '00000000-0000-4000-8000-0000000000c2', 'events.ndjson'), 'utf8'),
+      await readFile(path.join(runsDir, '00000000-0000-4000-8000-0000000000c3', 'events.ndjson'), 'utf8'),
+    ].join('\n');
+    const pushed = JSON.stringify([ctx, imeCtx, tapCtx].map((item) => [item.logs, item.snapshots]));
+    for (const leak of [SECRET, 'hunter2', unicode, base64, SERIAL, 'input text', 'ADB_INPUT_B64']) {
+      expect(persisted).not.toContain(leak);
+      expect(pushed).not.toContain(leak);
+      expect(JSON.stringify(reasons)).not.toContain(leak);
+    }
+    expect(reasons).toHaveLength(1);
+    expect(persisted).toContain(`输入文本失败（${SECRET.length} 字）`);
+  });
+
+  it('the keep-alive example starts with the game off-screen and relaunches it', async () => {
+    const dir = await writeTemplateSet(path.join(home, 'set'), ['demo_target']);
+    const device = fakeScriptDevice();
+    device.foreground = 'com.android.launcher3';
+    const keepAlive = getBuiltinScript('builtin_keep_alive', PKG)!;
+    const ctx = runner(device, {}, () => true);
+    const result = await ctx.runner.execute(options(keepAlive, { templateDir: dir }));
+    expect(result.status).toBe('succeeded');
+    expect(device.actions).toEqual([`stop:${PKG}`, `start:${PKG}`]);
   });
 
   it('pause holds the run at the next step boundary and resume continues it', async () => {

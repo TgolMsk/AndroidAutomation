@@ -226,6 +226,8 @@ export function attachScriptWorker(port: ScriptWorkerPort, deps: ScriptWorkerDep
       }
       case 'stop':
         stopRequested = true;
+        // The engine stops waiting on its own; settle the entries too so a late answer is dropped.
+        for (const finish of [...aiPending.values()]) finish({ handled: false, message: '执行已停止，不再等待 AI 顾问。' });
         control(msg);
         if (engine && !ran) void execute();
         return;

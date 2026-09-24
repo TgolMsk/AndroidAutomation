@@ -8,6 +8,7 @@ import {
 } from '@avdm/automation/script';
 import { gamePlugin } from '../automation/games';
 import type { GameAccount } from '../automation/accounts/types';
+import { safeErrorMessage } from './device-errors';
 import { readImeStatus, setupIme } from './ime';
 import { assertRunId, KEEP_RUNS } from './run-logs';
 import { ScriptRunner } from './script-runner';
@@ -253,7 +254,7 @@ export class PlanService {
     if (this.isActiveForInstance(index)) throw new Error(`实例 #${index} 上已有脚本在运行或排队，请先停止后再试`);
     const cap = config.maxConcurrentScripts ?? DEFAULT_MAX_CONCURRENT_SCRIPTS;
     if (this.scriptSlotsInUse() >= cap) {
-      throw new Error(`同时运行的脚本已达上限 ${cap} 个。请先停掉一个正在跑的脚本，或在「任务计划」的调度设置里调高上限（不建议超过 4 个）。`);
+      throw new Error(`同时运行的脚本已达上限 ${cap} 个。请先停掉一个正在跑的脚本，或在「任务计划」页「调度设置」的「同时运行脚本上限」里调高（不建议超过 4 个）。`);
     }
     const runId = randomUUID();
     const release = this.runner.reserve(index, runId);
@@ -287,9 +288,9 @@ export class PlanService {
       const dir = await this.port.templateDir(gameId, index);
       await this.checkRunnable(gameId, script, dir);
       const device = await this.port.device(index);
-      if (!startsWithLaunch(script)) {
+      if (!startsWithLaunch(script, plugin.packageName)) {
         const foreground = await device.foregroundPackage();
-        if (foreground !== plugin.packageName) throw new Error(`${plugin.name}未处于前台（当前 ${foreground ?? '未知'}）。请先打开游戏，或让脚本以「启动应用」开头。`);
+        if (foreground !== plugin.packageName) throw new Error(`${plugin.name}未处于前台（当前 ${foreground ?? '未知'}）。请先打开游戏，或让脚本以「启动游戏」开头（也可以先用「如果游戏不在前台 → 启动游戏」）。`);
       }
       if (this.port.suspendForScript) giveBack = await this.port.suspendForScript(gameId, index, `临时运行脚本「${script.name}」`);
       else if (await this.port.gatherScheduleEnabled(gameId, index)) throw new Error('该实例正在自动采集，请先关闭自动采集调度后再运行脚本');
@@ -567,7 +568,7 @@ export class PlanService {
         if (state.status !== 'running' || state.record.createdAt !== expectedIdentity) throw new RunEndedError('实例未运行或已被替换', 'skipped');
         if (await this.port.gatherScheduleEnabled(run.gameId, run.instanceIndex)) throw new RunEndedError('自动采集已启用，脚本计划本轮跳过', 'skipped');
         const script = await this.getScript(run.gameId, run.scriptId);
-        if (!startsWithLaunch(script)) {
+        if (!startsWithLaunch(script, pkg)) {
           const foreground = await (await this.port.device(run.instanceIndex)).foregroundPackage();
           if (foreground !== pkg) throw new RunEndedError(`目标游戏未在前台（当前 ${foreground ?? '未知'}）`, 'failed');
         }
@@ -595,7 +596,8 @@ export class PlanService {
       }, { timeoutMs: config.queueWaitMs });
       await this.finish(run, 'succeeded', '脚本执行完成');
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      // Persisted in plans.json: never with a device serial or an adb command line.
+      const message = safeErrorMessage(error);
       const status: PlanRun['status'] = signal.aborted ? 'cancelled'
         : error instanceof RunEndedError ? error.status
           : (error as { code?: string }).code === 'LOCK_TIMEOUT' ? 'skipped' : 'failed';

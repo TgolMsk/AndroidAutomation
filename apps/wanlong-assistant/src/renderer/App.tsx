@@ -16,7 +16,7 @@ import { ActivityProvider, useActivity } from './state/activity';
 import { BadgesProvider, sectionTones, useShellBadges } from './state/badges';
 import { NavigationProvider, useNavigation } from './state/navigation';
 import { PlanImportProvider } from './state/plan-import';
-import { PlanRunsProvider, usePlanRuns } from './state/plan-runs';
+import { PlanRunsProvider, scriptRunBadge, usePlanRuns } from './state/plan-runs';
 import { SelectionProvider, useSelection } from './state/selection';
 import { TemplateFlowProvider } from './state/template-flow';
 import { VIEW_REGISTRY, restoredScrollTop } from './views/registry';
@@ -65,6 +65,7 @@ function GameStatus() {
 
 function InstancePicker() {
   const { targets, index, setIndex, lockReason, selectedInstance, instancesLoaded } = useSelection();
+  const { scriptRunByInstance } = usePlanRuns();
   return (
     <label className="wl-shell-picker" title={lockReason ?? '所有页面都针对当前实例操作'}>
       <span>当前实例</span>
@@ -75,7 +76,7 @@ function InstancePicker() {
         {targets.length === 0 && <option value="">{instancesLoaded ? '暂无实例' : '正在读取…'}</option>}
         {targets.map((target) => (
           <option key={target.index} value={target.index}>
-            #{target.index} · {target.instance ? `${target.instance.record.name} · ${displayStatusLabel(displayStatus(target.instance))}` : '实例已移除 · 可关闭自动续跑'}
+            {`#${target.index} · ${target.instance ? `${target.instance.record.name} · ${displayStatusLabel(displayStatus(target.instance))}` : '实例已移除 · 可关闭自动续跑'}${scriptRunByInstance.has(target.index) ? ` · ${scriptRunBadge(scriptRunByInstance.get(target.index)!)}` : ''}`}
           </option>
         ))}
       </select>

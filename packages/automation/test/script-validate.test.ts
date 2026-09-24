@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RunLogger } from '../src/index.js';
 import {
-  BUILTIN_SCRIPT_PREFIX, builtinScriptMetas, builtinScripts, countSteps, describeCondition, fatalIssues, formatIssues, getBuiltinScript,
+  BUILTIN_SCRIPT_PREFIX, builtinCopyId, builtinScriptMetas, builtinScripts, countSteps, describeCondition, fatalIssues, formatIssues, getBuiltinScript,
   interpolate, isBuiltinScriptId, mergeParams, referencedTemplateIds, startsWithLaunch, validateScript,
   type LogEntry, type ScriptDef, type ScriptStep,
 } from '../src/script/index.js';
@@ -144,9 +144,40 @@ describe('script helpers', () => {
     expect(startsWithLaunch({ steps: [{ id: 'l', kind: 'log', level: 'info', message: 'x' }, { id: 'go', kind: 'launchApp', cold: true }] })).toBe(true);
     expect(startsWithLaunch({ steps: [{ id: 't', kind: 'tap', at: { x: 1, y: 1 } }, { id: 'go', kind: 'launchApp' }] })).toBe(false);
   });
+
+  it('accepts the keep-alive prologue: if the game is not in the foreground, launch it first', () => {
+    const guarded = (cond: unknown, then: unknown[]): { steps: ScriptStep[] } =>
+      ({ steps: [{ id: 'check', kind: 'if', cond, then, else: [{ id: 'tap', kind: 'tap', at: { x: 1, y: 1 } }] }] as ScriptStep[] });
+    const launch = [{ id: 'log', kind: 'log', level: 'warn', message: 'x' }, { id: 'go', kind: 'launchApp', cold: true, onFail: { kind: 'continue' } }];
+    expect(startsWithLaunch(guarded({ kind: 'not', of: { kind: 'foreground', packageName: PKG } }, launch), PKG)).toBe(true);
+    expect(startsWithLaunch(guarded({ kind: 'foreground', packageName: PKG, equals: false }, launch), PKG)).toBe(true);
+    // The script's own package is the default.
+    expect(startsWithLaunch({ ...guarded({ kind: 'not', of: { kind: 'foreground', packageName: PKG } }, launch), packageName: PKG })).toBe(true);
+    // Another package, a positive check, no package to compare with, or input before the launch: not a prologue.
+    expect(startsWithLaunch(guarded({ kind: 'not', of: { kind: 'foreground', packageName: 'com.example.other' } }, launch), PKG)).toBe(false);
+    expect(startsWithLaunch(guarded({ kind: 'foreground', packageName: PKG }, launch), PKG)).toBe(false);
+    expect(startsWithLaunch(guarded({ kind: 'not', of: { kind: 'foreground', packageName: PKG } }, launch))).toBe(false);
+    expect(startsWithLaunch(guarded({ kind: 'not', of: { kind: 'foreground', packageName: PKG } }, [{ id: 'k', kind: 'key', key: 'BACK' }, ...launch]), PKG)).toBe(false);
+    expect(startsWithLaunch(guarded({ kind: 'not', of: { kind: 'foreground', packageName: PKG, equals: false } }, launch), PKG)).toBe(false);
+  });
 });
 
 describe('built-in example scripts', () => {
+  it('the keep-alive example may start while the game is not in the foreground (its relaunch branch is reachable)', () => {
+    const keepAlive = getBuiltinScript(`${BUILTIN_SCRIPT_PREFIX}keep_alive`, PKG)!;
+    expect(startsWithLaunch(keepAlive, PKG)).toBe(true);
+    expect(startsWithLaunch(getBuiltinScript(`${BUILTIN_SCRIPT_PREFIX}wait_tap`, PKG)!, PKG)).toBe(false);
+  });
+
+  it('saving an example picks a free copy id and never reuses one that exists', () => {
+    expect(builtinCopyId(`${BUILTIN_SCRIPT_PREFIX}wait_tap`, [])).toBe('wait_tap_copy');
+    expect(builtinCopyId(`${BUILTIN_SCRIPT_PREFIX}wait_tap`, ['builtin_wait_tap', 'wait_tap_copy'])).toBe('wait_tap_copy2');
+    expect(builtinCopyId(`${BUILTIN_SCRIPT_PREFIX}wait_tap`, ['wait_tap_copy', 'wait_tap_copy2', 'wait_tap_copy3'])).toBe('wait_tap_copy4');
+    const id = builtinCopyId(`${BUILTIN_SCRIPT_PREFIX}keep_alive`, ['keep_alive_copy']);
+    expect(isBuiltinScriptId(id)).toBe(false);
+    expect(validateScript({ ...getBuiltinScript(`${BUILTIN_SCRIPT_PREFIX}keep_alive`, PKG)!, id }, { expectedPackage: PKG }).filter((issue) => issue.fatal)).toEqual([]);
+  });
+
   it('are read-only examples with a reserved prefix, fixed timestamp and fresh copies', () => {
     const scripts = builtinScripts(PKG);
     expect(scripts.map((item) => item.id)).toEqual(['builtin_wait_tap', 'builtin_keep_alive']);

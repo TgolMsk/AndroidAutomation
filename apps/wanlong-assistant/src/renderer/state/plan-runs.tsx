@@ -40,6 +40,23 @@ export function countActiveScriptWork(planRuns: readonly PlanRun[], scriptRuns: 
   return planIds.size + extra;
 }
 
+/**
+ * The live script run of each instance (the original run:start put the run id on the instance card), for the
+ * instance list and the top-bar picker. Newest first wins; a runner never has two live runs on one instance.
+ */
+export function scriptRunsByInstance(scriptRuns: readonly ScriptRunSnapshot[]): Map<number, ScriptRunSnapshot> {
+  const out = new Map<number, ScriptRunSnapshot>();
+  for (const run of scriptRuns) if (isScriptRunActive(run) && !out.has(run.instanceIndex)) out.set(run.instanceIndex, run);
+  return out;
+}
+
+/** Short badge text of a live script run on an instance. */
+export function scriptRunBadge(run: Pick<ScriptRunSnapshot, 'status'>): string {
+  if (run.status === 'paused') return '脚本已暂停';
+  if (run.status === 'stopping') return '脚本停止中';
+  return '脚本运行中';
+}
+
 export interface PlanRunsState {
   /** Plan queue records of the current game (plans.json), newest first. */
   planRuns: PlanRun[];
@@ -47,6 +64,8 @@ export interface PlanRunsState {
   scriptRuns: ScriptRunSnapshot[];
   planRunsError?: string;
   activePlanRuns: number;
+  /** Instance index → its live script run (current game). */
+  scriptRunByInstance: ReadonlyMap<number, ScriptRunSnapshot>;
   refreshPlanRuns(): Promise<void>;
 }
 
@@ -97,7 +116,8 @@ export function PlanRunsProvider({ children }: { children: ReactNode }) {
   useAvdmEvent('run-logs', (event) => pushRunLogs(event.entries));
 
   const value = useMemo<PlanRunsState>(() => ({
-    planRuns, scriptRuns, planRunsError, activePlanRuns: countActiveScriptWork(planRuns, scriptRuns), refreshPlanRuns,
+    planRuns, scriptRuns, planRunsError, activePlanRuns: countActiveScriptWork(planRuns, scriptRuns),
+    scriptRunByInstance: scriptRunsByInstance(scriptRuns), refreshPlanRuns,
   }), [planRuns, scriptRuns, planRunsError, refreshPlanRuns]);
   return <PlanRunsContext.Provider value={value}>{children}</PlanRunsContext.Provider>;
 }

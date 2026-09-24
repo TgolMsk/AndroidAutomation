@@ -440,6 +440,25 @@ export class ScriptContext {
     });
   }
 
+  /**
+   * `promise`, or `fallback` as soon as the run is stopped (stop / whole-run limit). For waits the host
+   * answers on its own schedule (the AI advisor may take minutes): a halted run must not sit on them.
+   */
+  raceAbort<T>(promise: Promise<T>, fallback: T): Promise<T> {
+    if (this.aborted) {
+      promise.catch(() => undefined);
+      return Promise.resolve(fallback);
+    }
+    return new Promise<T>((resolve, reject) => {
+      const wake = (): void => { this.sleepers.delete(wake); resolve(fallback); };
+      this.sleepers.add(wake);
+      promise.then(
+        (value) => { this.sleepers.delete(wake); resolve(value); },
+        (error: unknown) => { this.sleepers.delete(wake); reject(error); },
+      );
+    });
+  }
+
   /** Waits while paused; returns at once on stop. */
   async waitWhilePaused(): Promise<void> {
     while (this.paused && !this.aborted) {

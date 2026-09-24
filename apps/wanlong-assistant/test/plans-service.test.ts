@@ -6,7 +6,7 @@ import { withFileLock } from '@avdm/core';
 import { PlanService, ScriptRunner } from '../src/main/plans';
 import type { GameAccount } from '../src/main/automation/accounts/types';
 import type { PlanHostPort, ScriptDef, ScriptRunSnapshot } from '../src/main/plans/types';
-import { FAST_PACING, fakeVision, inProcessWorkers } from './helpers/script-worker';
+import { FAST_PACING, fakeScriptDevice, fakeVision, inProcessWorkers, writeTemplateSet } from './helpers/script-worker';
 
 const GAME = 'wanlong';
 const PKG = 'com.lilithgames.samo.android.cn';
@@ -192,6 +192,31 @@ describe('PlanService integration with fake device', () => {
     await eventually(async () => service.listRuns(GAME).find((item) => item.runId === run.runId)?.status === 'succeeded');
     await eventually(async () => events.includes('resume'));
     expect(events[0]).toMatch(/^suspend:1:临时运行脚本/);
+  });
+
+  it('runs the keep-alive example while the game is not in the foreground (its relaunch branch is reachable)', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'wanlong-plan-service-'));
+    homes.push(home);
+    const dir = await writeTemplateSet(path.join(home, 'set'), ['demo_target']);
+    const device = fakeScriptDevice();
+    device.foreground = 'com.android.launcher3';
+    const port: PlanHostPort = {
+      accounts: async () => [account],
+      instance: async () => ({ status: 'running', record: { createdAt: 'identity-1' } }),
+      templateDir: async () => dir,
+      gatherScheduleEnabled: async () => false,
+      device: async () => device,
+    };
+    const runner = new ScriptRunner(home, port, { workerFactory: inProcessWorkers({ vision: fakeVision(() => true) }).factory, pacing: FAST_PACING, foregroundPollMs: 5 });
+    const service = new PlanService(home, port, runner);
+    services.push(service);
+    await service.start(GAME);
+    // A script that does not start with a launch is still refused off-game.
+    await service.saveScript(GAME, script);
+    await expect(service.runScript(GAME, 1, script.id)).rejects.toThrow('未处于前台');
+    const run = await service.runScript(GAME, 1, 'builtin_keep_alive');
+    await eventually(async () => service.listRuns(GAME).find((item) => item.runId === run.runId)?.status === 'succeeded');
+    expect(device.actions).toEqual([`stop:${PKG}`, `start:${PKG}`]);
   });
 
   it('caps concurrent scripts: manual runs are refused, plan runs wait instead of failing', async () => {
