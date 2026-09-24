@@ -61,3 +61,7 @@
     flex-direction: column;
   }
 }
+
+.instances-table tbody tr.instances-row-pick {
+  cursor: pointer;
+}

@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, type OpenDialogOptions } from 'electron';
+import type { OpenDialogOptions } from 'electron';
 import type { AutomationApi } from '../../shared/ipc';
 import type { AutomationHost } from '../automation/host';
 import type { PlanService } from '../plans';
@@ -13,6 +13,8 @@ export interface AutomationServices {
 export const automationHandlers: DomainHandlers<AutomationApi, AutomationServices> = {
   async automationGames({ automation }) { return automation.games(); },
   async pickAutomationTemplateSet({ sender }) {
+    // Imported lazily (conventions §2.4): domain handler modules stay importable in vitest without the Electron mock.
+    const { BrowserWindow, dialog } = await import('electron');
     const options: OpenDialogOptions = {
       title: '选择游戏模板集目录', buttonLabel: '选择模板集', properties: ['openDirectory'],
     };

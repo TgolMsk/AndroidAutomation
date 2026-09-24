@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
@@ -68,5 +69,16 @@ describe('product IPC boundary', () => {
     expect(() => authorizeWanlongInvoke(appUrl, undefined)).toThrow('主窗口');
     expect(() => authorizeWanlongInvoke('https://example.com', 'main')).toThrow('未知页面');
     expect(() => authorizeWanlongInvoke(undefined, 'main')).toThrow('未知页面');
+  });
+
+  it('keeps static Electron imports out of the per-domain handler modules', () => {
+    // Conventions §2.4: only events.ts and ipc-handlers.ts import electron statically; a domain handler that
+    // needs an Electron API imports it lazily, so the handler tables stay importable in tests without the mock.
+    const dir = join(here, '..', 'src', 'main', 'ipc');
+    const files = readdirSync(dir).filter((name) => name.endsWith('.ts'));
+    expect(files).toContain('automation.ts');
+    for (const file of files) {
+      expect(readFileSync(join(dir, file), 'utf8'), file).not.toMatch(/^import\s+(?!type\b)[^;]*?from\s+['"]electron['"]/m);
+    }
   });
 });

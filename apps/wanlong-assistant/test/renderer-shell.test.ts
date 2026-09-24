@@ -9,6 +9,7 @@ import { sectionTones, sortBadges } from '../src/renderer/state/badges';
 import { isRunActive, upsertRun, upsertSchedule } from '../src/renderer/state/activity';
 import { isPlanRunActive } from '../src/renderer/state/plan-runs';
 import { GATHER_RESOURCES, wanlongConfig, wanlongDraftOf } from '../src/renderer/views/gather/gather-config';
+import { describeServiceFailure, serviceFailureDetail, serviceFailureLabel } from '../src/renderer/hooks/useServiceFailures';
 
 function memoryStorage(initial: Record<string, string> = {}) {
   const data = new Map(Object.entries(initial));
@@ -79,6 +80,18 @@ describe('top-bar badges', () => {
     expect(badges.map((badge) => badge.tone)).toEqual(['bad', 'warn', 'warn', 'info']);
     expect(sortBadges(badges).map((badge) => badge.id)).toEqual(badges.map((badge) => badge.id));
     expect(sectionTones(badges)).toEqual({ devices: 'bad', tools: 'warn', settings: 'info' });
+  });
+});
+
+describe('service start failures', () => {
+  it('says what broke, what is lost and that the rest keeps working', () => {
+    const plans = { name: '脚本计划', message: 'plans.json 损坏。', impact: '定时脚本不会自动运行', at: 1 };
+    expect(serviceFailureDetail(plans)).toBe('plans.json 损坏。定时脚本不会自动运行，其余功能不受影响；排除问题后重启助手即可重试。');
+    expect(describeServiceFailure({ name: '运行监控', message: '同步失败', at: 1 }))
+      .toBe('运行监控没能启动：同步失败。其余功能不受影响；排除问题后重启助手即可重试。');
+    expect(serviceFailureLabel([])).toBeNull();
+    expect(serviceFailureLabel([plans])).toBe('脚本计划未启动');
+    expect(serviceFailureLabel([plans, { ...plans, name: '运行监控' }])).toBe('2 项服务未启动');
   });
 });
 

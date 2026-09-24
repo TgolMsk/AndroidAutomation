@@ -26,6 +26,7 @@ const fakes = {
   accounts: {},
   insights: {},
   remoteBot: {},
+  serviceHealth: { list: vi.fn(() => [{ name: '脚本计划', message: '坏文件', at: 1 }]) },
   windows: { kindOf: (sender: unknown) => (sender === liveSender ? 'live' : 'main') },
 };
 const mainSender = { id: 1 };
@@ -48,6 +49,9 @@ describe('assistant IPC registration', () => {
   it('returns values in an ok envelope', async () => {
     await expect(invoke('advisorStatus', mainSender)).resolves.toEqual({ ok: true, value: status });
     await expect(invoke('automationRuns', mainSender)).resolves.toEqual({ ok: true, value: [] });
+    await expect(invoke('appServiceFailures', mainSender)).resolves.toEqual({
+      ok: true, value: [{ name: '脚本计划', message: '坏文件', at: 1 }],
+    });
   });
 
   it('returns failures as data, keeping the error code', async () => {

@@ -3,6 +3,8 @@ import { avdm, errMsg } from '../../api';
 import { Icon } from '../../components/Icon';
 import { Spinner } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
+import { beijingTime } from '../../format';
+import { serviceFailureDetail, useServiceFailures } from '../../hooks/useServiceFailures';
 import { useNavigation } from '../../state/navigation';
 import { useSelection } from '../../state/selection';
 import type { ViewProps } from '../types';
@@ -12,13 +14,17 @@ type AppInfo = Awaited<ReturnType<typeof avdm.appInfo>>;
 
 const PLATFORM: Record<string, string> = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' };
 
-/** 应用设置: app and game module information, the data directory, and where each feature's settings live. */
+/**
+ * 应用设置: background services that failed to start (the top-bar badge links here), app and game module
+ * information, the data directory, and where each feature's settings live.
+ */
 export function SettingsView(_props: ViewProps) {
   const toast = useToast();
   const { navigate } = useNavigation();
   const { game, games, gamesLoaded, gamesError, reloadGames } = useSelection();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [infoError, setInfoError] = useState<string>();
+  const failures = useServiceFailures();
 
   useEffect(() => {
     let active = true;
@@ -34,6 +40,16 @@ export function SettingsView(_props: ViewProps) {
 
   return (
     <div className="settings-view">
+      {failures.length > 0 && <section className="settings-card" aria-labelledby="settings-services-title">
+        <h2 id="settings-services-title"><Icon name="alert" />后台服务未启动</h2>
+        <ul className="settings-links">
+          {failures.map((failure) => <li key={failure.name}><div>
+            <strong>{failure.name}</strong>
+            <span>{serviceFailureDetail(failure)}</span>
+          </div><span className="mono">{beijingTime(failure.at, 'full')}</span></li>)}
+        </ul>
+      </section>}
+
       <section className="settings-card" aria-labelledby="settings-app-title">
         <h2 id="settings-app-title"><Icon name="info" />应用信息</h2>
         {infoError && <p className="settings-error" role="alert">读取失败：{infoError}</p>}

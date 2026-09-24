@@ -5,8 +5,9 @@ import { AdvisorService } from './automation/advisor';
 import { gamePlugin } from './automation/games';
 import { AutomationHost } from './automation/host';
 import { InsightsService } from './automation/insights';
+import { broadcast } from './events';
 import { registerWanlongIpcHandlers } from './ipc-handlers';
-import { runServiceSteps } from './lifecycle';
+import { runServiceSteps, ServiceHealth } from './lifecycle';
 import { MonitoringService, ReadOnlyTelegramBot } from './monitoring';
 import { PlanService } from './plans';
 
@@ -18,6 +19,9 @@ bootstrapApp({
   name: '万龙助手',
   rendererPage: 'index.html',
   createAddon(services, home) {
+    // ── app (service health) ──
+    const serviceHealth = new ServiceHealth((failures) => broadcast('service-failures', failures));
+
     // ── insights (stats / notifications) ──
     const insights = new InsightsService(home);
 
@@ -105,18 +109,19 @@ bootstrapApp({
       advisor,
       plans,
       remoteBot,
+      serviceHealth,
       windows: services.windows,
     });
 
     return {
-      /** Each service starts on its own: one failure is logged and never blocks the others. */
+      /** Each service starts on its own: one failure is logged, shown in the top bar and never blocks the others. */
       async restore() {
-        await runServiceSteps('start', [
-          { name: '自动续跑调度', run: () => automation.restoreSchedules() },
-          { name: '脚本计划', run: () => plans.start('wanlong') },
-          { name: '运行监控', run: () => monitoring.start() },
-          { name: '只读机器人', run: () => remoteBot.start() },
-        ]);
+        serviceHealth.report(await runServiceSteps('start', [
+          { name: '自动续跑调度', impact: '自动采集不会续跑', run: () => automation.restoreSchedules() },
+          { name: '脚本计划', impact: '定时脚本不会自动运行', run: () => plans.start('wanlong') },
+          { name: '运行监控', impact: '掉线与卡死不会告警', run: () => monitoring.start() },
+          { name: '只读机器人', impact: 'Telegram 机器人不会响应', run: () => remoteBot.start() },
+        ]));
       },
       /** Inbound network first, then observers, device writers, and finally stores that flush on exit. */
       async dispose() {
