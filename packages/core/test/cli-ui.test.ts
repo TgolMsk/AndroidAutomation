@@ -277,17 +277,47 @@ describe('cli file helpers', () => {
     }
   });
 
-  it('restarts at 0 when the log file is replaced by a larger new one (like tail -F)', async () => {
+  // Known limitation, kept visible: off macOS a delete-and-recreate is only told apart from an append by
+  // dev + inode (see `sameFile` in cli/src/util/files.ts), and ext4/tmpfs hand the freed inode number straight
+  // back to the new file, so there this exact sequence reads as an append. APFS never reuses inode numbers.
+  it.skipIf(process.platform !== 'darwin')('restarts at 0 when the log file is replaced by a larger new one (like tail -F)', async () => {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'avdm-cli-replace-'));
     try {
       const file = path.join(dir, 'instance-0.log');
       await fsp.writeFile(file, 'old\n'.repeat(10));
       const tail = await readTail(file, 200);
       // `avdm rm 0 && avdm create && avdm start 0`: deleted, recreated, and grown past the old size.
-      // The new file is written before the old one goes away: ext4/tmpfs hand a freed inode number straight
-      // back, which would make the replacement indistinguishable from an append (APFS does not reuse them).
-      await fsp.writeFile(`${file}.new`, '=== launch header ===\n' + 'new\n'.repeat(20));
       await fsp.rm(file);
+      await fsp.writeFile(file, '=== launch header ===\n' + 'new\n'.repeat(20));
+      const ac = new AbortController();
+      let got = '';
+      let truncated = 0;
+      const done = followFile(file, {
+        from: tail.offset,
+        identity: tail.identity!,
+        signal: ac.signal,
+        intervalMs: 10,
+        onData: (t) => (got += t),
+        onTruncate: () => truncated++,
+      });
+      await vi.waitFor(() => expect(got.startsWith('=== launch header ===\n')).toBe(true), { timeout: 2000, interval: 10 });
+      await vi.waitFor(() => expect(got).toBe('=== launch header ===\n' + 'new\n'.repeat(20)), { timeout: 2000, interval: 10 });
+      expect(truncated).toBe(1);
+      ac.abort();
+      await done;
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restarts at 0 when a larger new log file is renamed over the old one', async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'avdm-cli-rename-'));
+    try {
+      const file = path.join(dir, 'instance-0.log');
+      await fsp.writeFile(file, 'old\n'.repeat(10));
+      const tail = await readTail(file, 200);
+      // Both files exist at once, so the new one always gets another inode: runs on every platform.
+      await fsp.writeFile(`${file}.new`, '=== launch header ===\n' + 'new\n'.repeat(20));
       await fsp.rename(`${file}.new`, file);
       const ac = new AbortController();
       let got = '';
