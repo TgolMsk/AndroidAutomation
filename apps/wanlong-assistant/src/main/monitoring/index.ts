@@ -67,7 +67,9 @@ export class MonitoringService {
     }
     if (specific) {
       this.failures.reset(run.gameId, run.index);
-      const screenshotPath = await this.evidence.savePng(run.gameId, run.index, specific.screenshot, at).catch(() => undefined);
+      const screenshotPath = this.keepEvidence()
+        ? await this.evidence.savePng(run.gameId, run.index, specific.screenshot, at).catch(() => undefined)
+        : undefined;
       await this.ports.onAlert({
         id: `${run.gameId}:${run.index}:${specific.kind}:${run.runId}`,
         gameId: run.gameId, index: run.index, at, kind: specific.kind, severity: 'critical',
@@ -163,6 +165,12 @@ export class MonitoringService {
     }
   }
 
+  /** A broken settings read keeps the evidence (the safe side for an alert). */
+  private keepEvidence(): boolean {
+    try { return this.ports.keepEvidence?.() !== false; }
+    catch { return true; }
+  }
+
   private reset(key: string, target: MonitorTarget): void {
     this.failures.reset(target.gameId, target.index);
     this.freeze.reset(target.gameId, target.index);
@@ -170,7 +178,7 @@ export class MonitoringService {
   }
 
   private async emitFreeze(target: MonitorTarget, verdict: FreezeVerdict, at: number, frame?: import('@avdm/automation').RawFrame): Promise<void> {
-    const screenshotPath = frame
+    const screenshotPath = frame && this.keepEvidence()
       ? await this.evidence.saveFrame(target.gameId, target.index, frame, at).catch(() => undefined)
       : undefined;
     await this.ports.onAlert({

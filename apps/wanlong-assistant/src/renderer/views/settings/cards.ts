@@ -6,7 +6,9 @@
 import type { ComponentType } from 'react';
 import { AboutCard } from './AboutCard';
 import { DataPathsCard } from './DataPathsCard';
+import { DeviceToolsCard } from './DeviceToolsCard';
 import { EmulatorSettingsCard } from './EmulatorSettingsCard';
+import { FeatureLinksCard } from './FeatureLinksCard';
 import { HealthCard } from './HealthCard';
 import { LogsCard } from './LogsCard';
 import { PanelSettingsCard } from './PanelSettingsCard';
@@ -20,7 +22,7 @@ export interface SettingsCardProps {
 
 export type SettingsCardKey =
   | 'services' | 'panel' | 'emulator' | 'notifications' | 'bot' | 'ai' | 'logs' | 'health' | 'update' | 'paths'
-  | 'legacyImport' | 'about';
+  | 'legacyImport' | 'about' | 'deviceTools' | 'features';
 
 export interface SettingsCardEntry {
   key: SettingsCardKey;
@@ -35,11 +37,13 @@ export const SETTINGS_CARDS: readonly SettingsCardEntry[] = [
   { key: 'notifications', column: 'main', component: NotificationsSlotCard },
   { key: 'bot', column: 'main', component: BotSlotCard },
   { key: 'ai', column: 'main', component: AiSlotCard },
+  { key: 'features', column: 'main', component: FeatureLinksCard },
   { key: 'logs', column: 'main', component: LogsCard },
   { key: 'health', column: 'side', component: HealthCard },
   { key: 'update', column: 'side', component: UpdateSlotCard },
   { key: 'emulator', column: 'side', component: EmulatorSettingsCard },
   { key: 'paths', column: 'side', component: DataPathsCard },
+  { key: 'deviceTools', column: 'side', component: DeviceToolsCard },
   { key: 'legacyImport', column: 'side', component: LegacyImportSlotCard },
   { key: 'about', column: 'side', component: AboutCard },
 ];

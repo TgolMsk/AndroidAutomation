@@ -91,7 +91,8 @@ function validConfig(raw: unknown): raw is StoredConfig {
     (value.authorizedUserId === undefined || typeof value.authorizedUserId === 'string' && value.authorizedUserId.length <= 32);
 }
 
-async function safeStorageCodec(): Promise<SecretCodec> {
+/** The Keychain-backed codec (resolved per call). Exported so the composition root can wrap it. */
+export async function safeStorageCodec(): Promise<SecretCodec> {
   const electron = await import('electron');
   if (!electron.safeStorage?.isEncryptionAvailable()) throw new Error('系统钥匙串不可用，暂时无法保存或读取 Bot Token');
   return {

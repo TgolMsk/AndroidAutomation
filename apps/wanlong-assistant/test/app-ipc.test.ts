@@ -9,7 +9,10 @@ vi.mock('electron', () => import('../../../packages/emulator-shell/test/helpers/
 
 import { handlers } from '../../../packages/emulator-shell/test/helpers/electron-mock';
 import { AppLog } from '../src/main/app/app-log';
-import { APP_PATH_KEYS, listAppPaths, openAppPath, resolveAppPath, type PathOpener } from '../src/main/app/paths';
+import { DeviceTools } from '../src/main/app/device-tools';
+import {
+  APP_PATH_KEYS, configuredSettingsIndices, copyText, listAppPaths, listInstanceTemplateSets, openAppPath, resolveAppPath, type PathOpener,
+} from '../src/main/app/paths';
 import { AppSettingsStore } from '../src/main/app/settings-store';
 import { announceHealth, announceServiceFailures } from '../src/main/app/startup';
 import { AppToasts, TOAST_REPLAY_MS } from '../src/main/app/toasts';
@@ -25,6 +28,9 @@ let settings: AppSettingsStore;
 let log: AppLog;
 const occupancy = { holders: vi.fn(async (index: number) => [{ index, label: '运行采集', source: 'gather', blocking: true }]) };
 const appHealth = { last: vi.fn(() => null), check: vi.fn(async () => ({ ok: true, checkedAt: 1, durationMs: 1, items: [] })) };
+const clipboard = { writeText: vi.fn() };
+const deviceTools = { installApk: vi.fn(async (index: number, paths: string[]) => `Success ${index} ${paths.length}`) };
+const appTemplateSets = vi.fn(async (gameId: string) => [{ index: 0, instanceName: gameId, path: '/sets/a', exists: true, name: 'A', templates: 3 }]);
 
 function invoke(method: string, ...args: unknown[]): Promise<unknown> {
   const handler = handlers.get(wanlongInvokeChannel(method as never)) as Invoke | undefined;
@@ -46,6 +52,9 @@ beforeAll(async () => {
     appToasts: toasts,
     occupancy,
     appHome: home,
+    deviceTools,
+    appTemplateSets,
+    appClipboard: clipboard,
     windows: { kindOf: () => 'main' },
   } as unknown as WanlongServices);
 });
@@ -85,6 +94,78 @@ describe('app IPC domain', () => {
     await expect(invoke('instanceOccupancy', 4)).resolves.toMatchObject({ ok: true, value: [{ index: 4, label: '运行采集' }] });
     await expect(invoke('instanceOccupancy', -1)).resolves.toMatchObject({ ok: false });
   });
+
+  it('lists template sets, copies text through main and installs APKs with checked arguments', async () => {
+    await expect(invoke('appTemplateSets', 'wanlong')).resolves.toMatchObject({ ok: true, value: [{ index: 0, path: '/sets/a' }] });
+    await expect(invoke('appTemplateSets', 'no-such-game')).resolves.toMatchObject({ ok: false });
+    await expect(invoke('appCopyText', '/Users/me/.avdm')).resolves.toEqual({ ok: true, value: undefined });
+    expect(clipboard.writeText).toHaveBeenCalledWith('/Users/me/.avdm');
+    await expect(invoke('appCopyText', '')).resolves.toEqual({ ok: false, error: { message: '复制内容无效' } });
+    await expect(invoke('appCopyText', 'x'.repeat(5000))).resolves.toEqual({ ok: false, error: { message: '复制内容无效' } });
+    await expect(invoke('appInstallApk', 2, ['/a.apk'])).resolves.toEqual({ ok: true, value: 'Success 2 1' });
+    await expect(invoke('appInstallApk', 2, '/a.apk')).resolves.toEqual({ ok: false, error: { message: 'APK 文件列表无效' } });
+    await expect(invoke('appInstallApk', 99, ['/a.apk'])).resolves.toMatchObject({ ok: false });
+    expect(deviceTools.installApk).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('device tools (设备工具)', () => {
+  it('installs existing package files on a running instance only, through the given (lane) host', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'avdm-app-apk-'));
+    try {
+      const apk = path.join(root, 'ADBKeyboard.apk');
+      await writeFile(apk, 'pk');
+      const install = vi.fn(async (files: string[]) => `Success ${files.length}`);
+      let status = 'running';
+      const tools = new DeviceTools({ get: async () => ({ getState: async () => ({ status }), device: async () => ({ install }) }) });
+      await expect(tools.installApk(1, [apk])).resolves.toBe('Success 1');
+      expect(install).toHaveBeenCalledWith([apk]);
+      await expect(tools.installApk(1, [])).rejects.toThrow('请先选择要安装的 APK 文件');
+      await expect(tools.installApk(1, ['relative.apk'])).rejects.toThrow('不是可安装的 APK 文件');
+      await expect(tools.installApk(1, [path.join(root, 'notes.txt')])).rejects.toThrow('不是可安装的 APK 文件');
+      await expect(tools.installApk(1, [path.join(root, 'missing.apk')])).rejects.toThrow('找不到安装包文件');
+      status = 'stopped';
+      await expect(tools.installApk(1, [apk])).rejects.toThrow('实例 #1 尚未就绪');
+      expect(install).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('instance template sets and clipboard', () => {
+  it('lists each instance\'s set, keeps a deleted instance\'s settings and reports unreadable ones per entry', async () => {
+    const entries = await listInstanceTemplateSets({
+      instances: async () => [{ index: 0, name: '主号' }, { index: 1, name: '小号' }, { index: 2, name: '空' }],
+      configuredIndices: async () => [0, 5],
+      templateDir: async (index) => {
+        if (index === 1) throw new Error('自动化配置格式不兼容');
+        return index === 2 ? '' : `/sets/${index}`;
+      },
+      describe: async (index) => {
+        if (index === 5) throw new Error('模板清单损坏');
+        return { name: `集${index}`, templates: 10 + index };
+      },
+    });
+    expect(entries).toEqual([
+      { index: 0, instanceName: '主号', path: '/sets/0', exists: false, name: '集0', templates: 10 },
+      { index: 1, instanceName: '小号', path: '', exists: false, name: null, templates: null, error: '自动化配置格式不兼容' },
+      { index: 5, instanceName: null, path: '/sets/5', exists: false, name: null, templates: null, error: '模板清单损坏' },
+    ]);
+  });
+
+  it('finds settings files of deleted instances and validates clipboard text', async () => {
+    await mkdir(path.join(home, 'automation', 'wanlong'), { recursive: true });
+    await writeFile(path.join(home, 'automation', 'wanlong', '3.json'), '{}');
+    await writeFile(path.join(home, 'automation', 'wanlong', 'notes.json'), '{}');
+    expect(await configuredSettingsIndices(home, 'wanlong')).toEqual([3]);
+    expect(await configuredSettingsIndices(home, 'missing')).toEqual([]);
+    const writer = { writeText: vi.fn() };
+    await copyText('路径', writer);
+    expect(writer.writeText).toHaveBeenCalledWith('路径');
+    await expect(copyText('a\0b', writer)).rejects.toThrow('复制内容无效');
+    await expect(copyText(42, writer)).rejects.toThrow('复制内容无效');
+  });
 });
 
 describe('data paths', () => {
@@ -116,6 +197,9 @@ describe('data paths', () => {
       await expect(openAppPath(root, 'wanlong', 'logs', failing)).rejects.toThrow(`无法打开目录 ${path.join(root, 'automation', 'logs')}：没有权限`);
       const entries = await listAppPaths(root, 'wanlong');
       expect(entries.find((entry) => entry.key === 'accounts')!.exists).toBe(true);
+      // Nothing writes gather scene shots yet: the entry says so instead of looking broken.
+      expect(entries.find((entry) => entry.key === 'gatherShots')!.pending).toContain('尚未接入');
+      expect(entries.filter((entry) => entry.pending).map((entry) => entry.key)).toEqual(['gatherShots']);
       expect(entries.find((entry) => entry.key === 'scripts')!.exists).toBe(false);
       await mkdir(path.join(root, 'automation', 'games', 'wanlong', 'scripts'), { recursive: true });
       expect((await listAppPaths(root, 'wanlong')).find((entry) => entry.key === 'scripts')!.exists).toBe(true);

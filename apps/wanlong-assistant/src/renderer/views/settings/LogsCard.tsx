@@ -13,6 +13,8 @@ import type { ViewProps } from '../types';
 import { LOG_LEVEL_LABEL, logScopes, matchesLogFilter, mergeLogEntries, type LogFilter } from './log-view';
 
 const LIMIT = 300;
+/** Typing in the search box queries main (which may scan the rotated files) only after a pause. */
+export const LOG_SEARCH_DEBOUNCE_MS = 300;
 const LEVEL_TONE: Record<AppLogLevel, SemanticTone> = { debug: 'neutral', info: 'info', warn: 'warning', error: 'danger' };
 
 /**
@@ -23,6 +25,7 @@ export function LogsCard({ visible = true }: Partial<ViewProps>) {
   const toast = useToast();
   const { gameId } = useSelection();
   const [filter, setFilter] = useState<LogFilter>({ minLevel: 'info', scope: '', search: '' });
+  const [searchInput, setSearchInput] = useState('');
   const [entries, setEntries] = useState<AppLogEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
@@ -39,6 +42,12 @@ export function LogsCard({ visible = true }: Partial<ViewProps>) {
   }, [filter]);
 
   useEffect(() => { if (visible) load(); }, [load, visible]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setFilter((current) => (current.search === searchInput ? current : { ...current, search: searchInput })),
+      LOG_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   useAvdmEvent('app-log', (entry) => {
     if (!visible || !follow || !matchesLogFilter(entry, filter)) return;
@@ -77,7 +86,7 @@ export function LogsCard({ visible = true }: Partial<ViewProps>) {
           </select>
         </label>
         <label className="settings-log-search">搜索
-          <input type="search" value={filter.search} placeholder="日志内容" onChange={(event) => setFilter((current) => ({ ...current, search: event.target.value }))} />
+          <input type="search" value={searchInput} placeholder="日志内容" onChange={(event) => setSearchInput(event.target.value)} />
         </label>
         <label className="check"><input type="checkbox" checked={follow} onChange={(event) => setFollow(event.target.checked)} />实时追加</label>
       </div>

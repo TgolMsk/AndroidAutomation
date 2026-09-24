@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { isAvdmError, withFileLock, type AdbDevice, type InstanceState } from '@avdm/core';
+import { isAvdmError, type AdbDevice, type InstanceState } from '@avdm/core';
 import type { RawFrame } from '@avdm/automation';
+import { withLabelledLease } from '../../app/instance-access';
 import type { ManagerHost } from '../../manager-host';
 import type { AutomationHost } from '../host';
 import { gamePlugin } from '../games';
@@ -157,12 +158,11 @@ function bindResult(result: BindOutcome & { notice?: string }): AccountBindResul
 
 /** A long-held lease stops a second process from running automation during account login. */
 async function acquireLoginLease(home: string, index: number): Promise<Lease> {
-  const lock = path.join(home, 'run', `automation-instance-${index}.lock`);
   let entered!: () => void;
   let exit!: () => void;
   const acquired = new Promise<void>((resolve) => { entered = resolve; });
   const held = new Promise<void>((resolve) => { exit = resolve; });
-  const lockDone = withFileLock(lock, async () => {
+  const lockDone = withLabelledLease(home, index, '进行账号登录', async () => {
     entered();
     await held;
   }, { timeoutMs: 150 });
@@ -314,8 +314,7 @@ export class AccountManager {
       if (position < indices.length) {
         const index = indices[position]!;
         try {
-          return await withFileLock(path.join(this.home, 'run', `automation-instance-${index}.lock`),
-            () => enter(position + 1), { timeoutMs: 150 });
+          return await withLabelledLease(this.home, index, '修改账号绑定', () => enter(position + 1), { timeoutMs: 150 });
         } catch (error) {
           if (isAvdmError(error, 'LOCK_TIMEOUT')) {
             throw new Error(`实例 #${index} 正被登录、采集或脚本计划占用，请先结束任务后再修改账号`);

@@ -8,8 +8,20 @@ import {
   type ScriptWorkerToMain,
 } from './script-protocol';
 
-/** Template / frame down-sampling (the vision package default). */
+/** Template / frame down-sampling when the app settings give none (the vision package default). */
 const SHRINK = 2;
+
+/** The run's downsampling factor: the app settings' `shrink` (1–4), else the vision default. */
+function runShrink(input: ScriptWorkerInput): number {
+  const value = input.matchDefaults?.shrink;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4 ? value : SHRINK;
+}
+
+/** Threshold for templates that set none (app settings `matchThreshold`); undefined keeps the vision default. */
+function defaultThreshold(input: ScriptWorkerInput): number | undefined {
+  const value = input.matchDefaults?.threshold;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 1 ? value : undefined;
+}
 
 export interface ScriptWorkerDeps {
   vision?: Pick<VisionPort, 'prepareFrame' | 'prepareTemplate' | 'match'>;
@@ -26,7 +38,7 @@ function message(error: unknown): string {
 }
 
 /** Load and compile exactly the templates the script references; fail early with the full list of problems. */
-async function prepareTemplates(input: ScriptWorkerInput, vision: ScriptWorkerDeps['vision'] & object): Promise<PreparedSet> {
+async function prepareTemplates(input: ScriptWorkerInput, vision: ScriptWorkerDeps['vision'] & object, shrink: number): Promise<PreparedSet> {
   const ids = referencedTemplateIds(input.script);
   if (!ids.length) return { templates: new Map(), refWidth: input.script.refWidth, refHeight: input.script.refHeight };
   if (!input.templateDir) throw new Error('脚本用到了模板匹配，但该实例还没有选择模板集。请先到「模板库」为这个实例选择或新建模板集。');
@@ -38,12 +50,15 @@ async function prepareTemplates(input: ScriptWorkerInput, vision: ScriptWorkerDe
     throw new Error(`模板集属于 ${set.packageName}，与脚本的游戏包名 ${input.script.packageName} 不一致。`);
   }
   const templates = new Map<string, PreparedTemplate>();
+  const threshold = defaultThreshold(input);
   const missing: string[] = [];
   const broken: string[] = [];
   for (const id of ids) {
-    const definition = set.templates.find((item) => item.id === id);
-    if (!definition) { missing.push(id); continue; }
-    try { templates.set(id, await vision.prepareTemplate(await readTemplatePng(set, id), definition, set, SHRINK)); }
+    const stored = set.templates.find((item) => item.id === id);
+    if (!stored) { missing.push(id); continue; }
+    // Original matchOnce: the settings threshold only fills in for templates without their own.
+    const definition = threshold !== undefined && stored.threshold === undefined ? { ...stored, threshold } : stored;
+    try { templates.set(id, await vision.prepareTemplate(await readTemplatePng(set, id), definition, set, shrink)); }
     catch (error) { broken.push(`${id}（${message(error)}）`); }
   }
   if (missing.length || broken.length) {
@@ -145,7 +160,8 @@ export function attachScriptWorker(port: ScriptWorkerPort, deps: ScriptWorkerDep
 
   async function start(input: ScriptWorkerInput): Promise<void> {
     try {
-      const prepared = await prepareTemplates(input, vision);
+      const shrink = runShrink(input);
+      const prepared = await prepareTemplates(input, vision, shrink);
       if (prepared.templates.size) await warmUp();
       context = new ScriptContext({
         runId: input.runId,
@@ -157,7 +173,7 @@ export function attachScriptWorker(port: ScriptWorkerPort, deps: ScriptWorkerDep
         templates: prepared.templates,
         refWidth: prepared.refWidth,
         refHeight: prepared.refHeight,
-        shrink: SHRINK,
+        shrink,
         shotPolicy: input.shotPolicy,
         device,
         vision,
@@ -180,10 +196,10 @@ export function attachScriptWorker(port: ScriptWorkerPort, deps: ScriptWorkerDep
         restartGapMs: input.restartGapMs,
         restartSettleMs: input.restartSettleMs,
       });
-      context.log('info', `执行器就绪：模板 ${prepared.templates.size} 张，参考分辨率 ${prepared.refWidth}x${prepared.refHeight}，降采样 1/${SHRINK}。`,
+      context.log('info', `执行器就绪：模板 ${prepared.templates.size} 张，参考分辨率 ${prepared.refWidth}x${prepared.refHeight}，降采样 1/${shrink}。`,
         undefined, { scope: 'runner' });
       for (const queued of queuedControls.splice(0)) control(queued);
-      send({ type: 'ready', templates: prepared.templates.size, refWidth: prepared.refWidth, refHeight: prepared.refHeight, shrink: SHRINK });
+      send({ type: 'ready', templates: prepared.templates.size, refWidth: prepared.refWidth, refHeight: prepared.refHeight, shrink });
       // Stopped before the gate opened: finish as aborted without touching the device.
       if (stopRequested) void execute();
     } catch (error) {

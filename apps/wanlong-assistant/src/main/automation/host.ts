@@ -4,10 +4,10 @@ import { Worker } from 'node:worker_threads';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import { withFileLock } from '@avdm/core';
 import { AppError, canonicalDirectory, TemplateLibrary, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
 import { normalizeGatherConfig, type GatherCycleResult } from '@avdm/automation/wanlong';
 import type { AutomationGameSummary, AutomationProbeReport, AutomationRun, AutomationSchedule, AutomationSettings, TemplateAlphaPreview, TemplateCapture, TemplateCoverage, TemplateImportResult, TemplatesChange, TemplateTestOptions, TemplateTestResult } from '../../shared/ipc';
+import { withLabelledLease } from '../app/instance-access';
 import { broadcast } from '../events';
 import type { ManagerHost } from '../manager-host';
 import { asIndex, errorMessage } from '../util';
@@ -379,8 +379,8 @@ export class AutomationHost {
     }
   }
 
-  private withDeviceLease<T>(index: number, action: () => Promise<T>): Promise<T> {
-    return withFileLock(join(this.home, 'run', `automation-instance-${index}.lock`), action, { timeoutMs: 200 });
+  private withDeviceLease<T>(index: number, action: () => Promise<T>, label = '修改模板或采集配置'): Promise<T> {
+    return withLabelledLease(this.home, index, label, action, { timeoutMs: 200 });
   }
 
   async saveSettings(gameId: string, index: number, patch: Partial<AutomationSettings>): Promise<AutomationSettings> {

@@ -3,7 +3,7 @@ import { chmod, mkdir, open, readFile, realpath, rename, rm, stat } from 'node:f
 import path, { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { withFileLock, type RawScreencapFrame } from '@avdm/core';
+import type { RawScreencapFrame } from '@avdm/core';
 import type { AndroidKey, ProbeReport, RawFrame } from '@avdm/automation';
 import {
   createRuntimeState,
@@ -13,6 +13,7 @@ import {
   type GatherCycleResult,
   type GatherRuntimeState,
 } from '@avdm/automation/wanlong';
+import { withLabelledLease } from '../app/instance-access';
 import { inspectGatherProbe } from './gather-probe-guard';
 
 const GAME_ID = 'wanlong';
@@ -267,8 +268,7 @@ export class WanlongGatherRunner {
     }
     const timer = setTimeout(() => controller.abort(new Error('采集单轮超时')), timeoutMs);
     timer.unref?.();
-    const lock = join(this.store.home, 'run', `automation-instance-${index}.lock`);
-    return withFileLock(lock, () => this.execute(index, options, entry), { timeoutMs: 100 })
+    return withLabelledLease(this.store.home, index, '运行采集', () => this.execute(index, options, entry), { timeoutMs: 100 })
       .finally(() => {
         clearTimeout(timer);
         options.signal?.removeEventListener('abort', onExternalAbort);

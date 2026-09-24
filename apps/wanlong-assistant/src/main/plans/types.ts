@@ -34,6 +34,14 @@ export interface TaskRuntime { accountId: string; taskId: string; lastClaimedAt:
 export interface PlanRun { runId: string; gameId: string; accountId: string; accountName: string; instanceIndex: number; taskId: string; scriptId: string; priority: number; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped'; queuedAt: number; startedAt: number | null; endedAt: number | null; message: string; stepId: string | null }
 export interface PlanOverview { config: PlanConfig; plans: AccountPlan[]; runtime: TaskRuntime[]; runs: PlanRun[]; at: number }
 
+/** App settings defaults for script matching (original `matchOnce`): see `PlanHostPort.matchDefaults`. */
+export interface ScriptMatchDefaults {
+  /** Threshold of templates that set none of their own. */
+  threshold: number;
+  /** Frame and template downsampling factor (1–4). */
+  shrink: number;
+}
+
 /** The assistant resolves real devices through the emulator's public manager; tests inject this port. */
 export interface ScriptDevice {
   screencapRaw(): Promise<RawFrame>;
@@ -66,6 +74,12 @@ export interface PlanHostPort {
   suspendForScript?(gameId: string, index: number, reason: string): Promise<() => void>;
   /** Default trace-shot policy (the app settings' `shotPolicy`); `onFail` when absent. */
   shotPolicy?(): Promise<ShotPolicy> | ShotPolicy;
+  /**
+   * App settings defaults for script matching (`matchThreshold` / `shrink`): the hit threshold of templates without
+   * their own (a step's own threshold still wins) and the frame / template downsampling factor. Absent = the
+   * vision defaults (0.85, 1/2).
+   */
+  matchDefaults?(): Promise<ScriptMatchDefaults> | ScriptMatchDefaults;
 }
 
 // ── Script runs (execution monitor) ──────────────────────────────────────────

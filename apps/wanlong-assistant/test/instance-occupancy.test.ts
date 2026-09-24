@@ -4,8 +4,11 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AvdmError, withFileLock } from '@avdm/core';
 import {
-  InstanceAccess, InstanceBusyError, explainLeaseTimeout, instanceLeasePath, readLeaseOwner, withInstanceLease,
+  InstanceAccess, InstanceBusyError, explainLeaseTimeout, instanceLeasePath, readLeaseOwner, readLeaseOwners, withInstanceLease,
+  withLabelledLease,
 } from '../src/main/app/instance-access';
+import { DeviceLaneCancelledError } from '../src/main/device/lane';
+import { WANLONG_ERROR_CODES, isRetryLaterCode } from '../src/shared/errors';
 import { InstanceOccupancy } from '../src/main/app/occupancy';
 import { describeOccupancy, lifecycleConfirmation, lifecycleNeedsConfirm } from '../src/shared/occupancy';
 import type { OccupancyHolder } from '../src/shared/ipc';
@@ -125,6 +128,44 @@ describe('withInstanceLease (occupancy table + cross-process lease)', () => {
   });
 });
 
+describe('withLabelledLease (existing writers: gather, templates, login, accounts, plans)', () => {
+  it('keeps core\'s LOCK_TIMEOUT for callers, but labels the lease and lists the holder while it is held', async () => {
+    const access = new InstanceAccess();
+    const inside = gate();
+    const finish = gate();
+    const held = withLabelledLease(home, 6, '运行脚本计划', async () => { inside.release(); await finish.promise; return 'ok'; }, { access });
+    await inside.promise;
+    expect(await readLeaseOwner(home, 6)).toMatchObject({ label: '运行脚本计划', pid: process.pid });
+    expect(access.holderOf(6)).toBe('运行脚本计划');
+    expect(await readLeaseOwners(home)).toEqual([{ index: 6, owner: expect.objectContaining({ label: '运行脚本计划' }) }]);
+    // A second writer still fails exactly as before (PlanService marks LOCK_TIMEOUT runs skipped, accounts map it) …
+    const raw = await withLabelledLease(home, 6, '运行采集', async () => 'never', { timeoutMs: 30, access }).catch((error: unknown) => error);
+    expect(raw).toBeInstanceOf(AvdmError);
+    expect(raw).toMatchObject({ code: 'LOCK_TIMEOUT' });
+    // … and the IPC boundary can now name the holder.
+    await expect(explainLeaseTimeout(raw, home)).resolves.toMatchObject({ code: 'CONCURRENCY_LIMIT', message: '实例 #6 正在运行脚本计划，请等待结束后再试。' });
+    finish.release();
+    await expect(held).resolves.toBe('ok');
+    expect(access.holderOf(6)).toBeNull();
+    expect(await readLeaseOwners(home)).toEqual([]);
+  });
+
+  it('never throws on an in-process entry it does not own (the file lock is what excludes)', async () => {
+    const access = new InstanceAccess();
+    const release = access.acquire(8, '克隆实例');
+    await expect(withLabelledLease(home, 8, '修改模板或采集配置', async () => access.holderOf(8), { access })).resolves.toBe('克隆实例');
+    expect(access.holderOf(8)).toBe('克隆实例');
+    release();
+  });
+
+  it('keeps every error code the assistant creates in the shared list', () => {
+    expect(WANLONG_ERROR_CODES).toContain(new InstanceBusyError(1, null).code);
+    expect(WANLONG_ERROR_CODES).toContain(new DeviceLaneCancelledError('x').code);
+    expect(isRetryLaterCode('CONCURRENCY_LIMIT')).toBe(true);
+    expect(isRetryLaterCode('LOCK_TIMEOUT')).toBe(false);
+  });
+});
+
 describe('InstanceOccupancy (who is using an instance)', () => {
   const gather: OccupancyHolder = { index: 1, label: '运行采集', source: 'gather', blocking: true };
   const schedule: OccupancyHolder = { index: 1, label: '自动采集已开启', source: 'schedule', blocking: false };
@@ -169,6 +210,21 @@ describe('InstanceOccupancy (who is using an instance)', () => {
     expect(source).toHaveBeenCalledWith(6);
   });
 
+  it('makes the update gate wait for a lease held by another assistant process', async () => {
+    const lock = instanceLeasePath(home, 9);
+    await mkdir(lock, { recursive: true });
+    await writeFile(path.join(lock, 'owner.json'), JSON.stringify({ label: '运行采集', pid: 1, at: 1 }));
+    await mkdir(path.join(home, 'run', 'unrelated.lock'), { recursive: true });
+    const occupancy = new InstanceOccupancy({ leaseOwners: () => readLeaseOwners(home), pid: 99 });
+    occupancy.register('schedule', () => [schedule]);
+    expect(await occupancy.anyBusy()).toBe('实例 #9 正在运行采集（另一个助手进程）。');
+    // Our own blocking holder is named first.
+    occupancy.register('gather', () => [gather]);
+    expect(await occupancy.anyBusy()).toBe('实例 #1 正在运行采集。');
+    // An abandoned lease does not block.
+    expect(await readLeaseOwners(home, () => Date.now() + 60_000)).toEqual([]);
+  });
+
   it('reports a lease held by another process when no service claims the instance', async () => {
     const lock = instanceLeasePath(home, 7);
     await mkdir(lock, { recursive: true });
@@ -176,7 +232,10 @@ describe('InstanceOccupancy (who is using an instance)', () => {
     const occupancy = new InstanceOccupancy({ leaseOwner: (index) => readLeaseOwner(home, index), pid: 99 });
     expect(await occupancy.holders(7)).toEqual([{ index: 7, label: '运行脚本（另一个助手进程）', source: 'lease', blocking: true }]);
     await writeFile(path.join(lock, 'owner.json'), '{}');
-    expect((await occupancy.holders(7))[0]!.label).toBe('被另一个进程操作');
+    // A lease without a label only says what is known (it was not necessarily another process).
+    expect((await occupancy.holders(7))[0]!.label).toBe('执行设备操作');
+    await writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: 1, at: 1 }));
+    expect((await occupancy.holders(7))[0]!.label).toBe('被另一个助手进程操作');
     // Our own gather run explains the lease: it is not listed twice.
     occupancy.register('gather', () => [{ ...gather, index: 7 }]);
     expect((await occupancy.holders(7)).map((holder) => holder.label)).toEqual(['运行采集']);

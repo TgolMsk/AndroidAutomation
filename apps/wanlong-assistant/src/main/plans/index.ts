@@ -6,6 +6,7 @@ import {
   blockingIssues, mergeParams, referencedTemplateIds, SHOT_POLICIES, startsWithLaunch,
   type ScriptParamValue, type ShotPolicy,
 } from '@avdm/automation/script';
+import { withLabelledLease } from '../app/instance-access';
 import { gamePlugin } from '../automation/games';
 import type { GameAccount } from '../automation/accounts/types';
 import { safeErrorMessage } from './device-errors';
@@ -15,14 +16,13 @@ import { ScriptRunner } from './script-runner';
 import { ScriptStore, validateScript } from './scripts';
 import { PlanStore } from './store';
 import type {
-  AccountPlan, ImeStatus, LogEntry, PlanConfig, PlanHostPort, PlanOverview, PlanRun, RunLogQuery, ScriptDef, ScriptIssue, ScriptMeta,
-  ScriptRunOptions, ScriptRunSnapshot,
+  AccountPlan, ImeStatus, LogEntry, PlanConfig, PlanHostPort, PlanOverview, PlanRun, RunLogQuery, ScriptDef, ScriptIssue, ScriptMatchDefaults,
+  ScriptMeta, ScriptRunOptions, ScriptRunSnapshot,
 } from './types';
 
 export type { AccountPlan, PlanConfig, PlanOverview, PlanRun, PlanTask, ScriptDef, ScriptMeta, TaskTrigger } from './types';
 export { defaultPlanConfig } from './store';
 export { ScriptRunner } from './script-runner';
-export { readAppShotPolicy } from './app-shot-policy';
 
 interface Active { run: PlanRun; controller: AbortController; done: Promise<void> }
 interface Manual { runId: string; gameId: string; controller: AbortController; done: Promise<void> }
@@ -295,15 +295,16 @@ export class PlanService {
       }
       if (this.port.suspendForScript) giveBack = await this.port.suspendForScript(gameId, index, `临时运行脚本「${script.name}」`);
       else if (await this.port.gatherScheduleEnabled(gameId, index)) throw new Error('该实例正在自动采集，请先关闭自动采集调度后再运行脚本');
-      lease = await this.acquireLease(index, MANUAL_LEASE_WAIT_MS);
+      lease = await this.acquireLease(index, MANUAL_LEASE_WAIT_MS, '运行脚本');
       const shotPolicy = options.shotPolicy ?? await this.defaultShotPolicy();
+      const matchDefaults = await this.defaultMatch();
       const params = mergeParams(script, accountScriptParams(account, script.id), options.params);
       const assertOwnership = account ? this.ownershipCheck(gameId, account.id, index, identity, plugin.packageName) : undefined;
       const maxRunMs = options.maxRunMinutes > 0 ? options.maxRunMinutes * 60_000 : null;
       record.done = this.runner.run({
         runId, gameId, packageName: plugin.packageName, instanceIndex: index, instanceIdentity: identity, script, params,
         accountId: account?.id ?? null, accountName: account?.name ?? null, source: 'manual', taskId: null, templateDir: dir || null,
-        shotPolicy, maxRunMs, signal: controller.signal, assertOwnership,
+        shotPolicy, maxRunMs, signal: controller.signal, assertOwnership, ...(matchDefaults ? { matchDefaults } : {}),
       }).then(() => undefined, (error: unknown) => console.error('[plan] 临时脚本执行失败', error)).finally(() => cleanup());
       return {
         runId, scriptId: script.id, scriptName: script.name, instanceIndex: index, accountId: account?.id ?? null, accountName: account?.name ?? null,
@@ -364,7 +365,7 @@ export class PlanService {
     if (this.isActiveForInstance(index)) throw new Error(`实例 #${index} 正在运行脚本，请先停止后再安装输入法`);
     const state = await this.port.instance(index);
     if (state.status !== 'running') throw new Error(`实例 #${index} 尚未就绪，请先启动并等待 Android 启动完成`);
-    const lease = await this.acquireLease(index, MANUAL_LEASE_WAIT_MS);
+    const lease = await this.acquireLease(index, MANUAL_LEASE_WAIT_MS, '安装中文输入法');
     try {
       const current = await this.port.instance(index);
       if (current.status !== 'running' || current.record.createdAt !== state.record.createdAt) throw new Error(`实例 #${index} 已停止或被替换`);
@@ -435,6 +436,17 @@ export class PlanService {
     } catch { return 'onFail'; }
   }
 
+  /** The app settings' matching defaults for this run; undefined (vision defaults) when absent, unreadable or invalid. */
+  private async defaultMatch(): Promise<ScriptMatchDefaults | undefined> {
+    try {
+      const value = await this.port.matchDefaults?.();
+      if (!value) return undefined;
+      const { threshold, shrink } = value;
+      if (!(Number.isFinite(threshold) && threshold > 0 && threshold <= 1 && Number.isInteger(shrink) && shrink >= 1 && shrink <= 4)) return undefined;
+      return { threshold, shrink };
+    } catch { return undefined; }
+  }
+
   /** Execution-time checks: every validation error refuses the run (warnings do not). */
   private async checkRunnable(gameId: string, script: ScriptDef, dir: string): Promise<void> {
     const pkg = gamePlugin(gameId).packageName;
@@ -456,14 +468,16 @@ export class PlanService {
     };
   }
 
-  /** Hold `run/automation-instance-<i>.lock` until `release()` (entered / held pair around withFileLock). */
-  private async acquireLease(index: number, timeoutMs: number): Promise<Lease> {
-    const lock = path.join(this.home, 'run', `automation-instance-${index}.lock`);
+  /**
+   * Hold `run/automation-instance-<i>.lock` until `release()` (entered / held pair around the labelled lease: the
+   * lock carries `label` in owner.json and the holder shows in the occupancy table meanwhile).
+   */
+  private async acquireLease(index: number, timeoutMs: number, label: string): Promise<Lease> {
     let entered!: () => void;
     let exit!: () => void;
     const acquired = new Promise<void>((resolve) => { entered = resolve; });
     const held = new Promise<void>((resolve) => { exit = resolve; });
-    const lockDone = withFileLock(lock, async () => { entered(); await held; }, { timeoutMs });
+    const lockDone = withLabelledLease(this.home, index, label, async () => { entered(); await held; }, { timeoutMs });
     try { await Promise.race([acquired, lockDone]); }
     catch (error) {
       if ((error as { code?: string }).code === 'LOCK_TIMEOUT') throw new Error(`实例 #${index} 正被登录、采集或脚本计划占用，请稍后再试`);
@@ -558,8 +572,7 @@ export class PlanService {
         throw new RunEndedError('账号绑定或登录状态已变化', 'failed');
       }
       if (await this.port.gatherScheduleEnabled(run.gameId, run.instanceIndex)) throw new RunEndedError('自动采集已启用，脚本计划本轮跳过', 'skipped');
-      const lock = path.join(this.home, 'run', `automation-instance-${run.instanceIndex}.lock`);
-      await withFileLock(lock, async () => {
+      await withLabelledLease(this.home, run.instanceIndex, '运行脚本计划', async () => {
         if (signal.aborted) throw signal.reason;
         const expectedIdentity = account.binding!.instanceCreatedAt;
         const plugin = gamePlugin(run.gameId);
@@ -582,13 +595,14 @@ export class PlanService {
         await this.store.updateRun(run.gameId, run.runId, { status: 'running', startedAt, message: run.message });
         this.port.onRun?.({ ...run });
         const shotPolicy = await this.defaultShotPolicy();
+        const matchDefaults = await this.defaultMatch();
         const params = mergeParams(script, accountScriptParams(account, script.id), task.params);
         for (let attempt = 0; attempt <= config.retry; attempt++) {
           const result = await this.runner.run({
             runId: run.runId, gameId: run.gameId, packageName: pkg, instanceIndex: run.instanceIndex, instanceIdentity: expectedIdentity,
             script, params, accountId: account.id, accountName: account.name, source: 'plan', taskId: run.taskId,
             templateDir: dir || null, shotPolicy, maxRunMs: task.maxRunMinutes > 0 ? task.maxRunMinutes * 60_000 : null,
-            signal, assertOwnership: assertAccount,
+            signal, assertOwnership: assertAccount, ...(matchDefaults ? { matchDefaults } : {}),
           });
           if (result.status === 'succeeded') {
             // A loop script ends only by a stop or the task's time limit: running the limit out is its planned end.

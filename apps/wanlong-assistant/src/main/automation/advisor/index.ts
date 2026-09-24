@@ -24,12 +24,22 @@ interface AdvisorOptions {
 export class AdvisorService {
   private readonly store: AdvisorStore;
   private readonly ready: Promise<AdvisorFile>;
+  private loaded: AdvisorFile | null = null;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(home: string, private readonly capture: AdvisorCapturePort, private readonly options: AdvisorOptions = {}) {
     this.store = new AdvisorStore(home);
     this.ready = this.store.load();
-    void this.ready.catch(() => undefined);
+    this.ready.then((state) => { this.loaded = state; }, () => undefined);
+  }
+
+  /**
+   * Main process only: the live API key, for the app log to scrub (`appLog.addSecrets`). Synchronous because the
+   * log is; `saveConfig` updates the same state object, so a new key is covered as soon as it is saved.
+   */
+  logSecrets(): string[] {
+    const key = this.loaded?.config.apiKey;
+    return key ? [key] : [];
   }
 
   private now(): number { return this.options.now?.() ?? Date.now(); }

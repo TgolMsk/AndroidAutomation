@@ -1,7 +1,7 @@
 import { statfs } from 'node:fs/promises';
-import path from 'node:path';
-import { isAvdmError, withFileLock, type InstanceRecord, type InstanceState } from '@avdm/core';
+import { isAvdmError, type InstanceRecord, type InstanceState } from '@avdm/core';
 import type { AutomationSettings } from '../../shared/ipc/automation';
+import { withLabelledLease } from '../app/instance-access';
 import type { ManagerHost } from '../manager-host';
 import { BaseInstanceStore } from './base-store';
 import type {
@@ -206,10 +206,13 @@ export class InstanceProvisioner {
     }
   }
 
-  /** Login, gather and plans take the same lease, so none can start the source while it is copied. */
+  /**
+   * Login, gather and plans take the same lease, so none can start the source while it is copied. Labelled like
+   * every other writer: meanwhile the source shows as 「复制为新实例」 in the occupancy table and to other processes.
+   */
   private async withSourceLease<T>(index: number, action: () => Promise<T>): Promise<T> {
     try {
-      return await withFileLock(path.join(this.home, 'run', `automation-instance-${index}.lock`), action, { timeoutMs: 150 });
+      return await withLabelledLease(this.home, index, '复制为新实例', action, { timeoutMs: 150 });
     } catch (error) {
       // clone() maps core's own LOCK_TIMEOUT to a plain error, so this one is the lease.
       if (isAvdmError(error, 'LOCK_TIMEOUT')) {

@@ -86,6 +86,21 @@ export interface AppPathEntry {
   kind: 'dir' | 'file';
   description: string;
   exists: boolean;
+  /** Set when nothing writes here yet (the feature that will is not wired): why the location may stay empty. */
+  pending?: string;
+}
+
+/** The template set an instance uses (chosen with 「选择模板集」 or created in the library), for the data page. */
+export interface AppTemplateSetEntry {
+  index: number;
+  /** Null when the instance was deleted but its settings file remains. */
+  instanceName: string | null;
+  path: string;
+  exists: boolean;
+  /** Manifest name and template count; null when the set could not be read (`error` says why). */
+  name: string | null;
+  templates: number | null;
+  error?: string;
 }
 
 /** A main-process notice for the user (service start failures, self-check problems …). */
@@ -123,6 +138,18 @@ export interface AppApi {
   appPaths(gameId: string): Promise<AppPathEntry[]>;
   /** Opens a directory in Finder, or reveals a file (never launches it). */
   openAppPath(gameId: string, key: AppPathKey): Promise<void>;
+  /** Each instance's configured template set directory (reveal it with the shell's `revealPath`). */
+  appTemplateSets(gameId: string): Promise<AppTemplateSetEntry[]>;
+  /**
+   * Writes text to the system clipboard from main (the renderer's clipboard permission is denied by the shell).
+   * At most 4096 characters.
+   */
+  appCopyText(text: string): Promise<void>;
+  /**
+   * 设备工具「安装 APK…」: installs the picked files (`pickApks`) on one running instance, queued on that instance's
+   * device lane. Several files are one split app. Returns adb's output.
+   */
+  appInstallApk(index: number, apkPaths: string[]): Promise<string>;
   /** The latest self-check report without running a new one (null until the first check finished). */
   appHealth(): Promise<HealthReport | null>;
   runAppHealthCheck(): Promise<HealthReport>;
@@ -135,7 +162,7 @@ export interface AppApi {
 
 export const APP_METHODS = [
   'appServiceFailures', 'appSettings', 'saveAppSettings', 'appPaths', 'openAppPath', 'appHealth', 'runAppHealthCheck',
-  'appLogs', 'appRecentToasts', 'instanceOccupancy',
+  'appLogs', 'appRecentToasts', 'instanceOccupancy', 'appTemplateSets', 'appCopyText', 'appInstallApk',
 ] as const satisfies readonly (keyof AppApi)[];
 
 export interface AppEvents {

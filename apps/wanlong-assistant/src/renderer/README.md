@@ -30,3 +30,9 @@
 卡片注册表在 `cards.ts`（`SETTINGS_CARDS`，每张卡一个文件）。通知与推送、机器人、AI、版本与更新、导入旧版数据目前是占位卡（`SlotCards.tsx`，说明配置在哪并给跳转）；
 负责的模块把同 `key` 的那一行换成自己的卡片组件即可，不用改 `SettingsView.tsx`。应用设置读写走 `hooks/useAppSettings`（`saveAppSettings(patch)`，主进程严格校验）。
 
+- 「设备工具」（`DeviceToolsCard`，原版同名卡）：选一个运行中的实例 →「安装 APK…」（`pickApks` → 有采集 / 登录 / 脚本在用时先确认 → `appInstallApk`，排在该实例的设备通道里）。
+  卡内的扩展位在 `device-tool-slots.tsx`（`DEVICE_TOOL_SLOTS`）：`ime` 目前是占位，脚本引擎把它换成自己的「安装并启用中文输入法」组件（props：所选实例 `index`、卡片是否正忙 `busy`）。
+- 「数据目录」：路径可以直接选中复制，复制按钮走主进程剪贴板（`appCopyText`，壳层拒绝了渲染进程的剪贴板权限）；下方列出各实例选用的模板集（`appTemplateSets`，用壳层 `revealPath` 在访达中显示）。
+  没有模块写入的位置带「待接入」标记（`AppPathEntry.pending`）。
+- 「功能设置」：任务计划、采集配置、模板集这几类设置在各自页面，这里给跳转。
+

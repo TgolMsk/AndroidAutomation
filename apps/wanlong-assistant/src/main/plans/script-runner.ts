@@ -14,7 +14,7 @@ import {
   type ScriptWorkerToMain,
 } from './script-protocol';
 import type {
-  RunLogsEvent, RunMatchesEvent, ScriptAiAssist, ScriptDevice, ScriptRunSnapshot, ScriptRunSource,
+  RunLogsEvent, RunMatchesEvent, ScriptAiAssist, ScriptDevice, ScriptMatchDefaults, ScriptRunSnapshot, ScriptRunSource,
 } from './types';
 
 /** How a runner reaches the emulator; `AvdManager` (via ManagerHost) satisfies it. */
@@ -66,6 +66,11 @@ export interface ScriptExecuteOptions {
   templateDir: string | null;
   shotPolicy: ShotPolicy;
   maxRunMs: number | null;
+  /**
+   * App settings defaults for matching (`PlanHostPort.matchDefaults`): threshold of templates without their own and
+   * the frame / template downsampling factor. Absent = the vision defaults.
+   */
+  matchDefaults?: ScriptMatchDefaults;
   signal?: AbortSignal;
   /** Extra ownership check before every device operation (account binding); throws ExecutionGuardError. */
   assertOwnership?: () => Promise<void>;
@@ -456,7 +461,8 @@ export class ScriptRunner {
           runId: options.runId, instanceIndex: options.instanceIndex, script: options.script, params: options.params,
           accountId: options.accountId, accountName: options.accountName, templateDir: options.templateDir,
           shotPolicy: options.shotPolicy, maxRunMs: options.maxRunMs, consultAi: options.aiAssist !== false,
-          debugMatches: entry.debugMatches, shotSeqStart, ...this.options.pacing,
+          debugMatches: entry.debugMatches, shotSeqStart, ...(options.matchDefaults ? { matchDefaults: options.matchDefaults } : {}),
+          ...this.options.pacing,
         },
       });
     });

@@ -79,7 +79,7 @@ export function PanelSettingsCard() {
           <select id="settings-shot-policy" value={draft.shotPolicy} onChange={(event) => set('shotPolicy', event.target.value as AppSettings['shotPolicy'])}>
             {SHOT_POLICIES.map((policy) => <option key={policy} value={policy}>{SHOT_POLICY_LABEL[policy]}</option>)}
           </select>
-          <p>管采集失败现场、脚本步骤截图与告警现场截图。「每步都留痕」很占磁盘，只在排查问题时临时开。</p>
+          <p>管脚本的截图步骤与告警现场截图：「不留痕」时一张都不存。采集流程的失败现场截图接入后同样跟随它。「每步都留痕」很占磁盘，只在排查问题时临时开。</p>
         </div>
         <div className="settings-field">
           <label htmlFor="settings-capture-interval">单实例最小截图间隔（毫秒）</label>
@@ -99,7 +99,7 @@ export function PanelSettingsCard() {
             value={Number.isNaN(draft.matchThreshold) ? '' : draft.matchThreshold}
             onChange={(event) => set('matchThreshold', numberInput(event.target.value))}
           />
-          <p>用于没有单独设置阈值的脚本条件与新截取的模板。低于 0.7 会开始误判，高于 0.95 会漏判。</p>
+          <p>脚本计划匹配模板时，步骤和模板都没写阈值就用它（采集流程用自己的阈值，不受影响）。低于 0.7 会开始误判，高于 0.95 会漏判。</p>
         </div>
         <div className="settings-field">
           <label htmlFor="settings-shrink">匹配降采样倍率</label>
@@ -109,7 +109,7 @@ export function PanelSettingsCard() {
             value={Number.isNaN(draft.shrink) ? '' : draft.shrink}
             onChange={(event) => set('shrink', numberInput(event.target.value))}
           />
-          <p>2 是实测甜点：全屏匹配 87ms 降到 22ms，判别余量仍充足。</p>
+          <p>脚本计划匹配时的降采样倍率。2 是实测甜点：全屏匹配 87ms 降到 22ms，判别余量仍充足。</p>
         </div>
         <div className="settings-field">
           <label htmlFor="settings-log-level">日志记录级别</label>

@@ -8,6 +8,7 @@
  */
 import type { AndroidKey, MatchResult, RawFrame } from '@avdm/automation';
 import type { AiAssistResult, LogEntry, RunSnapshot, ScriptDef, ScriptParamValue, ShotPolicy } from '@avdm/automation/script';
+import type { ScriptMatchDefaults } from './types';
 
 export interface ScriptWorkerInput {
   runId: string;
@@ -20,6 +21,11 @@ export interface ScriptWorkerInput {
   templateDir: string | null;
   shotPolicy: ShotPolicy;
   maxRunMs: number | null;
+  /**
+   * App settings matching defaults: `threshold` for templates that set none (a step's own threshold still wins),
+   * `shrink` for frames and templates alike. Absent = the vision defaults (template threshold or 0.85, 1/2).
+   */
+  matchDefaults?: ScriptMatchDefaults;
   /** Relay failed steps to the AI advisor (aiConsult / aiResult). */
   consultAi: boolean;
   debugMatches: boolean;

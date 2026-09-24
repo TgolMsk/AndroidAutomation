@@ -65,6 +65,8 @@ export interface MonitorPorts {
   /** Must match on a fresh, foreground-checked capture in an isolated vision worker. */
   testTemplate(gameId: string, index: number, id: string): Promise<{ match: MatchResult; preview: { png: Uint8Array } }>;
   onAlert(alert: MonitorAlert): Promise<void>;
+  /** App settings `shotPolicy`: whether alert scene screenshots are written at all (absent = always). */
+  keepEvidence?(): boolean;
   now?(): number;
   sleep?(ms: number): Promise<void>;
 }

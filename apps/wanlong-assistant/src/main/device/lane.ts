@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { WanlongErrorCode } from '../../shared/errors';
 
 /** Original GLOBAL_ADB_CONCURRENCY: several instances capturing 14 MB frames at once also cost memory and CPU. */
 export const GLOBAL_ADB_CONCURRENCY = 6;
@@ -8,7 +9,7 @@ const CAPTURE_METHODS: ReadonlySet<PropertyKey> = new Set(['screencapRaw', 'scre
 
 /** Pending device work was discarded (the lane was dropped or the assistant is quitting). */
 export class DeviceLaneCancelledError extends Error {
-  readonly code = 'CANCELLED';
+  readonly code: WanlongErrorCode = 'CANCELLED';
 
   constructor(message: string) {
     super(message);

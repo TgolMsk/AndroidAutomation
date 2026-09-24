@@ -8,21 +8,25 @@ import { AdvisorService } from './automation/advisor';
 import { gamePlugin } from './automation/games';
 import { AutomationHost } from './automation/host';
 import { InsightsService } from './automation/insights';
+import { safeStorageCodec } from './automation/insights/notifications';
 import { InstanceProvisioner } from './instances/provisioner';
-import { broadcast } from './events';
 import { AppLog, describeThrown, installConsoleCapture } from './app/app-log';
-import { AppHealth, runAssistantHealthCheck } from './app/health';
-import { InstanceAccess, readLeaseOwner } from './app/instance-access';
+import { DeviceTools } from './app/device-tools';
+import { AppHealth, runAssistantHealthCheck, type HealthTemplateTarget } from './app/health';
+import { instanceAccess, readLeaseOwner, readLeaseOwners } from './app/instance-access';
+import { rememberingCodec, SecretMemory } from './app/log-secrets';
 import { InstanceOccupancy } from './app/occupancy';
+import { configuredSettingsIndices, listInstanceTemplateSets } from './app/paths';
 import { AppSettingsStore } from './app/settings-store';
 import { announceHealth, announceServiceFailures } from './app/startup';
 import { AppToasts } from './app/toasts';
 import { DeviceLanes } from './device/lane';
+import { keepShot } from '../shared/app-settings';
 import { broadcast, setBroadcastLogSink } from './events';
 import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
 import { MonitoringService, ReadOnlyTelegramBot } from './monitoring';
-import { PlanService, readAppShotPolicy, ScriptRunner } from './plans';
+import { PlanService, ScriptRunner } from './plans';
 
 /**
  * Composition root. Services are built and wired here only, one `// ── <domain> ──` section each, so ported
@@ -41,23 +45,27 @@ bootstrapApp({
       onChange: (view) => broadcast('app-settings-changed', view),
       log: (message) => appLog.warn('settings', message),
     });
+    // Plaintext credentials this process has seen (token typed in or decrypted, AI key loaded) never reach the log.
+    const logSecrets = new SecretMemory();
+    appLog.addSecrets(() => logSecrets.list());
     // A packaged app has no console: services' console.warn/error and user-visible `log` pushes reach the disk.
     const uninstallConsoleCapture = installConsoleCapture(appLog);
     setBroadcastLogSink((entry) => appLog.record(entry.level, 'assistant', entry.message, undefined, entry.index));
     const appToasts = new AppToasts((toast) => broadcast('app-toast', toast));
     const serviceHealth = new ServiceHealth((failures) => broadcast('service-failures', failures));
-    const instanceAccess = new InstanceAccess();
     const occupancy = new InstanceOccupancy({
       access: instanceAccess,
       leaseOwner: (index) => readLeaseOwner(home, index),
+      leaseOwners: () => readLeaseOwners(home),
       onSourceError: (name, error) => appLog.warn('occupancy', `占用来源 ${name} 读取失败：${describeThrown(error)}`),
     });
     const deviceLanes = new DeviceLanes({ minCaptureIntervalMs: () => appSettings.get().minCaptureIntervalMs });
     /** Services that talk to devices get this host: every adb call runs on its instance's lane (read-only paths too). */
     const deviceHost = deviceLanes.host(services.host);
+    const deviceTools = new DeviceTools(deviceHost);
 
     // ── insights (stats / notifications) ──
-    const insights = new InsightsService(home);
+    const insights = new InsightsService(home, { codec: rememberingCodec(safeStorageCodec, logSecrets) });
 
     // ── automation (gather runs, schedules, templates) ──
     let monitoring: MonitoringService;
@@ -114,12 +122,14 @@ bootstrapApp({
 
     // ── advisor (AI) ──
     const advisor = new AdvisorService(home, (gameId, index) => automation.captureReadOnly(gameId, index));
+    appLog.addSecrets(() => advisor.logSecrets());
 
     // ── plans (task plans + script library) + runs (script executor, run monitor) ──
     // Scripts execute in script-worker threads; snapshots, log batches and debug matches are pushed to the monitor.
+    // Device calls go through the instance's lane (DeviceLane) like every other service's.
     const scriptRunner = new ScriptRunner(home, {
       instance: async (index) => (await services.host.get()).getState(index),
-      device: async (index) => (await services.host.get()).device(index),
+      device: async (index) => (await deviceHost.get()).device(index),
     }, {
       onSnapshot: (snapshot) => broadcast('plan-run', { kind: 'snapshot', snapshot }),
       onLogs: (event) => broadcast('run-logs', event),
@@ -133,9 +143,15 @@ bootstrapApp({
       gatherScheduleEnabled: async (gameId, index) =>
         (await automation.schedules()).some((item) => item.gameId === gameId && item.index === index && item.enabled),
       onRun: (run) => broadcast('plan-run', { kind: 'plan', run }),
-      // The app settings' default (DECISIONS C), read from app-settings.json per run; with the settings service
-      // wired here, `() => appSettings.get().shotPolicy` is the same value without the file read.
-      shotPolicy: () => readAppShotPolicy(home),
+      // App settings (DECISIONS C, one source of defaults): the default trace-shot policy of runs that chose none,
+      // and the matching defaults (threshold of templates without their own, downsampling factor) handed to the
+      // script worker. Awaiting `ready` keeps a run started right after launch off the built-in defaults.
+      shotPolicy: async () => { await appSettings.ready; return appSettings.get().shotPolicy; },
+      matchDefaults: async () => {
+        await appSettings.ready;
+        const settings = appSettings.get();
+        return { threshold: settings.matchThreshold, shrink: settings.shrink };
+      },
     }, scriptRunner);
 
     // ── monitoring (failure / freeze / kicked detection) ──
@@ -164,6 +180,7 @@ bootstrapApp({
       templateSet: (gameId, index) => automation.templateSet(gameId, index),
       testTemplate: (gameId, index, id) => automation.testTemplate(gameId, index, id),
       onAlert: (alert) => insights.recordMonitorAlert(alert),
+      keepEvidence: () => keepShot(appSettings.get().shotPolicy, 'failure'),
       classifyCaptureError: (error) => error instanceof Error && error.message.startsWith('ADB 截图失败:') ? 'device' : 'unknown',
     });
 
@@ -201,18 +218,25 @@ bootstrapApp({
     const appHealth = new AppHealth(() => runAssistantHealthCheck({
       home,
       environment: async () => runDoctorChecks(await services.host.get(), { audience: 'app', skip: ['scrcpy', 'licenses'] }),
+      adbServer: async () => (await (await services.host.get()).adb()).startServer(),
       instances: async () => (await (await services.host.get()).list()).map((state) => ({
         index: state.record.index, name: state.record.name, width: state.record.spec.width, height: state.record.spec.height,
       })),
       referenceSize: gamePlugin('wanlong').referenceSize ?? { width: 2560, height: 1440 },
       async templateTargets() {
         const [states, schedules] = await Promise.all([(await services.host.get()).list(), automation.schedules()]);
-        const targets = [];
+        const targets: HealthTemplateTarget[] = [];
         for (const state of states) {
           const index = state.record.index;
           const scheduled = schedules.some((item) => item.gameId === 'wanlong' && item.index === index && item.enabled);
-          const settings = await automation.settings('wanlong', index).catch(() => null);
-          const configured = settings ? normalizeGatherConfig(settings.config as Parameters<typeof normalizeGatherConfig>[0]).enabled : false;
+          let settings: Awaited<ReturnType<typeof automation.settings>>;
+          try { settings = await automation.settings('wanlong', index); }
+          catch (error) {
+            // An unreadable settings file hides whether gather is on: report it instead of skipping the instance.
+            targets.push({ index, load: () => Promise.reject(new Error(`采集配置读取失败：${describeThrown(error)}`)) });
+            continue;
+          }
+          const configured = normalizeGatherConfig(settings.config as Parameters<typeof normalizeGatherConfig>[0]).enabled;
           if (!scheduled && !configured) continue;
           targets.push({
             index,
@@ -242,6 +266,16 @@ bootstrapApp({
       appToasts,
       occupancy,
       appHome: home,
+      deviceTools,
+      appTemplateSets: (gameId) => listInstanceTemplateSets({
+        instances: async () => (await (await services.host.get()).list()).map((state) => ({ index: state.record.index, name: state.record.name })),
+        configuredIndices: () => configuredSettingsIndices(home, gameId),
+        templateDir: async (index) => (await automation.settings(gameId, index)).templateDir,
+        describe: async (index) => {
+          const set = await automation.templateSet(gameId, index);
+          return set ? { name: set.name, templates: set.templates.length } : null;
+        },
+      }),
       windows: services.windows,
     });
 

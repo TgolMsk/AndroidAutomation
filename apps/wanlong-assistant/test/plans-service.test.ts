@@ -1,9 +1,11 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withFileLock } from '@avdm/core';
-import { PlanService, readAppShotPolicy, ScriptRunner } from '../src/main/plans';
+import { readLeaseOwner, type LeaseOwner } from '../src/main/app/instance-access';
+import { AppSettingsStore } from '../src/main/app/settings-store';
+import { PlanService, ScriptRunner } from '../src/main/plans';
 import type { GameAccount } from '../src/main/automation/accounts/types';
 import type { PlanHostPort, ScriptDef, ScriptRunSnapshot } from '../src/main/plans/types';
 import { FAST_PACING, fakeScriptDevice, fakeVision, inProcessWorkers, writeTemplateSet } from './helpers/script-worker';
@@ -107,24 +109,35 @@ describe('PlanService integration with fake device', () => {
     expect((await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.message).toContain('按时结束（完成 3 轮）');
   });
 
-  it('runs without an explicit shot policy follow app-settings.json', async () => {
-    const home = await mkdtemp(path.join(tmpdir(), 'wanlong-shot-policy-'));
-    homes.push(home);
-    expect(await readAppShotPolicy(home)).toBe('onFail');
+  it('runs without an explicit shot policy follow the app settings (app-settings.json, then saved changes)', async () => {
+    const { service, runner, port, home } = await setup(() => false);
     await mkdir(path.join(home, 'automation'), { recursive: true });
     await writeFile(path.join(home, 'automation', 'app-settings.json'), JSON.stringify({ version: 1, shotPolicy: 'always' }));
-    expect(await readAppShotPolicy(home)).toBe('always');
-    await writeFile(path.join(home, 'automation', 'app-settings.json'), JSON.stringify({ version: 1, shotPolicy: 'sometimes' }));
-    expect(await readAppShotPolicy(home)).toBe('onFail');
-    await writeFile(path.join(home, 'automation', 'app-settings.json'), '{ broken');
-    expect(await readAppShotPolicy(home)).toBe('onFail');
-
-    const { service, runner, port } = await setup(() => false);
-    port.shotPolicy = () => 'never';
+    // Wired exactly as in src/main/index.ts.
+    const settings = new AppSettingsStore(home, { log: () => undefined });
+    port.shotPolicy = async () => { await settings.ready; return settings.get().shotPolicy; };
     const run = vi.spyOn(runner, 'run').mockImplementation(async (options) => endedSnapshot({ runId: options.runId, status: 'succeeded' }));
-    const queued = await service.runNow(GAME, ACCOUNT, 'task-1');
-    await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.status === 'succeeded');
-    expect(run.mock.calls[0]?.[0].shotPolicy).toBe('never');
+    const runOnce = async () => {
+      const queued = await service.runNow(GAME, ACCOUNT, 'task-1');
+      await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.status === 'succeeded');
+      await eventually(async () => !service.isActiveForInstance(1));
+    };
+    await runOnce();
+    expect(run.mock.calls[0]?.[0].shotPolicy).toBe('always');
+    await settings.save({ shotPolicy: 'never' });
+    await runOnce();
+    expect(run.mock.calls[1]?.[0].shotPolicy).toBe('never');
+    // A manual run that chose a policy keeps it; one that did not follows the settings too.
+    const chosen = await service.runScript(GAME, 1, script.id, { shotPolicy: 'always' });
+    expect(chosen.shotPolicy).toBe('always');
+    await eventually(async () => !service.isActiveForInstance(1));
+    const fallback = await service.runScript(GAME, 1, script.id);
+    expect(fallback.shotPolicy).toBe('never');
+    await eventually(async () => !service.isActiveForInstance(1));
+    // Without the port (or when it fails) runs keep only failure shots.
+    port.shotPolicy = () => { throw new Error('设置读不出'); };
+    await runOnce();
+    expect(run.mock.calls.at(-1)?.[0].shotPolicy).toBe('onFail');
   });
 
   it('runs a manual script through the shared instance lease and records success', async () => {
@@ -135,6 +148,40 @@ describe('PlanService integration with fake device', () => {
     expect(actions).toEqual(['100,100']);
     expect((await service.overview(GAME)).runtime[0]?.runs).toBe(1);
     expect(service.isActiveForInstance(1)).toBe(false);
+  });
+
+  it('labels the instance lease and applies the settings shot policy to the worker (per-step shots only under 「每步都留痕」)', async () => {
+    let owner: LeaseOwner | null = null;
+    const { service, port, home } = await setup(() => false, async () => { owner = await readLeaseOwner(home, 1); });
+    let policy: 'never' | 'always' = 'never';
+    port.shotPolicy = () => policy;
+    await service.saveScript(GAME, { ...script, steps: [
+      { id: 'tap-1', kind: 'tap', at: { x: 50, y: 50 } },
+      { id: 'shot-1', kind: 'screenshot', label: 'scene' },
+    ] });
+    const shotsOf = (runId: string) => readdir(path.join(home, 'automation', 'games', GAME, 'runs', runId, 'shots')).catch(() => [] as string[]);
+    const finished = async (runId: string) => {
+      await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === runId)?.status === 'succeeded');
+      await eventually(async () => !service.isActiveForInstance(1));
+    };
+    const quiet = await service.runNow(GAME, ACCOUNT, 'task-1');
+    await finished(quiet.runId);
+    expect(owner).toMatchObject({ label: '运行脚本计划', pid: process.pid });
+    // A screenshot step is an explicit request: kept even under 「不留痕」 (original worker/actions.ts).
+    expect(await shotsOf(quiet.runId)).toEqual(['0001-scene.jpg']);
+    policy = 'always';
+    const traced = await service.runNow(GAME, ACCOUNT, 'task-1');
+    await finished(traced.runId);
+    // 「每步都留痕」 adds a shot after every completed step (the screenshot step's own included).
+    expect(await shotsOf(traced.runId)).toEqual(['0001-tap-1-ok.jpg', '0002-scene.jpg', '0003-shot-1-ok.jpg']);
+  });
+
+  it('labels the lease of a manual run', async () => {
+    let owner: LeaseOwner | null = null;
+    const { service, home } = await setup(() => false, async () => { owner = await readLeaseOwner(home, 1); });
+    const run = await service.runScript(GAME, 1, script.id);
+    await eventually(async () => service.listRuns(GAME).find((item) => item.runId === run.runId)?.status === 'succeeded');
+    expect(owner).toMatchObject({ label: '运行脚本', pid: process.pid });
   });
 
   it('refuses script input while gather scheduling is enabled', async () => {
@@ -314,10 +361,11 @@ describe('PlanService integration with fake device', () => {
     const { service, port, home } = await setup(() => false);
     const shells: string[] = [];
     let installed = false;
+    let owner: LeaseOwner | null = null;
     const device = await port.device(1);
     port.device = async () => ({
       ...device,
-      install: async () => { installed = true; return 'Success'; },
+      install: async () => { installed = true; owner = await readLeaseOwner(home, 1); return 'Success'; },
       shell: async (command: string) => {
         shells.push(command);
         if (command.startsWith('pm list packages')) return installed ? 'package:com.android.adbkeyboard\n' : '';
@@ -331,6 +379,7 @@ describe('PlanService integration with fake device', () => {
     await writeFile(apk, 'apk');
     expect(await service.setupIme(1, apk)).toMatchObject({ installed: true, enabled: true, selected: true, available: true });
     expect(shells).toEqual(expect.arrayContaining(['ime enable com.android.adbkeyboard/.AdbIME', 'ime set com.android.adbkeyboard/.AdbIME']));
+    expect(owner).toMatchObject({ label: '安装中文输入法', pid: process.pid });
     await expect(service.setupIme(1, path.join(home, 'not-an-apk.txt'))).rejects.toThrow('.apk');
   });
 });

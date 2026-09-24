@@ -1,6 +1,6 @@
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { AppPathEntry, AppPathKey } from '../../shared/ipc';
+import type { AppPathEntry, AppPathKey, AppTemplateSetEntry } from '../../shared/ipc';
 
 interface PathSpec {
   key: AppPathKey;
@@ -9,6 +9,8 @@ interface PathSpec {
   description: string;
   /** Segments below AVDM_HOME; `{game}` is replaced with the game id. */
   segments: readonly string[];
+  /** Nothing writes here yet: shown next to the entry so an empty folder is not mistaken for a fault. */
+  pending?: string;
 }
 
 /**
@@ -22,8 +24,11 @@ const PATH_SPECS: readonly PathSpec[] = [
   { key: 'logs', label: '运行日志', kind: 'dir', segments: ['automation', 'logs'], description: 'app.ndjson：警告与错误的持久记录（按大小轮换）' },
   { key: 'gatherSettings', label: '采集配置', kind: 'dir', segments: ['automation', '{game}'], description: '每个实例的模板集与采集配置' },
   { key: 'gatherState', label: '采集运行状态', kind: 'dir', segments: ['automation', '{game}', 'state'], description: '搜索等级记忆、放弃冷却等跨轮状态' },
-  { key: 'gatherShots', label: '采集现场截图', kind: 'dir', segments: ['automation', '{game}', 'shots'], description: '采集失败时的现场截图（跟随截图留痕策略）' },
-  { key: 'templates', label: '模板库', kind: 'dir', segments: ['automation', 'templates', '{game}'], description: '在助手里新建的模板集' },
+  {
+    key: 'gatherShots', label: '采集现场截图', kind: 'dir', segments: ['automation', '{game}', 'shots'], description: '采集失败时的现场截图（跟随截图留痕策略）',
+    pending: '采集流程尚未接入截图留痕，目前不会写入这里',
+  },
+  { key: 'templates', label: '模板库', kind: 'dir', segments: ['automation', 'templates', '{game}'], description: '在助手里新建的模板集（各实例选用的模板集见下方列表）' },
   { key: 'scripts', label: '脚本库', kind: 'dir', segments: ['automation', 'games', '{game}', 'scripts'], description: '每个脚本一个 JSON 文件' },
   { key: 'plans', label: '任务计划', kind: 'file', segments: ['automation', 'games', '{game}', 'plans.json'], description: '计划表、运行记账与最近的执行记录' },
   { key: 'scriptRuns', label: '脚本执行记录', kind: 'dir', segments: ['automation', 'games', '{game}', 'runs'], description: '每次执行的事件日志与步骤截图' },
@@ -58,8 +63,70 @@ async function exists(target: string): Promise<boolean> {
 export async function listAppPaths(home: string, gameId: string): Promise<AppPathEntry[]> {
   return Promise.all(PATH_SPECS.map(async (spec) => {
     const { path: target } = resolveAppPath(home, gameId, spec.key);
-    return { key: spec.key, label: spec.label, path: target, kind: spec.kind, description: spec.description, exists: await exists(target) };
+    return {
+      key: spec.key, label: spec.label, path: target, kind: spec.kind, description: spec.description, exists: await exists(target),
+      ...(spec.pending ? { pending: spec.pending } : {}),
+    };
   }));
+}
+
+export interface TemplateSetPorts {
+  /** Instances known to the manager. */
+  instances(): Promise<Array<{ index: number; name: string }>>;
+  /** Indices that have an assistant settings file for the game (a deleted instance may still have one). */
+  configuredIndices(): Promise<number[]>;
+  /** The configured template directory of an instance ('' when none). */
+  templateDir(index: number): Promise<string>;
+  /** Manifest name and template count of the instance's set (throws when unreadable). */
+  describe(index: number): Promise<{ name: string; templates: number } | null>;
+}
+
+/**
+ * Each instance's template set (they live wherever the user picked them, not under AVDM_HOME). One unreadable
+ * instance becomes an entry with `error`, never a failed list.
+ */
+export async function listInstanceTemplateSets(ports: TemplateSetPorts): Promise<AppTemplateSetEntry[]> {
+  const [instances, configured] = await Promise.all([ports.instances(), ports.configuredIndices().catch(() => [])]);
+  const names = new Map(instances.map((instance) => [instance.index, instance.name]));
+  const indices = [...new Set([...instances.map((instance) => instance.index), ...configured])].sort((a, b) => a - b);
+  const entries = await Promise.all(indices.map(async (index): Promise<AppTemplateSetEntry | null> => {
+    const instanceName = names.get(index) ?? null;
+    let dir: string;
+    try { dir = await ports.templateDir(index); }
+    catch (error) {
+      return { index, instanceName, path: '', exists: false, name: null, templates: null, error: messageOf(error) };
+    }
+    if (!dir) return null;
+    const entry: AppTemplateSetEntry = { index, instanceName, path: dir, exists: await exists(dir), name: null, templates: null };
+    try {
+      const set = await ports.describe(index);
+      if (set) { entry.name = set.name; entry.templates = set.templates; }
+    } catch (error) {
+      entry.error = messageOf(error);
+    }
+    return entry;
+  }));
+  return entries.filter((entry): entry is AppTemplateSetEntry => entry !== null);
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message || error.name : String(error);
+}
+
+/** Settings files of one game (`automation/<game>/<index>.json`), for template sets of deleted instances. */
+export async function configuredSettingsIndices(home: string, gameId: string): Promise<number[]> {
+  const names = await readdir(path.join(home, 'automation', gameId)).catch(() => [] as string[]);
+  return names.map((name) => /^(\d{1,2})\.json$/.exec(name)).filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => Number(match[1])).filter((index) => index <= 63);
+}
+
+export const MAX_COPY_CHARS = 4096;
+
+/** Put `text` on the system clipboard (Electron's clipboard in main; a fake in tests). */
+export async function copyText(text: unknown, writer?: { writeText(text: string): void }): Promise<void> {
+  if (typeof text !== 'string' || !text || text.length > MAX_COPY_CHARS || text.includes('\0')) throw new Error('复制内容无效');
+  const clipboard = writer ?? (await import('electron')).clipboard;
+  clipboard.writeText(text);
 }
 
 /** Electron's shell, or a fake in tests. */

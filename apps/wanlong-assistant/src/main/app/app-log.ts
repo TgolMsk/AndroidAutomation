@@ -196,6 +196,11 @@ export class AppLog {
     const out: AppLogEntry[] = [];
     const files = [this.file, ...Array.from({ length: this.keepFiles }, (_, i) => rotatedName(this.file, i + 1))];
     for (const file of files) {
+      // A rotated file last written before `since` cannot hold a match, nor can any older one: stop scanning.
+      if (query.since !== undefined && file !== this.file) {
+        const modified = await stat(file).then((info) => info.mtimeMs, () => null);
+        if (modified !== null && modified < query.since) break;
+      }
       let text: string;
       try { text = await readFile(file, 'utf8'); }
       catch (error) {

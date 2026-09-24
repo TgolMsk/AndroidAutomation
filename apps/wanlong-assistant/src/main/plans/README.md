@@ -12,12 +12,12 @@
 | `run-logs.ts` | `runs/<runId>/events.ndjson` 与 `shots/`：只由主进程写、同文件串行追加、4 MB 尾读、过滤、按运行清理（保留最近 200 次）、路径穿越防护 |
 | `ime.ts` | ADBKeyboard 状态检查与安装启用（APK 由用户自己选择，绝不打包） |
 | `device-errors.ts` | 设备失败转成可落盘的中文：去掉 adb 命令行与 serial；文本 / 长按只报「输入文本失败（N 字）：原因」 |
-| `app-shot-policy.ts` | 读 `<AVDM_HOME>/automation/app-settings.json` 的 `shotPolicy`（缺失 / 损坏 / 非法一律「仅失败时留痕」） |
 
 规则（原版铁律 + 目标加固）：
 
 1. **OpenCV 与脚本执行不在主线程**：主进程只做编排、校验与落盘。
-2. **同一实例同一时刻只有一个写入者**：计划运行与临时运行都持有 `run/automation-instance-<i>.lock`；
+2. **同一实例同一时刻只有一个写入者**：计划运行、临时运行与输入法安装都持有 `run/automation-instance-<i>.lock`
+   （`withLabelledLease`，标签「运行脚本计划 / 运行脚本 / 安装中文输入法」写进 owner.json 并登记进占用表）；
    全局并发撞上限时计划运行**退避重试、不算失败**，临时运行直接给出中文原因。
 3. **输入前必校验**：实例被替换 / 账号解绑 / 游戏离开前台 → `ExecutionGuardError`，重试、onFail、AI 都绕不过去。
    以「启动游戏」开头的脚本，或第一步是「如果游戏不在前台 → 启动游戏 …」的脚本（保活巡检写法），
@@ -29,9 +29,12 @@
 5. **AI 介入**：线程在步骤重试耗尽后发 `aiConsult`，主进程**总会**回 `aiResult`（180 秒超时、迟到的答复丢弃）。
    默认处理器回「未接入」；AI 模块用 `ScriptRunner.setAiAssist()` 接入真正的顾问。顾问在本次执行的设备队列里跑
    （租约等它），停止 / 超时 / 退出时 `signal` 中止，最多再等 5 秒；引擎在停止时立刻不再等顾问。
-6. **留痕策略** `never / onFail / always`：默认取宿主端口 `shotPolicy()`，`index.ts` 接的是 `readAppShotPolicy(home)`
-   （每次运行读一次应用设置文件；应用设置服务合入后可换成它的内存值，两者读的是同一个文件）。
-   启动执行弹窗默认「跟随应用设置」，只有用户改过才覆盖。
+6. **留痕策略** `never / onFail / always`：默认取宿主端口 `shotPolicy()`，`src/main/index.ts` 接的是应用设置服务
+   （`appSettings.get().shotPolicy`，等设置文件读完再取；端口缺失或出错时「仅失败时留痕」）。
+   启动执行弹窗默认「跟随应用设置」，只有用户改过才覆盖。「截图」步骤与 `capture: true` 是明确要求，任何策略下都保存。
+   **匹配默认值**：宿主端口 `matchDefaults()`（应用设置的 `matchThreshold` / `shrink`）随每次执行交给线程：没写阈值的模板用
+   设置里的默认命中阈值（步骤自己写的阈值仍然优先），帧与模板按设置的倍率降采样；端口缺失或数值非法时用视觉包默认（0.85、1/2）。
+   设备调用经 `deviceHost`（DeviceLane），与采集、探针、机器人截图共用每实例的串行通道与最小截图间隔。
 7. **整体时限**：引擎自己的 `maxRunMs` 计时（含暂停时间），到点时快照标 `timedOut`：单次脚本记失败；循环脚本本来就只能靠
    停止或时限结束，所以记成功（「按时结束」）。主进程另有兜底（`maxRunMs` + 30 秒），线程卡住 / 设备调用不可打断时先请求停止、
    10 秒后终止线程，结果记为「超过时间上限」的失败（同样 `timedOut`）。**计划运行被时限结束的绝不重试**（原版：计划时限
@@ -46,7 +49,7 @@
   `runIdOfInstance(index)` / `busyIndices()` / `activeCount()` 供忙碌判断，`pause` / `resume` / `stop(runId)`、`list` / `get`。
 - AI：`ScriptRunner.setAiAssist(handler)`，`handler(request: ScriptAiRequest) → Promise<AiAssistResult>`（类型 `ScriptAiAssist`）
   （`{ handled, message?, requiresAttention? }`）；不接时一律 `handled: false`。
-- `PlanHostPort.suspendForScript?(gameId, index, reason) → 归还函数`（调度器接）、`shotPolicy?()`（应用设置）。
+- `PlanHostPort.suspendForScript?(gameId, index, reason) → 归还函数`（调度器接）、`shotPolicy?()` 与 `matchDefaults?()`（应用设置）。
 
 没有移植：原版的预览推流（改用模拟器实时画面窗口 LiveView）、MessagePort 直连渲染进程（改为主进程批量推送事件
 `plan-run` / `run-logs` / `run-matches`）、模板编辑器的「立即验证」（`detectOnce`，由模板库自己的测试接口承担）。

@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppLog, installConsoleCapture, scrubSecrets, splitScope } from '../src/main/app/app-log';
+import { rememberingCodec, SecretMemory } from '../src/main/app/log-secrets';
+import { AdvisorService } from '../src/main/automation/advisor';
 import type { AppLogEntry } from '../src/shared/ipc';
 
 let home: string;
@@ -151,6 +153,48 @@ describe('persistent app log (automation/logs/app.ndjson)', () => {
       ['main', '没有标签的错误'],
       ['scheduler', '自己打印的行'],
     ]);
+  });
+
+  it('keeps credentials the patterns cannot recognise out of captured console errors (registered secrets, 泄露实测)', async () => {
+    const target = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const log = makeLog({ console: target });
+    // Wired as in the composition root: the Telegram codec remembers every plaintext it sees, the advisor exposes its key.
+    const memory = new SecretMemory();
+    log.addSecrets(() => memory.list());
+    const codec = rememberingCodec(async () => ({ encrypt: async (plain) => `enc:${plain.length}`, decrypt: async () => 'decrypted-bot-credential' }), memory);
+    const typedIn = 'typed-in-bot-credential';
+    await codec.encrypt(typedIn);
+    expect(await codec.decrypt('enc:1')).toBe('decrypted-bot-credential');
+    const aiKey = 'qwen0fd9b2c3a4e5f60718293a4b5c6d7e8'; // No sk- prefix: no pattern matches it.
+    const advisor = new AdvisorService(home, async () => { throw new Error('no capture'); });
+    await advisor.saveConfig({ apiKey: aiKey });
+    log.addSecrets(() => advisor.logSecrets());
+    expect(scrubSecrets(`key ${aiKey}`)).toContain(aiKey);
+    const uninstall = installConsoleCapture(log, target as unknown as Console);
+    try {
+      target.error('[wanlong/advisor] 请求失败', new Error(`401 for ${aiKey}`));
+      target.error(`[wanlong/bot] 发送失败 ${typedIn} / decrypted-bot-credential`);
+      target.warn({ detail: `echo ${aiKey}` });
+    } finally {
+      uninstall();
+    }
+    await log.flush();
+    const text = await readFile(log.file, 'utf8');
+    for (const leaked of [aiKey, typedIn, 'decrypted-bot-credential']) expect(text).not.toContain(leaked);
+    expect(text).toContain('请求失败');
+    expect((await lines(log.file)).length).toBe(3);
+  });
+
+  it('remembers a bounded number of secrets and ignores short strings', () => {
+    const memory = new SecretMemory();
+    memory.remember('abc');
+    memory.remember(null);
+    for (let i = 0; i < 12; i++) memory.remember(`secret-value-${i}`);
+    memory.remember('secret-value-5');
+    expect(memory.list()).toHaveLength(8);
+    expect(memory.list().at(-1)).toBe('secret-value-5');
+    expect(memory.list()).not.toContain('abc');
+    expect(memory.list()).not.toContain('secret-value-0');
   });
 
   it('splits a leading [scope] tag and scrubs without a log instance', () => {

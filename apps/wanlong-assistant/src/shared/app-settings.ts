@@ -8,7 +8,7 @@
  * polling interval map to core settings shared with the desktop manager (`maxRunning`, `healthIntervalSec`).
  */
 
-/** Which screenshots are kept on disk (gather failure scenes, script step shots, alert evidence). */
+/** Which screenshots are kept on disk (script screenshot steps, alert evidence; gather failure scenes once wired). */
 export type ShotPolicy = 'never' | 'onFail' | 'always';
 
 /** Lowest level written to the persistent app log; warn and error are always kept (packaged apps have no console). */
@@ -17,7 +17,7 @@ export type AppLogPersistLevel = 'info' | 'warn';
 export interface AppSettings {
   /** Default: only failure scenes are kept (「仅失败时留痕」). */
   shotPolicy: ShotPolicy;
-  /** Default hit threshold for script conditions and new templates that do not set their own. */
+  /** Hit threshold for script matching when neither the step nor the template sets one (gather keeps its own). */
   matchThreshold: number;
   /** Downsampling factor for script matching (2 = measured sweet spot: 87 ms → 22 ms full-screen match). */
   shrink: number;

@@ -13,6 +13,8 @@ export interface OccupancyOptions {
   access?: Pick<InstanceAccess, 'holders'>;
   /** Cross-process lease of one instance (reported as source `lease` when no in-process holder explains it). */
   leaseOwner?: (index: number) => Promise<LeaseOwner | null>;
+  /** Every live lease (any process): the update gate must also wait for another assistant process's writer. */
+  leaseOwners?: () => Promise<Array<{ index: number; owner: LeaseOwner }>>;
   /** This process's pid, to tell our own leases from another assistant process's. */
   pid?: number;
   /** Source failures are reported here and otherwise ignored. */
@@ -63,11 +65,19 @@ export class InstanceOccupancy {
     return sortHolders(own);
   }
 
-  /** 「实例 #N 正在<label>。」 for the first blocking holder anywhere, or null (the update gate asks this). */
+  /**
+   * 「实例 #N 正在<label>。」 for the first blocking holder anywhere — this process's services and table, then any
+   * live lease (another assistant process, the CLI) — or null. The update gate asks this.
+   */
   async anyBusy(): Promise<string | null> {
     const blocking = sortHolders((await this.all()).filter((holder) => holder.blocking));
     const first = blocking[0];
-    return first ? `实例 #${first.index} 正在${first.label}。` : null;
+    if (first) return `实例 #${first.index} 正在${first.label}。`;
+    let leases: Array<{ index: number; owner: LeaseOwner }> = [];
+    try { leases = await this.options.leaseOwners?.() ?? []; }
+    catch (error) { try { this.options.onSourceError?.('lease', error); } catch { /* best effort */ } }
+    const lease = [...leases].sort((a, b) => a.index - b.index)[0];
+    return lease ? `实例 #${lease.index} 正在${leaseLabel(lease.owner, this.options.pid ?? process.pid)}。` : null;
   }
 }
 
@@ -90,8 +100,12 @@ function sortHolders(holders: readonly OccupancyHolder[]): OccupancyHolder[] {
   return [...holders].sort((a, b) => a.index - b.index || Number(b.blocking) - Number(a.blocking) || a.label.localeCompare(b.label, 'zh-CN'));
 }
 
+/**
+ * Every assistant writer labels its lease, so a lease without a label comes from a holder that does not (the CLI, an
+ * older version) or was caught between taking the lock and writing the label: say only what is known.
+ */
 function leaseLabel(owner: LeaseOwner, pid: number): string {
   const other = owner.pid !== null && owner.pid !== pid;
   if (owner.label) return other ? `${owner.label}（另一个助手进程）` : owner.label;
-  return other || owner.pid === null ? '被另一个进程操作' : '执行设备操作';
+  return other ? '被另一个助手进程操作' : '执行设备操作';
 }

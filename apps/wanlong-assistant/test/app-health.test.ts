@@ -29,6 +29,7 @@ function deps(overrides: Partial<HealthDeps> = {}): HealthDeps {
     instances: async () => [{ index: 0, name: '万龙1号', width: 2560, height: 1440 }],
     referenceSize: { width: 2560, height: 1440 },
     templateTargets: async () => [{ index: 0, load: async () => ({ templates: 93, name: '万龙觉醒' }) }],
+    adbServer: async () => undefined,
     opencv: async () => ({ version: '4.12.0', ms: 1200 }),
     sharp: async () => '8.17.1',
     statfs: async () => ({ bavail: 100, bsize: INSTANCE_DISK_COST_BYTES }),
@@ -42,8 +43,9 @@ describe('assistant environment self-check', () => {
     const report = await runAssistantHealthCheck(deps());
     expect(report.ok).toBe(true);
     expect(report.items.map((item) => item.key)).toEqual([
-      'env:sdk', 'env:emulator', 'env:default-image', 'instances', 'templates', 'dataDir', 'opencv', 'sharp', 'disk',
+      'env:sdk', 'env:emulator', 'env:default-image', 'adbServer', 'instances', 'templates', 'dataDir', 'opencv', 'sharp', 'disk',
     ]);
+    expect(report.items.find((item) => item.key === 'adbServer')).toMatchObject({ level: 'ok', group: 'environment', detail: 'adb 服务已在运行' });
     const image = report.items.find((item) => item.key === 'env:default-image')!;
     expect(image).toMatchObject({ level: 'warn', ok: true, group: 'environment' });
     expect(image.hint).toContain('从基础实例克隆不受影响');
@@ -56,17 +58,36 @@ describe('assistant environment self-check', () => {
     const boom = async (): Promise<never> => { throw new Error('探测失败'); };
     const report = await runAssistantHealthCheck(deps({
       home: path.join(home, 'file-not-dir', '\0bad'),
-      environment: boom, instances: boom, templateTargets: boom, opencv: boom, sharp: boom, statfs: boom,
+      environment: boom, instances: boom, templateTargets: boom, opencv: boom, sharp: boom, statfs: boom, adbServer: boom,
     }));
     expect(report.ok).toBe(false);
     const failed = report.items.filter((item) => item.level === 'fail');
-    expect(failed.map((item) => item.key)).toEqual(['env:manager', 'instances', 'templates', 'dataDir', 'opencv', 'sharp', 'disk']);
+    expect(failed.map((item) => item.key)).toEqual(['env:manager', 'adbServer', 'instances', 'templates', 'dataDir', 'opencv', 'sharp', 'disk']);
     for (const item of failed) {
       expect(item.ok).toBe(false);
       expect(item.detail).toMatch(/[一-龥]|探测失败/);
       expect(item.hint, item.key).toMatch(/[一-龥]/);
     }
-    expect(healthProblemSummary(report)).toBe('环境自检发现 7 个问题：模拟器管理器、实例分辨率、模板集、助手数据目录可写、视觉引擎（OpenCV WASM）、图像处理（sharp / libvips）、磁盘余量');
+    expect(healthProblemSummary(report)).toBe('环境自检发现 8 个问题：模拟器管理器、adb 服务（127.0.0.1:5037）、实例分辨率、模板集、助手数据目录可写、视觉引擎（OpenCV WASM）、图像处理（sharp / libvips）、磁盘余量');
+  });
+
+  it('runs adb start-server and explains a 5037 conflict (original checkAdbServer)', async () => {
+    const conflict = await runAssistantHealthCheck(deps({
+      adbServer: async () => { throw new Error('adb server version (41) doesn\'t match this client (39); killing...'); },
+    }));
+    const server = conflict.items.find((item) => item.key === 'adbServer')!;
+    expect(server).toMatchObject({ level: 'fail', ok: false, group: 'environment' });
+    expect(server.detail).toContain('adb start-server 失败：adb server version (41)');
+    expect(server.detail).toContain('5037 端口被别的 adb');
+    expect(server.hint).toMatch(/adb kill-server|taskkill/);
+    // Without adb itself, start-server is not even tried.
+    const adbServer = vi.fn(async () => undefined);
+    const missing = await runAssistantHealthCheck(deps({
+      environment: async () => [{ id: 'adb', level: 'fail', title: 'adb', detail: '未安装', hint: '安装 platform-tools' }],
+      adbServer,
+    }));
+    expect(missing.items.find((item) => item.key === 'adbServer')).toMatchObject({ level: 'fail', detail: 'adb 不可用，先解决上面的「adb」一项' });
+    expect(adbServer).not.toHaveBeenCalled();
   });
 
   it('times a hanging probe out instead of waiting forever', async () => {
@@ -76,6 +97,22 @@ describe('assistant environment self-check', () => {
     await vi.advanceTimersByTimeAsync(10_001);
     const report = await pending;
     expect(report.items.find((item) => item.key === 'instances')).toMatchObject({ level: 'fail', detail: '实例分辨率超时（10 秒）' });
+  });
+
+  it('gives every template set its own time limit, however many instances there are', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const hang = () => new Promise<never>(() => undefined);
+    const pending = runAssistantHealthCheck(deps({
+      probeTimeoutMs: 10_000,
+      templateTargets: async () => [0, 1, 2, 3, 4].map((index) => ({ index, load: index === 2 ? async () => ({ templates: 5, name: '好' }) : hang })),
+    }));
+    await vi.advanceTimersByTimeAsync(10_001);
+    const templates = (await pending).items.find((item) => item.key === 'templates')!;
+    expect(templates.detail.split('\n')).toEqual([
+      '实例 #0 的模板集无法读取：实例 #0 的模板集读取超时（10 秒）', '实例 #1 的模板集无法读取：实例 #1 的模板集读取超时（10 秒）',
+      '实例 #3 的模板集无法读取：实例 #3 的模板集读取超时（10 秒）', '实例 #4 的模板集无法读取：实例 #4 的模板集读取超时（10 秒）',
+      '实例 #2「好」5 张',
+    ]);
   });
 
   it('fails the template check for an enabled instance without a usable set', async () => {
@@ -93,6 +130,13 @@ describe('assistant environment self-check', () => {
       '实例 #1 还没有选择模板集', '实例 #2 的模板集「空集」是空的', '实例 #3 的模板集无法读取：模板集与当前游戏包名不一致', '实例 #0「主号」93 张',
     ]);
     expect(templates.hint).toContain('模板库');
+    // An instance whose settings could not be read is a failed line, not a silent skip.
+    const unreadable = await runAssistantHealthCheck(deps({
+      templateTargets: async () => [{ index: 4, load: () => Promise.reject(new Error('采集配置读取失败：自动化配置格式不兼容')) }],
+    }));
+    expect(unreadable.items.find((item) => item.key === 'templates')).toMatchObject({
+      level: 'fail', detail: '实例 #4 的模板集无法读取：采集配置读取失败：自动化配置格式不兼容',
+    });
     expect((await runAssistantHealthCheck(deps({ templateTargets: async () => [] }))).items.find((item) => item.key === 'templates')!.detail)
       .toBe('没有启用自动采集的实例，跳过检查');
   });

@@ -184,17 +184,77 @@
 }
 
 .settings-path-text .mono {
-  overflow: hidden;
   color: var(--text-2);
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   user-select: text;
+  cursor: text;
+}
+
+.settings-path-text strong .tag {
+  margin-left: 6px;
 }
 
 .settings-path-text small {
   color: var(--text-faint);
   font-size: 11px;
+}
+
+.settings-path-text .settings-path-problem {
+  color: var(--amber);
+}
+
+.settings-subtitle {
+  margin: 16px 0 4px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ── device tools ── */
+
+.settings-device-tools {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-device-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-device-row select {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.settings-device-slot {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-2);
+  border-radius: var(--radius);
+}
+
+.settings-device-slot strong {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-device-output {
+  max-height: 160px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  color: var(--text-dim);
+  font-size: 11px;
+  white-space: pre-wrap;
+  user-select: text;
 }
 
 .settings-path-actions {

@@ -1,8 +1,9 @@
-import type { AppApi, AppLogLevel, AppLogQuery } from '../../shared/ipc';
+import type { AppApi, AppLogLevel, AppLogQuery, AppTemplateSetEntry } from '../../shared/ipc';
+import type { DeviceTools } from '../app/device-tools';
 import type { AppHealth } from '../app/health';
 import type { AppLog } from '../app/app-log';
 import type { InstanceOccupancy } from '../app/occupancy';
-import { isAppPathKey, listAppPaths, openAppPath } from '../app/paths';
+import { copyText, isAppPathKey, listAppPaths, openAppPath } from '../app/paths';
 import type { AppSettingsStore } from '../app/settings-store';
 import type { AppToasts } from '../app/toasts';
 import type { ServiceHealth } from '../lifecycle';
@@ -19,6 +20,12 @@ export interface AppServices {
   occupancy: Pick<InstanceOccupancy, 'holders'>;
   /** AVDM_HOME: the root every data path is resolved under. */
   appHome: string;
+  /** Each instance's template set for one game (`listInstanceTemplateSets` over the automation host). */
+  appTemplateSets: (gameId: string) => Promise<AppTemplateSetEntry[]>;
+  /** 设备工具 (APK install on the instance's device lane). */
+  deviceTools: Pick<DeviceTools, 'installApk'>;
+  /** Clipboard override for tests; Electron's clipboard otherwise. */
+  appClipboard?: { writeText(text: string): void };
 }
 
 const LOG_LEVELS: readonly AppLogLevel[] = ['debug', 'info', 'warn', 'error'];
@@ -75,4 +82,13 @@ export const appHandlers: DomainHandlers<AppApi, AppServices> = {
   async appLogs({ appLog }, query) { return appLog.query(logQuery(query)); },
   async appRecentToasts({ appToasts }) { return appToasts.recent(); },
   async instanceOccupancy({ occupancy }, index) { return occupancy.holders(asIndex(index)); },
+  async appTemplateSets({ appTemplateSets }, gameId) { return appTemplateSets(game(gameId)); },
+  async appCopyText({ appClipboard }, value) { await copyText(value, appClipboard); },
+  async appInstallApk({ deviceTools }, index, apkPaths) {
+    const i = asIndex(index);
+    if (!Array.isArray(apkPaths) || apkPaths.some((file) => typeof file !== 'string' || !file || file.length > 4096)) {
+      throw new Error('APK 文件列表无效');
+    }
+    return deviceTools.installApk(i, apkPaths);
+  },
 };

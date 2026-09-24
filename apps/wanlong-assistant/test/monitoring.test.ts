@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -158,6 +158,29 @@ describe('monitoring service', () => {
     await monitor.recordFailure(run('fallback-2', 102_000), new Error('ADB screenshot failed'));
     await monitor.recordCycle(run('fallback-3', 103_000), result('error'));
     expect(alerts.map((alert) => alert.kind)).toEqual(['suspectedKicked', 'consecutiveFailures']);
+    await monitor.dispose();
+  });
+
+  it('still alerts but writes no scene screenshot when the shot policy says 「不留痕」', async () => {
+    const directory = await home();
+    const png = await sharp({ create: { width: 24, height: 24, channels: 4, background: '#2a6f93' } }).png().toBuffer();
+    const alerts: MonitorAlert[] = [];
+    let keep = false;
+    const ports: MonitorPorts = {
+      targets: async () => [], capture: async () => ({ frame: frame(1), foregroundPackage: 'com.example.game' }),
+      templateSet: async () => set([RESERVED_ALERT_TEMPLATES.kickedDialog]),
+      testTemplate: async (_game, _index, id) => ({ match: match(id, 0.98), preview: { png } }),
+      onAlert: async (alert) => { alerts.push(alert); }, sleep: async () => undefined,
+      keepEvidence: () => keep,
+    };
+    const monitor = new MonitoringService(directory, ports);
+    await monitor.recordCycle(run('never-1', 100_000), result('error'));
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.evidence.screenshotPath).toBeUndefined();
+    expect(await readdir(path.join(directory, 'automation', 'monitoring', 'shots')).catch(() => [])).toEqual([]);
+    keep = true;
+    await monitor.recordCycle(run('kept-1', 101_000), result('error'));
+    expect(alerts[1]!.evidence.screenshotPath).toBeTruthy();
     await monitor.dispose();
   });
 

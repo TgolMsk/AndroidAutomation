@@ -1,6 +1,7 @@
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isAvdmError, withFileLock } from '@avdm/core';
+import type { WanlongErrorCode } from '../../shared/errors';
 
 /** Same staleness rule as core's `withFileLock` (a holder refreshes the lock's mtime every 10 s). */
 const LEASE_STALE_MS = 30_000;
@@ -8,7 +9,7 @@ const OWNER_FILE = 'owner.json';
 
 /** Refused because another activity holds the instance. `code` survives IPC so the UI can branch on it. */
 export class InstanceBusyError extends Error {
-  readonly code = 'CONCURRENCY_LIMIT';
+  readonly code: WanlongErrorCode = 'CONCURRENCY_LIMIT';
 
   constructor(readonly index: number, readonly owner: string | null, message?: string) {
     super(message ?? (owner ? `实例 #${index} 正在${owner}，请等待结束后再试。` : `实例 #${index} 正被登录、采集或脚本计划占用，请等待结束后再试。`));
@@ -50,6 +51,14 @@ export class InstanceAccess {
     return this.owners.has(index) ? null : this.acquire(index, label);
   }
 
+  /**
+   * Record `label` for an instance whose exclusion is already guaranteed elsewhere (the cross-process lease is held),
+   * so occupancy and the update gate can see it. Never throws: an existing entry is kept and the release is a no-op.
+   */
+  note(index: number, label: string): () => void {
+    return this.tryAcquire(index, label) ?? (() => undefined);
+  }
+
   holderOf(index: number): string | null {
     return this.owners.get(index)?.label ?? null;
   }
@@ -72,6 +81,12 @@ export class InstanceAccess {
     finally { release(); }
   }
 }
+
+/**
+ * The process-wide occupancy table (original module singleton `instanceAccess`). Every lease helper below records
+ * its holder here by default, so `occupancy` and the update gate see all writers of this process.
+ */
+export const instanceAccess = new InstanceAccess();
 
 /** `<AVDM_HOME>/run/automation-instance-<i>.lock`: the cross-process device lease every assistant writer takes. */
 export function instanceLeasePath(home: string, index: number): string {
@@ -106,10 +121,56 @@ export async function readLeaseOwner(home: string, index: number, now: () => num
   }
 }
 
+const LEASE_DIR_RE = /^automation-instance-(\d{1,2})\.lock$/;
+
+/** Every live instance lease under `<AVDM_HOME>/run` (any process), with its owner label when one was written. */
+export async function readLeaseOwners(home: string, now: () => number = Date.now): Promise<Array<{ index: number; owner: LeaseOwner }>> {
+  let names: string[];
+  try { names = await readdir(path.join(home, 'run')); }
+  catch { return []; }
+  const found = await Promise.all(names.map(async (name) => {
+    const match = LEASE_DIR_RE.exec(name);
+    if (!match) return null;
+    const index = Number(match[1]);
+    const owner = await readLeaseOwner(home, index, now);
+    return owner ? { index, owner } : null;
+  }));
+  return found.filter((entry): entry is { index: number; owner: LeaseOwner } => entry !== null).sort((a, b) => a.index - b.index);
+}
+
+async function writeOwner(lock: string, label: string): Promise<void> {
+  // The label is informational; the lock itself is what excludes.
+  await writeFile(path.join(lock, OWNER_FILE), `${JSON.stringify({ label, pid: process.pid, at: Date.now() })}\n`, { mode: 0o600 })
+    .catch(() => undefined);
+}
+
+/**
+ * Drop-in for `withFileLock(instanceLeasePath(home, i), fn, { timeoutMs })` in the existing writers (gather runs,
+ * template / settings edits, login, account edits, script plans). Errors are unchanged — a busy instance still
+ * fails with core's `LOCK_TIMEOUT`, so each caller's skip / mapping logic keeps working — but while it is held the
+ * lease carries an `owner.json` label (another process, and `explainLeaseTimeout` at the IPC boundary, can then say
+ * 「实例 #N 正在<label>」) and the holder is listed in the in-process table.
+ *
+ * Not re-entrant (neither is `withFileLock`).
+ */
+export function withLabelledLease<T>(
+  home: string, index: number, label: string, fn: () => Promise<T>,
+  options: { timeoutMs?: number; access?: InstanceAccess } = {},
+): Promise<T> {
+  const lock = instanceLeasePath(home, index);
+  const access = options.access ?? instanceAccess;
+  return withFileLock(lock, async () => {
+    await writeOwner(lock, label);
+    const release = access.note(index, label);
+    try { return await fn(); }
+    finally { release(); }
+  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+}
+
 export interface InstanceLeaseOptions {
   /** How long to wait for the cross-process lock (writers use 100–200 ms: a busy device is refused, not queued). */
   timeoutMs?: number;
-  /** Also claim the in-process table first (synchronously, before any await). */
+  /** The in-process table claimed first, synchronously before any await (default: the process-wide `instanceAccess`). */
   access?: InstanceAccess;
 }
 
@@ -123,13 +184,12 @@ export interface InstanceLeaseOptions {
 export async function withInstanceLease<T>(
   home: string, index: number, label: string, fn: () => Promise<T>, options: InstanceLeaseOptions = {},
 ): Promise<T> {
-  const release = options.access?.acquire(index, label);
+  const release = (options.access ?? instanceAccess).acquire(index, label);
   try {
     const lock = instanceLeasePath(home, index);
     try {
       return await withFileLock(lock, async () => {
-        await writeFile(path.join(lock, OWNER_FILE), `${JSON.stringify({ label, pid: process.pid, at: Date.now() })}\n`, { mode: 0o600 })
-          .catch(() => undefined); // The label is informational; the lock itself is what excludes.
+        await writeOwner(lock, label);
         return fn();
       }, { timeoutMs: options.timeoutMs ?? 200 });
     } catch (error) {
@@ -140,7 +200,7 @@ export async function withInstanceLease<T>(
         owner?.label ? `实例 #${index} 正在${owner.label}${other ? '（另一个助手进程）' : ''}，请等待结束后再试。` : undefined);
     }
   } finally {
-    release?.();
+    release();
   }
 }
 

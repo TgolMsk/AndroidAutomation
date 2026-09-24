@@ -3,7 +3,11 @@ import { defaultAppSettings } from '../src/shared/app-settings';
 import type { AppLogEntry, HealthReport } from '../src/shared/ipc';
 import { RUN_STATUS_TEXT, runStatusText } from '../src/renderer/components/SemanticTag';
 import { healthBadgeText } from '../src/renderer/hooks/useAppHealth';
+import type { InstanceState } from '@avdm/core';
 import { SETTINGS_CARDS } from '../src/renderer/views/settings/cards';
+import { templateSetTitle } from '../src/renderer/views/settings/DataPathsCard';
+import { DEVICE_TOOL_SLOTS } from '../src/renderer/views/settings/device-tool-slots';
+import { apkSummary, defaultToolIndex } from '../src/renderer/views/settings/DeviceToolsCard';
 import { logScopes, matchesLogFilter, mergeLogEntries } from '../src/renderer/views/settings/log-view';
 import { appSettingsPatch, appSettingsProblems, emulatorSettingsProblems, numberInput } from '../src/renderer/views/settings/settings-form';
 
@@ -33,9 +37,24 @@ describe('shared status labels', () => {
 describe('settings page', () => {
   it('has every section of the original settings page, one card each', () => {
     expect(SETTINGS_CARDS.map((card) => card.key)).toEqual([
-      'services', 'panel', 'notifications', 'bot', 'ai', 'logs', 'health', 'update', 'emulator', 'paths', 'legacyImport', 'about',
+      'services', 'panel', 'notifications', 'bot', 'ai', 'features', 'logs', 'health', 'update', 'emulator', 'paths', 'deviceTools',
+      'legacyImport', 'about',
     ]);
     expect(new Set(SETTINGS_CARDS.map((card) => card.key)).size).toBe(SETTINGS_CARDS.length);
+  });
+
+  it('device tools pick a running instance and keep a slot for the Chinese input method tool', () => {
+    const instance = (index: number, status: InstanceState['status']) => ({ record: { index, name: `i${index}` }, status }) as unknown as InstanceState;
+    const instances = [instance(0, 'stopped'), instance(1, 'running'), instance(2, 'running')];
+    expect(defaultToolIndex(instances, 2)).toBe(2);
+    expect(defaultToolIndex(instances, 0)).toBe(1);
+    expect(defaultToolIndex(instances, null)).toBe(1);
+    expect(defaultToolIndex([instance(0, 'booting')], 0)).toBeNull();
+    expect(apkSummary(['/Users/me/Downloads/ADBKeyboard.apk'])).toBe('ADBKeyboard.apk');
+    expect(apkSummary(['/a/base.apk', '/a/split_config.apk'])).toBe('base.apk 等 2 个文件');
+    expect(DEVICE_TOOL_SLOTS.map((slot) => slot.key)).toEqual(['ime']);
+    expect(templateSetTitle({ index: 1, instanceName: '主号', path: '/s', exists: true, name: '万龙', templates: 93 })).toBe('实例 #1「主号」 · 模板集「万龙」93 张');
+    expect(templateSetTitle({ index: 4, instanceName: null, path: '/s', exists: false, name: null, templates: null })).toBe('实例 #4（实例已删除）');
   });
 
   it('validates drafts and sends only the changed fields', () => {
