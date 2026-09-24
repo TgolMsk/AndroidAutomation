@@ -1,4 +1,5 @@
 import type { InsightsApi } from '../../shared/ipc';
+import type { AlertsService } from '../alerts';
 import type { InsightsService } from '../automation/insights';
 import type { ReadOnlyTelegramBot } from '../monitoring';
 import type { DomainHandlers } from './types';
@@ -7,6 +8,8 @@ import { asIndex, game, optionalIndex, patchObject } from './validate';
 export interface InsightsServices {
   insights: InsightsService;
   remoteBot: ReadOnlyTelegramBot;
+  /** Notification settings are global alerts settings now; these methods stay for compatibility. */
+  alerts: AlertsService;
 }
 
 async function reloadBot(remoteBot: ReadOnlyTelegramBot): Promise<void> {
@@ -21,25 +24,27 @@ export const insightsHandlers: DomainHandlers<InsightsApi, InsightsServices> = {
   async insightAlerts({ insights }, gameId, index, limit) {
     return insights.alerts(game(gameId), optionalIndex(index), limit);
   },
-  async getNotificationConfig({ insights }, gameId, index) {
-    return insights.config(game(gameId), asIndex(index));
+  async getNotificationConfig({ alerts }, gameId, index) {
+    return alerts.hub.legacyNotificationView(game(gameId), asIndex(index));
   },
-  async saveNotificationConfig({ insights, remoteBot }, gameId, index, patch) {
-    const saved = await insights.saveConfig(game(gameId), asIndex(index), patchObject(patch, '通知设置'));
+  async saveNotificationConfig({ alerts, remoteBot }, gameId, index, patch) {
+    const saved = await alerts.hub.saveLegacyNotification(game(gameId), asIndex(index), patchObject(patch, '通知设置'));
     await reloadBot(remoteBot);
     return saved;
   },
-  async testNotification({ insights }, gameId, index, channel) {
+  async testNotification({ alerts }, gameId, index, channel) {
+    game(gameId);
+    asIndex(index);
     if (channel !== 'local' && channel !== 'telegram') throw new Error('通知渠道无效');
-    return insights.test(game(gameId), asIndex(index), channel);
+    return alerts.hub.legacyTest(channel);
   },
-  async remoteBotConfig({ insights, remoteBot }) {
-    return insights.remoteBotConfig(remoteBot.isRunning());
+  async remoteBotConfig({ alerts, remoteBot }) {
+    return alerts.hub.remoteBotConfig(remoteBot.isRunning());
   },
-  async saveRemoteBotConfig({ insights, remoteBot }, patch) {
-    await insights.saveRemoteBotConfig(patchObject(patch, '只读机器人设置'));
+  async saveRemoteBotConfig({ alerts, remoteBot }, patch) {
+    await alerts.hub.saveRemoteBotConfig(patchObject(patch, '只读机器人设置'));
     await reloadBot(remoteBot);
-    return insights.remoteBotConfig(remoteBot.isRunning());
+    return alerts.hub.remoteBotConfig(remoteBot.isRunning());
   },
   async testRemoteBot({ remoteBot }) { return remoteBot.testConnection(); },
 };

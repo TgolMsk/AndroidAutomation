@@ -706,6 +706,9 @@ export class EtaScheduler {
         onFrame: (raw) => this.notifyFrame(index, raw),
         onCaptureFailed: (error) => { if (!signal.aborted && !isAbortCode(codeOf(error))) this.notifyCaptureFailed(index, error); },
         onUnrecognized: async (raw) => {
+          // Alerts' kicked / maintenance probe first (original order), then the AI / update hook.
+          const probe = this.hooks.probeUnrecognizedFrame;
+          if (probe && await probe(index, raw, { signal })) return true;
           const hook = this.hooks.onUnrecognizedFrame;
           if (!hook) return false;
           const result = await hook(index, raw, { signal });

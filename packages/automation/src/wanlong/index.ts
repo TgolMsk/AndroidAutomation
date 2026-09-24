@@ -64,3 +64,17 @@ export { TROOP_STATUS_LABEL } from './gather/types.js';
 export type {
   DispatchRecord, GatherOutcome, LevelMemoryMap, MarchRecord, ResourceLevelMemory, TroopPanelReading,
 } from './gather/types.js';
+
+// ── alerts-freeze 模块：卡死看门狗（帧指纹 / 两档判定 / 重启熔断）与恢复流程 ──
+export type {
+  FrameDigest, FreezeEvidence, FreezeGuardConfig, FreezeGuardDeps, FreezeVerdict, RestartBudget,
+} from './freeze.js';
+export {
+  CELL_DIFF_TOLERANCE, DIGEST_COLS, DIGEST_ROWS, FULL_MIN_CAPTURE_FAILURES, FULL_MIN_STATIC_FRAMES, FreezeGuard,
+  SAMPLE_FAIL_MIN_CAPTURE_FAILURES, SAMPLE_FAIL_MIN_STATIC_FRAMES, SAMPLE_FAIL_MIN_STATIC_MS, STATIC_MAX_CHANGED_CELLS,
+  digestDelta, frameDigest, framesLookIdentical,
+} from './freeze.js';
+export type {
+  FreezeRecoveryIo, FreezeRecoveryOptions, FreezeRecoveryResult, FreezeRecoveryStage, InstanceProbe,
+} from './freezeRecovery.js';
+export { FREEZE_RECOVERY_DEFAULTS, FREEZE_STAGE_TEXT, recoverFrozenInstance } from './freezeRecovery.js';

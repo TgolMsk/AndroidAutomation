@@ -430,7 +430,8 @@ describe('app settings: gather failure shots follow the shot policy', () => {
     const shots = async () => (await readdir(shotsDir).catch(() => [] as string[])).map((name) => name.replace(/-\d+\.jpg$/, '')).sort();
     const runOnce = async () => {
       const before = (await host.runs()).length;
-      await host.run('wanlong', 'gather-once', 1);
+      // The run reads 'failed' before its completion hooks release the instance: retry the start until it is free.
+      await vi.waitFor(() => host.run('wanlong', 'gather-once', 1), { timeout: 10_000 });
       await vi.waitFor(async () => {
         const runs = await host.runs();
         expect(runs.length).toBe(before + 1);

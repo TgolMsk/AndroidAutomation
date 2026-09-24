@@ -9,6 +9,7 @@ import { useToast } from './components/Toasts';
 import { useAvdmEvent } from './hooks/useAvdmEvent';
 import { describeServiceFailure, serviceFailureLabel, useServiceFailures } from './hooks/useServiceFailures';
 import { VIEW_KEYS, type ViewKey } from './navigation';
+import { pausedIndexes, useAlerts } from './state/alerts';
 import { useShellBadge } from './state/badges';
 import { useNavigation } from './state/navigation';
 import { useSelection } from './state/selection';
@@ -64,8 +65,21 @@ function AppToasts() {
   return null;
 }
 
+/** Instances an alert paused (kicked, offline, consecutive failures …): red until 「恢复」 on the gather overview. */
+function PausedInstancesBadge() {
+  const { pauses } = useAlerts();
+  const paused = pausedIndexes(pauses);
+  useShellBadge(paused.length > 0 ? {
+    tone: 'bad', label: `${paused.length} 个实例已被异常暂停`,
+    detail: paused.map((index) => `实例 #${index}：${pauses[index]?.reason ?? '已暂停'}`).join('\n'),
+    view: 'gatherOverview',
+  } : null);
+  return null;
+}
+
 export const BADGE_SOURCES: readonly ComponentType[] = [
   SelectionBadges,
   ServiceFailureBadges,
   AppToasts,
+  PausedInstancesBadge,
 ];

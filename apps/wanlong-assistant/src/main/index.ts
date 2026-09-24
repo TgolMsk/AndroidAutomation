@@ -8,7 +8,6 @@ import { AdvisorService } from './automation/advisor';
 import { gamePlugin } from './automation/games';
 import { AutomationHost } from './automation/host';
 import { InsightsService } from './automation/insights';
-import { safeStorageCodec } from './automation/insights/notifications';
 import { InstanceProvisioner } from './instances/provisioner';
 import { AppLog, describeThrown, installConsoleCapture } from './app/app-log';
 import { DeviceTools } from './app/device-tools';
@@ -22,11 +21,13 @@ import { AppSettingsStore } from './app/settings-store';
 import { announceHealth, announceServiceFailures } from './app/startup';
 import { AppToasts } from './app/toasts';
 import { DeviceLanes } from './device/lane';
-import { keepShot } from '../shared/app-settings';
+import { shouldKeepShot } from '@avdm/automation/wanlong';
 import { broadcast, setBroadcastLogSink } from './events';
 import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
-import { MonitoringService, ReadOnlyTelegramBot } from './monitoring';
+import { AlertsService, createAvdFreezeRecoveryIo, KICKED_TEMPLATE_IDS, ledgerAlertOf, safeStorageCodec } from './alerts';
+import { ReadOnlyTelegramBot } from './monitoring';
+import { ShotStore } from './scheduler/shots';
 import { SCRIPT_PREEMPT_GRACE_MS } from './scheduler/service';
 import { PlanService, ScriptRunner } from './plans';
 import { updateBusyCheck, updateLog, UpdateService } from './update';
@@ -74,28 +75,22 @@ bootstrapApp({
     };
 
     // ── insights (stats / notifications) ──
-    const insights = new InsightsService(home, { codec: rememberingCodec(safeStorageCodec, logSecrets) });
+    const insights = new InsightsService(home);
 
     // ── automation (gather runs, schedules, templates) ──
-    let monitoring: MonitoringService;
     const automation = new AutomationHost(deviceHost, home, undefined, undefined, {
       onCycle: async (run, result, source) => {
         await insights.recordCycle(run, result, source).catch((error: unknown) => console.error('[wanlong] 统计写入失败', error));
-        await monitoring.recordCycle(run, result);
       },
       onFailure: async (run, error, source) => {
         await insights.recordFailure(run, error, source).catch((cause: unknown) => console.error('[wanlong] 失败统计写入失败', cause));
-        await monitoring.recordFailure(run, error);
       },
-      onScheduleStop: (gameId, index, count) => insights.recordScheduleStop(gameId, index, count),
       automationReadiness: (gameId, index) => accounts.readiness(gameId, index),
-      onSchedulePause: (gameId, index, reason) => insights.recordSchedulePause(gameId, index, reason),
       // 「测试模板」 hits or misses exactly as a script run would (same threshold / shrink as the script worker).
       matchDefaults,
       // Gather failure scenes follow the app settings' shot policy (original saveAlertShot).
       shotPolicy: () => appSettings.get().shotPolicy,
-      // Fallback「需要人处理」alert until the alerts module sets the scheduler's own onNeedsAttention hook.
-      onNeedsAttention: (gameId, index, info) => insights.recordAttentionPause(gameId, index, info),
+      // onScheduleStop / onSchedulePause / onNeedsAttention / onCycleResult: the alerts section below.
     }, {
       // Check-then-act sequences (foreground → screencap → foreground, foreground → tap) stay whole on the lane.
       deviceLane: (index, work) => deviceLanes.run(index, work),
@@ -192,41 +187,64 @@ bootstrapApp({
       },
     });
 
-    // ── monitoring (failure / freeze / kicked detection) ──
-    monitoring = new MonitoringService(home, {
-      async targets() {
-        const [schedules, runs, states] = await Promise.all([
-          automation.schedules(), automation.runs(), (await services.host.get()).list(),
-        ]);
-        const byIndex = new Map(states.map((state) => [state.record.index, state]));
-        return schedules.filter((schedule) => schedule.enabled).flatMap((schedule) => {
-          const state = byIndex.get(schedule.index);
-          if (!state) return [];
-          const login = accounts.loginSession(schedule.index);
-          return [{
-            gameId: schedule.gameId, index: schedule.index,
-            packageName: gamePlugin(schedule.gameId).packageName,
-            instanceIdentity: state.record.createdAt,
-            instanceRunning: state.status === 'running',
-            busy: plans.isActiveForInstance(schedule.index) ||
-              runs.some((run) => run.index === schedule.index && (run.status === 'running' || run.status === 'stopping')) ||
-              // The scheduler is reading the troop panel / dispatching / probing on it right now.
-              automation.locks.holder(schedule.index) !== null ||
-              Boolean(login && loginActive(login.phase)),
-          }];
-        });
+    // ── alerts / freeze (failure detection, automatic pauses, notifications, freeze watchdog; see src/main/alerts) ──
+    const alertShots = new ShotStore(home);
+    const alertLog = appLog.scoped('alerts');
+    const wanlongPackage = gamePlugin('wanlong').packageName;
+    const alerts: AlertsService = new AlertsService(home, {
+      // The bot token stays in the Keychain; every plaintext that passes the codec is scrubbed from the app log.
+      codec: rememberingCodec(safeStorageCodec, logSecrets),
+      // ★ Pause = setAuto(false) (never takes the instance lock); resume = setAuto(true) from IPC / the bot only.
+      setAuto: (index, enabled, reason) => automation.eta.setAuto(index, enabled, reason),
+      exclusive: (index, what, fn, signal) => automation.eta.exclusive(index, what, fn, signal),
+      accountOf: async (index) => {
+        const account = await accounts.accountForInstance('wanlong', index);
+        return account ? { id: account.id, name: account.name } : null;
       },
-      capture: (gameId, index) => automation.captureReadOnly(gameId, index),
-      templateSet: (gameId, index) => automation.templateSet(gameId, index),
-      testTemplate: (gameId, index, id) => automation.testTemplate(gameId, index, id),
-      onAlert: (alert) => insights.recordMonitorAlert(alert),
-      keepEvidence: () => keepShot(appSettings.get().shotPolicy, 'failure'),
-      classifyCaptureError: (error) => error instanceof Error && error.message.startsWith('ADB 截图失败:') ? 'device' : 'unknown',
+      identityOf: async (index) => {
+        try { return (await (await services.host.get()).getState(index)).record.createdAt; }
+        catch (error) { if ((error as { code?: unknown }).code === 'INSTANCE_NOT_FOUND') return null; throw error; }
+      },
+      // A frozen guest can read as「booting」to a fresh manager process: booting with a live pid still counts.
+      instanceAlive: async (index) => {
+        const state = await (await services.host.get()).getState(index);
+        return { alive: state.status === 'running' || (state.status === 'booting' && Boolean(state.pid)), status: state.status, identity: state.record.createdAt };
+      },
+      recoveryIo: (index, signal) => createAvdFreezeRecoveryIo({
+        manager: () => deviceHost.get(), index, signal, gamePackage: wanlongPackage,
+        recognize: (raw, abort) => automation.recognizeScreen(index, raw, abort),
+        dropLane: (i) => deviceLanes.drop(i),
+        log: (level, message) => alertLog[level](`[卡死][实例 #${index}] ${message}`, undefined, index),
+      }),
+      matchTemplates: (index, raw, ids) => automation.matchTemplates(index, raw, ids),
+      hasKickedTemplates: async (index) => Boolean((await automation.templateSet('wanlong', index))?.templates
+        .some((template) => KICKED_TEMPLATE_IDS.includes(template.id))),
+      // Alert scenes follow the app settings' shot policy (original saveAlertShot: failure labels under 'onFail').
+      saveShot: async (index, label, raw) => shouldKeepShot(appSettings.get().shotPolicy, label) ? alertShots.save(index, label, raw) : null,
+      // Every real alert also lands in the daily ledger (statistics count alerts per Beijing day).
+      ledger: async (record) => {
+        const row = ledgerAlertOf(record, 'wanlong');
+        if (row) await insights.recordAlert(row);
+      },
+      log: (level, message, index) => alertLog[level](message, undefined, index),
+      onPauseChanged: (pause) => broadcast('alert-pause-changed', pause),
+      onRaised: (record) => broadcast('alert-raised', record),
+      onConfigChanged: (view) => {
+        broadcast('alert-config-changed', view);
+        void remoteBot.restart().catch((error: unknown) => alertLog.warn(`只读机器人按新配置重启失败：${describeThrown(error)}`));
+      },
+      gamePackage: wanlongPackage,
+    });
+    automation.eta.setHooks(alerts.schedulerHooks());
+    automation.setHooks(alerts.hostHooks());
+    automation.setPorts({
+      probeKicked: (index, raw) => alerts.probeKicked(index, raw),
+      pauseReason: (index) => alerts.center.pauseInfo(index)?.reason ?? null,
     });
 
     // ── bot (Telegram) ──
     const remoteBot = new ReadOnlyTelegramBot({
-      config: () => insights.readOnlyBotConfig(),
+      config: () => alerts.hub.readOnlyBotConfig(),
       async statuses() {
         const [states, schedules] = await Promise.all([
           (await services.host.get()).list(), automation.schedules(),
@@ -303,6 +321,7 @@ bootstrapApp({
       advisor,
       plans,
       remoteBot,
+      alerts,
       serviceHealth,
       provisioner,
       appSettings,
@@ -333,9 +352,10 @@ bootstrapApp({
             name: '模拟器日志记录', impact: '模拟器管理器的警告不会写入助手日志文件',
             run: async () => (await services.host.get()).on('log', (entry) => appLog.record(entry.level, 'emulator', entry.message, undefined, entry.index)),
           },
+          // Alerts first (original order): a wake re-armed by the scheduler may raise an alert right away.
+          { name: '异常告警', impact: '掉线、顶号与卡死不会自动暂停或推送', run: async () => { await Promise.all([alerts.hub.ready, alerts.center.ready]); } },
           { name: '自动续跑调度', impact: '自动采集不会续跑', run: () => automation.restoreSchedules() },
           { name: '脚本计划', impact: '定时脚本不会自动运行', run: () => plans.start('wanlong') },
-          { name: '运行监控', impact: '掉线与卡死不会告警', run: () => monitoring.start() },
           { name: '只读机器人', impact: 'Telegram 机器人不会响应', run: () => remoteBot.start() },
           { name: '应用内更新', impact: '启动后不会自动检查新版本', run: () => updates.start() },
         ]);
@@ -350,7 +370,8 @@ bootstrapApp({
         await runServiceSteps('stop', [
           { name: '应用内更新', run: () => updates.dispose() },
           { name: '只读机器人', run: () => remoteBot.stop() },
-          { name: '运行监控', run: () => monitoring.dispose() },
+          // Aborts freeze restarts first (quitting must not wait minutes), then flushes pauses and pushes.
+          { name: '异常告警', run: () => alerts.dispose() },
           { name: '脚本计划', run: () => plans.shutdown() },
           { name: '账号登录', run: () => accounts.shutdown() },
           { name: '登录检查', run: () => homeVerifier.dispose() },

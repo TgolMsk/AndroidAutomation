@@ -1,10 +1,7 @@
 import type { GatherCycleResult } from '@avdm/automation/wanlong';
 import type { AutomationRun } from '../../../shared/ipc';
-import type { MonitorAlert } from '../../monitoring/types';
-import type { ReadOnlyBotConfig } from '../../monitoring/telegram-readonly';
-import type { InsightAlert, InsightDay, NotificationConfigPatch, NotificationConfigView, NotificationTestResult, RemoteBotConfigPatch, RemoteBotConfigView } from './contracts';
-import { NotificationHub, type NotificationPorts } from './notifications';
-import { cstDateKey, type InsightCycleFact } from './stats';
+import type { InsightAlert, InsightDay } from './contracts';
+import type { InsightCycleFact } from './stats';
 import { InsightStore } from './store';
 
 function safeMessage(value: unknown): string {
@@ -16,14 +13,16 @@ function terminalAt(run: AutomationRun): number {
   return run.endedAt !== null && Number.isFinite(run.endedAt) ? run.endedAt : Date.now();
 }
 
-/** Durable insights and opt-in notifications. This service never sends ADB input or owns a device. */
+/**
+ * Durable daily insights (cycles, dispatches, alert counts). Notifications, pauses and alert conclusions belong to
+ * the alerts module (`src/main/alerts`), which writes its alerts into this ledger through `recordAlert`. This service
+ * never sends ADB input or owns a device.
+ */
 export class InsightsService {
   private readonly store: InsightStore;
-  private readonly notifications: NotificationHub;
 
-  constructor(home: string, ports: NotificationPorts = {}) {
+  constructor(home: string) {
     this.store = new InsightStore(home);
-    this.notifications = new NotificationHub(home, ports);
   }
 
   async days(gameId: string, index: number | null, count = 7): Promise<InsightDay[]> {
@@ -32,31 +31,6 @@ export class InsightsService {
 
   async alerts(gameId: string, index: number | null, limit = 50): Promise<InsightAlert[]> {
     return this.store.alerts(gameId, index, limit);
-  }
-
-  config(gameId: string, index: number): Promise<NotificationConfigView> {
-    return this.notifications.config(gameId, index);
-  }
-
-  saveConfig(gameId: string, index: number, patch: NotificationConfigPatch): Promise<NotificationConfigView> {
-    return this.notifications.saveConfig(gameId, index, patch);
-  }
-
-  test(gameId: string, index: number, channel: 'local' | 'telegram'): Promise<NotificationTestResult> {
-    return this.notifications.test(gameId, index, channel);
-  }
-
-  remoteBotConfig(running = false): Promise<RemoteBotConfigView> {
-    return this.notifications.remoteConfig(running);
-  }
-
-  saveRemoteBotConfig(patch: RemoteBotConfigPatch, running = false): Promise<RemoteBotConfigView> {
-    return this.notifications.saveRemoteConfig(patch, running);
-  }
-
-  /** Main process only: decrypted credential must never cross the renderer IPC bridge. */
-  readOnlyBotConfig(): Promise<ReadOnlyBotConfig> {
-    return this.notifications.readOnlyBotConfig();
   }
 
   /** Called after the game worker produced a result; duplicate run IDs are idempotent. */
@@ -98,58 +72,19 @@ export class InsightsService {
     });
   }
 
-  /** Call only when scheduler persisted an automatic disable after repeated failures. */
-  async recordScheduleStop(gameId: string, index: number, failureCount: number): Promise<void> {
-    if (!Number.isInteger(failureCount) || failureCount < 1) throw new Error('调度失败次数无效');
-    const at = Date.now();
-    await this.raise({
-      id: `${gameId}:${index}:schedulePaused:${cstDateKey(at)}`,
-      gameId, index, kind: 'schedulePaused', severity: 'critical', at,
-      message: `连续 ${failureCount} 次失败，自动续跑已暂停。请查看最近运行和模拟器画面后再启用。`, runId: null,
-    });
-  }
-
   /**
-   * A schedule paused by a gate that is not a failure (the bound account needs a login check, a login is running,
-   * the base instance). A warning, at most once a day per instance, never counted as a failed cycle.
+   * One alert conclusion of the alerts module into the day ledger (statistics: alerts per day). Idempotent by id.
+   * @returns false when the id was already recorded
    */
-  async recordSchedulePause(gameId: string, index: number, reason: string): Promise<void> {
-    const at = Date.now();
-    await this.raise({
-      id: `${gameId}:${index}:schedulePaused:gate:${cstDateKey(at)}`,
-      gameId, index, kind: 'schedulePaused', severity: 'warning', at,
-      message: `自动续跑已暂停（不计为失败）：${safeMessage(reason)}`, runId: null,
-    });
-  }
-
-  /**
-   * The scheduler paused an instance because a human must look (game update prompt, AI judged a confirm risky).
-   * Fallback until the alerts module owns the dedicated「需要人处理」alert; at most one per instance, code and day.
-   */
-  async recordAttentionPause(gameId: string, index: number, info: { code: string; message: string }): Promise<void> {
-    const at = Date.now();
-    const code = /^[A-Z_]{1,40}$/.test(info.code) ? info.code : 'UNKNOWN';
-    await this.raise({
-      id: `${gameId}:${index}:schedulePaused:${code}:${cstDateKey(at)}`,
-      gameId, index, kind: 'schedulePaused', severity: 'critical', at,
-      message: `需要人工处理，自动续跑已暂停：${safeMessage(info.message)}`, runId: null,
-    });
-  }
-
-  /** Read-only monitor findings use the same durable ledger and opt-in channels as run alerts. */
-  async recordMonitorAlert(alert: MonitorAlert): Promise<void> {
-    await this.raise({
-      id: alert.id, gameId: alert.gameId, index: alert.index, kind: alert.kind,
-      severity: alert.severity, at: alert.at, message: alert.message,
-      runId: alert.evidence.runId, evidence: alert.evidence,
-    });
+  async recordAlert(alert: InsightAlert): Promise<boolean> {
+    return this.store.addAlert(alert);
   }
 
   private async raise(alert: InsightAlert): Promise<void> {
-    if (await this.store.addAlert(alert)) this.notifications.enqueue(alert);
+    await this.store.addAlert(alert);
   }
 
-  async dispose(): Promise<void> { await this.notifications.flush(); }
+  async dispose(): Promise<void> { /* Every write is awaited by its caller. */ }
 }
 
 export type { InsightAlert, InsightDay, NotificationConfigPatch, NotificationConfigView, NotificationTestResult, RemoteBotConfigPatch, RemoteBotConfigView } from './contracts';

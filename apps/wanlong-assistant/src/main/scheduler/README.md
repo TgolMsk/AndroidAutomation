@@ -103,7 +103,8 @@ automation.eta.setHooks({
   onCaptureFailed: (index, error) => freezeGuard.captureFailed(index, error),
   onHealthProbe: async (index, raw, { foreground, running, signal }) => { /* 顶号探针 / 卡死判定 */ },
   onHealthProbeFailed: async (index, error, { signal }) => { /* 截图都截不到 */ },
-  onUnrecognizedFrame: async (index, raw, { signal }) => true | 'recovered' | 'updated' | false,  // 顶号 / AI / 更新
+  probeUnrecognizedFrame: async (index, raw, { signal }) => boolean,      // 告警模块的顶号探针，排在 onUnrecognizedFrame 之前（true = 已接管）
+  onUnrecognizedFrame: async (index, raw, { signal }) => true | 'recovered' | 'updated' | false,  // AI / 更新
   onMarchGone: (index, gone, at) => stats.record(...),                     // 一趟采集完成（参考指标）
   onAutoChanged: (index, enabled, at, reason) => stats.record(...),        // ★ 暂停 / 恢复事件的唯一来源（只在真的翻转时）
   onNeedsAttention: (index, { code, message }) => alerts.raise(...),       // GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED，已暂停

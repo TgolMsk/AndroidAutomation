@@ -129,6 +129,11 @@ export interface AutomationHostPorts {
   probeKicked?(index: number, raw: RawFrame): Promise<KickedProbeResult | null>;
   /** G0 unknown-screen advisor (AI / game update) inside a gather cycle. true = the screen changed. */
   adviseUnknownScreen?(index: number, raw: RawFrame, attempt: number, signal: AbortSignal): Promise<boolean>;
+  /**
+   * Why an alert paused this instance (null when it is not paused). The user's switch refuses to enable a paused
+   * instance: only the pause banner's 「恢复」 clears the pause, its counters and its push cooldown.
+   */
+  pauseReason?(index: number): string | null;
 }
 
 export interface AutomationHostOptions {
@@ -624,6 +629,8 @@ export class AutomationHost {
     const request = (this.scheduleRequests.get(i) ?? 0) + 1;
     this.scheduleRequests.set(i, request);
     if (!enabled) return this.scheduler.disable(gameId, i);
+    const paused = this.ports.pauseReason?.(i);
+    if (paused) throw new Error(`实例 #${i} 因异常被暂停（${paused}），请先处理好现场，再在暂停横幅上点「恢复」`);
     const superseded = () => this.scheduleRequests.get(i) !== request || this.disposed;
     return this.withControlLock(i, async () => {
       if (superseded()) return this.scheduler.get(gameId, i);

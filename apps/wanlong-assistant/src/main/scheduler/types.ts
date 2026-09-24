@@ -75,6 +75,12 @@ export interface SchedulerHooks {
   onCaptureFailed?(index: number, error: { code: string; message: string }): void;
   /** In lock, awaited. true = kicked/offline taken over by alerts; 'recovered' = overlay closed; 'updated' = update done. */
   onUnrecognizedFrame?(index: number, raw: RawFrame, ctx: UnrecognizedContext): Promise<boolean | 'recovered' | 'updated' | void>;
+  /**
+   * In lock, awaited, runs BEFORE `onUnrecognizedFrame` (the alerts module's kicked / maintenance probe on the same
+   * frame, original order: probe first, then AI). true = an alert took the instance over (the sampler stops, no blind
+   * BACK). Separate from `onUnrecognizedFrame` so the alerts and AI modules never overwrite each other's hook.
+   */
+  probeUnrecognizedFrame?(index: number, raw: RawFrame, ctx: UnrecognizedContext): Promise<boolean>;
   /** In lock, awaited. Health probe frame with foreground package and process state. */
   onHealthProbe?(index: number, raw: RawFrame, ctx: FrameContext & { foreground: string | null; running: boolean | null }): Promise<void>;
   /** In lock, awaited. The health probe could not even capture a frame. */

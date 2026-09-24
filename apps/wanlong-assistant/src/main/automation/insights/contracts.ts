@@ -1,8 +1,28 @@
 /** Read-only contracts shared by the main process, IPC bridge, and insights panel. */
-import type { MonitorAlertKind, MonitorEvidence } from '../../monitoring/types';
+import type { LedgerAlertKind } from '../../../shared/alerts';
 
 export type InsightResource = 'wood' | 'gold' | 'iron' | 'mana';
-export type InsightAlertKind = 'runFailed' | 'circuitBroken' | 'schedulePaused' | MonitorAlertKind;
+/** Alert kinds of the daily ledger: the alert types of `src/shared/alerts.ts` plus the legacy kinds of old day files. */
+export type InsightAlertKind = LedgerAlertKind;
+
+/** Evidence attached to a ledger alert (local only; screenshot paths stay on this Mac). */
+export interface InsightEvidence {
+  source: 'cycle' | 'frame' | 'capture';
+  runId: string | null;
+  outcome?: string;
+  errorCode?: string | null;
+  step?: string | null;
+  consecutiveFailures?: number;
+  staticFrames?: number;
+  staticForMs?: number;
+  captureFailures?: number;
+  captureFailingForMs?: number;
+  templateId?: string;
+  score?: number;
+  threshold?: number;
+  /** Local private screenshot path; never upload or publish implicitly. */
+  screenshotPath?: string;
+}
 
 export interface InsightResourceTotals {
   dispatches: number;
@@ -39,7 +59,7 @@ export interface InsightAlert {
   message: string;
   runId: string | null;
   /** Local observer evidence; screenshot paths remain on this Mac. */
-  evidence?: MonitorEvidence;
+  evidence?: InsightEvidence;
 }
 
 export interface NotificationConfigView {

@@ -9,6 +9,8 @@ import { useAvdmEvent } from '../../hooks/useAvdmEvent';
 import { RUN_LABEL, isRunActive, useActivity } from '../../state/activity';
 import { useNavigation } from '../../state/navigation';
 import { useSelection, useSelectionLock } from '../../state/selection';
+import { usePause } from '../../state/alerts';
+import { PauseBanner, PausedInstancesStrip } from '../alerts/PauseBanner';
 import { useTemplateFlow } from '../../state/template-flow';
 import type { ViewProps } from '../types';
 import { GATHER_RESOURCES, wanlongConfig, wanlongDraftOf, type WanlongDraft } from './gather-config';
@@ -39,7 +41,9 @@ export function GatherOverviewView(_props: ViewProps) {
   const toast = useToast();
   const { navigate } = useNavigation();
   const { runs, upsertRun, refreshRuns, schedules, schedulesLoading, schedulesError, refreshSchedules, upsertSchedule, holdSchedules } = useActivity();
-  const { game, index, selectedTarget, selectedInstance, selectedInstanceReady, instancesLoaded, instancesError } = useSelection();
+  const { game, index, setIndex, selectedTarget, selectedInstance, selectedInstanceReady, instancesLoaded, instancesError } = useSelection();
+  // An alert paused this instance: only the banner's 「恢复」 clears it (the switch stays locked meanwhile).
+  const alertPaused = usePause(index)?.paused === true;
   const gameId = game?.id ?? '';
   const [scheduleTarget, setScheduleTarget] = useState<boolean | null>(null);
   const [taskId, setTaskId] = useState('');
@@ -120,7 +124,7 @@ export function GatherOverviewView(_props: ViewProps) {
     (game.id !== 'wanlong' || savedDraft?.enabled),
   );
   const canRun = Boolean(taskId && launchConditionsMet && !scheduleEnabled);
-  const canEnableSchedule = Boolean(offersAutoResume && launchConditionsMet && !schedulesLoading && !schedulesError);
+  const canEnableSchedule = Boolean(offersAutoResume && launchConditionsMet && !schedulesLoading && !schedulesError && !alertPaused);
 
   async function saveConfig(): Promise<void> {
     if (!game || index === null || !settings || !draft || !draftDirty || busy) return;
@@ -228,6 +232,8 @@ export function GatherOverviewView(_props: ViewProps) {
         <div><h2>{game.name}</h2><p className="mono">{game.packageName}</p></div>
         <span>v{game.version}</span>
       </div>
+      <PausedInstancesStrip current={index} onSelect={setIndex} />
+      <PauseBanner index={index} instanceName={selectedInstance?.record.name ?? null} />
 
       <section className="automation-section" aria-labelledby="automation-target-title">
         <div className="automation-section-title"><h3 id="automation-target-title">当前实例</h3><p>在顶部切换实例；账号、模板与任务按实例分别保存。</p></div>
@@ -287,7 +293,8 @@ export function GatherOverviewView(_props: ViewProps) {
             </div>
             {schedulerStatus && !schedulerStatus.owner && <p className="automation-schedule-note is-readonly" role="status">{schedulerStatus.message ?? '另一个万龙助手进程正在管理自动采集调度，本窗口只显示状态。'}</p>}
             {schedulesError && <div className="automation-inline-error" role="alert">调度状态读取失败：{schedulesError}<button className="btn xs" onClick={() => void refreshSchedules()}>重试</button></div>}
-            {!scheduleEnabled && !canEnableSchedule && !schedulesLoading && !schedulesError && <p className="automation-schedule-note">启用前需保存配置、通过画面启动检查并确认探针结果。</p>}
+            {alertPaused && <p className="automation-schedule-note">该实例因异常被暂停，处理好现场后在上方红色横幅点「恢复」。</p>}
+            {!alertPaused && !scheduleEnabled && !canEnableSchedule && !schedulesLoading && !schedulesError && <p className="automation-schedule-note">启用前需保存配置、通过画面启动检查并确认探针结果。</p>}
           </div>}
         </>}
         <div className="automation-run-history"><h4>最近运行</h4>{selectedRuns.length === 0 ? <p className="automation-muted">这个实例尚无运行记录。</p> : selectedRuns.slice(0, 5).map((run) => <div key={run.runId} className="automation-run-item"><span className={`automation-run-dot is-${run.status}`} /><div><strong>{game.tasks.find((task) => task.id === run.taskId)?.name ?? run.taskId}</strong><small>{run.message || RUN_LABEL[run.status]}{run.nextWakeAt ? ` · 下次唤醒 ${beijingTime(run.nextWakeAt)}` : ''}</small></div><span className="automation-run-meta"><strong>{RUN_LABEL[run.status]}</strong><small>{beijingTime(run.startedAt)}</small></span></div>)}</div>

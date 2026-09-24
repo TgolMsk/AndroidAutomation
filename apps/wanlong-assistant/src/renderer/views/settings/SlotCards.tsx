@@ -21,24 +21,12 @@ function SlotCard({ title, icon, lines, link }: {
   );
 }
 
-/** 通知与推送 (alerts module). */
-export function NotificationsSlotCard() {
-  return (
-    <SlotCard
-      title="通知与推送" icon="alert"
-      lines={['本机通知与 Telegram 推送目前按实例在「数据统计」页配置；推送里的时间一律是北京时间。', 'Bot Token 用系统钥匙串加密保存，界面与日志里只显示是否已设置。']}
-      link={{ label: '前往数据统计', view: 'stats' }}
-    />
-  );
-}
-
 /** 机器人 (bot module). */
 export function BotSlotCard() {
   return (
     <SlotCard
       title="机器人" icon="terminal"
-      lines={['Telegram 只读机器人的开关、Chat ID 与授权用户 ID 在「数据统计」页的通知设置里。', '目前只能查看：/status 看实例状态，/shot <编号> 取当前游戏画面。']}
-      link={{ label: '前往数据统计', view: 'stats' }}
+      lines={['机器人的开关、Chat ID 与授权用户 ID 在上面「通知与推送」卡片的「手机机器人」一节。', '目前只能查看：/status 看实例状态，/shot <编号> 取当前游戏画面。']}
     />
   );
 }

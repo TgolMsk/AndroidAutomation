@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readFile, readdir, rename, rm, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { withFileLock } from '@avdm/core';
+import { LEDGER_ALERT_KINDS } from '../../../shared/alerts';
 import type { InsightAlert, InsightDay } from './contracts';
 import { aggregateDay, cstDateKey, shiftDateKey, type InsightCycleFact } from './stats';
 
@@ -44,8 +45,7 @@ function validAlert(value: unknown): value is InsightAlert {
   return typeof alert.id === 'string' && alert.id.length <= 180 &&
     typeof alert.gameId === 'string' && validGameId(alert.gameId) &&
     typeof alert.index === 'number' && validIndex(alert.index) &&
-    ['runFailed', 'circuitBroken', 'schedulePaused', 'consecutiveFailures', 'recoveryExhausted',
-      'dispatchStalled', 'suspectedKicked', 'maintenanceRequired', 'updateRequired', 'suspectedFreeze'].includes(alert.kind ?? '') &&
+    (LEDGER_ALERT_KINDS as readonly string[]).includes(alert.kind ?? '') &&
     ['warning', 'critical'].includes(alert.severity ?? '') &&
     typeof alert.at === 'number' && Number.isFinite(alert.at) &&
     typeof alert.message === 'string' && alert.message.length <= 1000 &&
