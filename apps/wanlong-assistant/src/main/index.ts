@@ -141,6 +141,8 @@ bootstrapApp({
       onSnapshot: (snapshot) => broadcast('plan-run', { kind: 'snapshot', snapshot }),
       onLogs: (event) => broadcast('run-logs', event),
       onMatches: (event) => broadcast('run-matches', event),
+      // Frame reuse window of the script worker = the app settings' capture interval (original worker/context.ts).
+      captureIntervalMs: () => appSettings.get().minCaptureIntervalMs,
     });
     const plans = new PlanService(home, {
       accounts: (gameId) => accounts.list(gameId),

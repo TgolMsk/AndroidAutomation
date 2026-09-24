@@ -7,6 +7,7 @@ import type { InstanceState } from '@avdm/core';
 import { SETTINGS_CARDS } from '../src/renderer/views/settings/cards';
 import { templateSetTitle } from '../src/renderer/views/settings/DataPathsCard';
 import { DEVICE_TOOL_SLOTS } from '../src/renderer/views/settings/device-tool-slots';
+import { ImeTool, imeToolLine } from '../src/renderer/views/runs/ImeTool';
 import { apkSummary, defaultToolIndex } from '../src/renderer/views/settings/DeviceToolsCard';
 import { logScopes, matchesLogFilter, mergeLogEntries } from '../src/renderer/views/settings/log-view';
 import { appSettingsPatch, appSettingsProblems, emulatorSettingsProblems, numberInput } from '../src/renderer/views/settings/settings-form';
@@ -43,7 +44,7 @@ describe('settings page', () => {
     expect(new Set(SETTINGS_CARDS.map((card) => card.key)).size).toBe(SETTINGS_CARDS.length);
   });
 
-  it('device tools pick a running instance and keep a slot for the Chinese input method tool', () => {
+  it('device tools pick a running instance and host the script engine\'s Chinese input method tool', () => {
     const instance = (index: number, status: InstanceState['status']) => ({ record: { index, name: `i${index}` }, status }) as unknown as InstanceState;
     const instances = [instance(0, 'stopped'), instance(1, 'running'), instance(2, 'running')];
     expect(defaultToolIndex(instances, 2)).toBe(2);
@@ -53,6 +54,12 @@ describe('settings page', () => {
     expect(apkSummary(['/Users/me/Downloads/ADBKeyboard.apk'])).toBe('ADBKeyboard.apk');
     expect(apkSummary(['/a/base.apk', '/a/split_config.apk'])).toBe('base.apk 等 2 个文件');
     expect(DEVICE_TOOL_SLOTS.map((slot) => slot.key)).toEqual(['ime']);
+    expect(DEVICE_TOOL_SLOTS[0]?.component).toBe(ImeTool);
+    const ready = { index: 1, installed: true, enabled: true, selected: true, available: true, message: 'ADBKeyboard 已启用并设为当前输入法' };
+    expect(imeToolLine(null, null, null)).toContain('选择一个运行中的实例');
+    expect(imeToolLine(1, null, null)).toBe('正在检查…');
+    expect(imeToolLine(1, ready, null)).toBe(ready.message);
+    expect(imeToolLine(1, null, 'adb 断开')).toContain('检查失败（adb 断开）');
     expect(templateSetTitle({ index: 1, instanceName: '主号', path: '/s', exists: true, name: '万龙', templates: 93 })).toBe('实例 #1「主号」 · 模板集「万龙」93 张');
     expect(templateSetTitle({ index: 4, instanceName: null, path: '/s', exists: false, name: null, templates: null })).toBe('实例 #4（实例已删除）');
   });

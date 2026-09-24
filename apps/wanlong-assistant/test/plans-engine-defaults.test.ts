@@ -144,3 +144,29 @@ describe('script matching uses the app settings defaults (matchThreshold / shrin
     }
   });
 });
+
+describe('script capture pacing follows the app settings (minCaptureIntervalMs)', () => {
+  const startInput = (workers: ReturnType<typeof inProcessWorkers>) => {
+    const start = workers.created[0]?.sent.find((message) => message.type === 'start');
+    return start?.type === 'start' ? start.input : undefined;
+  };
+  const tapOnce: ScriptDef = { ...script, steps: [{ id: 't', kind: 'tap', at: { x: 50, y: 50 } }] };
+
+  it('hands the settings interval to the worker as its frame reuse window; test pacing still wins', async () => {
+    for (const [interval, pacing, expected] of [
+      [1200, undefined, 1200],
+      [Number.NaN, undefined, undefined],
+      [1200, { minCaptureIntervalMs: 0 }, 0],
+    ] as const) {
+      const device = fakeScriptDevice();
+      const workers = inProcessWorkers({ vision: spyVision().vision });
+      const runner = new ScriptRunner(home, {
+        instance: async () => ({ status: 'running', record: { createdAt: 'identity-1' } }),
+        device: async () => device,
+      }, { workerFactory: workers.factory, captureIntervalMs: () => interval, ...(pacing ? { pacing } : {}), foregroundPollMs: 5 });
+      const result = await runner.run(options({ script: tapOnce, templateDir: null }));
+      expect(result.status).toBe('succeeded');
+      expect(startInput(workers)?.minCaptureIntervalMs).toBe(expected);
+    }
+  });
+});

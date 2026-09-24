@@ -44,6 +44,12 @@ export interface ScriptRunnerOptions {
   aiAbortGraceMs?: number;
   foregroundTimeoutMs?: number;
   foregroundPollMs?: number;
+  /**
+   * The app settings' minimum capture interval, read at every start: the worker reuses a frame younger than this
+   * (original worker/context.ts took `settings.minCaptureIntervalMs`); the device lane keeps the same gap between
+   * screencaps. Absent / invalid = the engine default (400 ms). `pacing` (tests) wins over it.
+   */
+  captureIntervalMs?: () => number;
   /** Pacing overrides handed to the worker (tests). */
   pacing?: Pick<ScriptWorkerInput, 'minCaptureIntervalMs' | 'captureJitterMs' | 'restartGapMs' | 'restartSettleMs'>;
   logs?: RunLogStore;
@@ -462,10 +468,20 @@ export class ScriptRunner {
           accountId: options.accountId, accountName: options.accountName, templateDir: options.templateDir,
           shotPolicy: options.shotPolicy, maxRunMs: options.maxRunMs, consultAi: options.aiAssist !== false,
           debugMatches: entry.debugMatches, shotSeqStart, ...(options.matchDefaults ? { matchDefaults: options.matchDefaults } : {}),
-          ...this.options.pacing,
+          ...this.captureInterval(), ...this.options.pacing,
         },
       });
     });
+  }
+
+  /** `{ minCaptureIntervalMs }` from the app settings, or nothing (engine default) when absent, failing or invalid. */
+  private captureInterval(): { minCaptureIntervalMs?: number } {
+    try {
+      const value = this.options.captureIntervalMs?.();
+      return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 60_000 ? { minCaptureIntervalMs: value } : {};
+    } catch {
+      return {};
+    }
   }
 
   private appFields(options: ScriptExecuteOptions): Pick<ScriptRunSnapshot, 'gameId' | 'source' | 'taskId' | 'shotPolicy' | 'maxRunMs' | 'runId' | 'instanceIndex'> {

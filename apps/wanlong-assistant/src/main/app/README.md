@@ -31,6 +31,7 @@
   （`PlanHostPort.matchDefaults()` → `ScriptRunner.run({ matchDefaults })` → 脚本工作线程编译模板与准备帧）；模板库「测试模板」经
   `AutomationHostHooks.matchDefaults` 用同一组值（原版 `matchOnce` 与脚本引擎都用 `settings.shrink`），测试结论与脚本运行一致。
   采集流程用自己的阈值，不受影响；告警的特定画面识别虽然也走 `testTemplate`，但另有 ≥ 0.92 的门槛，默认设置下行为不变。
+  `minCaptureIntervalMs`：设备通道里同一实例两次截图的最小间隔，同时是脚本工作线程复用画面的窗口（`ScriptRunnerOptions.captureIntervalMs`）。
 - **日志**：`appLog.scoped('scheduler').warn('…', data, index)`；有明文凭据的模块用 `appLog.addSecrets(() => [token, apiKey])` 注册，日志里就不会出现它们。
   服务里原有的 `console.warn/error('[wanlong/xxx] …')` 已自动落盘（`[xxx]` 成为来源）。`broadcast('log', …)` 也会落盘。
 - **占用**：`occupancy.register('名字', (index?) => holders)` 登记新的占用来源（只能逐个实例回答的服务用
@@ -56,5 +57,6 @@
   以及「重启后生效」的运行设置分离（剩下的设置全部即时生效）、按模拟器安装隔离数据（`device-context.json`）。
 - 「同时运行实例上限」与「实例状态轮询间隔」改为编辑 core 设置（与多开管理器共用：`maxRunning`、`healthIntervalSec`、`bootTimeoutSec`）。
 - 通用 `app:pickFile`：保持目标的最小权限做法，用各自用途的选择器（APK 用壳层的 `pickApks`）。
-- 「设备工具 → 安装并启用中文输入法」（原版 `device:setupIme`）：归脚本引擎模块（DECISIONS 脚本引擎：用户自选 ADBKeyboard APK），这里只留扩展位与说明。
+- 「设备工具 → 安装并启用中文输入法」（原版 `device:setupIme`）：归脚本引擎模块（DECISIONS 脚本引擎：用户自选 ADBKeyboard APK），
+  设置页只提供扩展位，组件是脚本引擎的 `views/runs/ImeTool.tsx`（`imeStatus` / `imeSetup`，安装时拿实例租约「安装中文输入法」）。
 - 浅色主题（PRODUCT.md：用户选择保留深色）。
