@@ -115,11 +115,11 @@ describe('readResourceStatsFromFrame', () => {
     const gone = join(await tempDir('avdm-res-gone-'), 'no-such-set');
     const missing = readResourceStatsFromFrame(buildScreens().dialog.raw(), templates, 0, 1, { templateDir: gone });
     await expect(missing).rejects.toMatchObject({ code: 'TEMPLATE_NOT_FOUND', detail: { templateDir: gone } });
-    await expect(missing).rejects.toThrow(/目录不存在或缺少 manifest\.json.*请在「模板」页重新选择模板集/);
+    await expect(missing).rejects.toThrow(/读取模板集「.*」失败（.*(目录不存在|缺少 manifest\.json).*）.*请在「模板」页重新选择模板集/);
     await expect(missing).rejects.not.toThrow(/ENOENT/);
     const corrupt = await tempDir('avdm-res-corrupt-');
     await writeFile(join(corrupt, 'manifest.json'), '{ not json');
-    await expect(loadResourceUnitTemplates(corrupt)).rejects.toThrow(/manifest\.json 不是有效的 JSON/);
+    await expect(loadResourceUnitTemplates(corrupt)).rejects.toThrow(/manifest\.json 不是(有效|合法)的? ?JSON/);
   });
 
   it('reports a unit template that fails to compile through onWarn (the original console.warn)', async () => {

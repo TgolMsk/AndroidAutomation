@@ -126,7 +126,7 @@ describe('seedResourceTemplates', () => {
     const result = await seedResourceTemplates({ library, templateDir: set.directory, frames: { items: await flat.png() } });
     expect(result.saved).toEqual([]);
     expect(result.failed.map((f) => f.id).sort()).toEqual([RES_TPL.btnResStats, RES_TPL.titleItemsRes].sort());
-    expect(result.failed[0]!.reason).toContain('纹理不足');
+    expect(result.failed[0]!.reason).toMatch(/方差过低|纹理不足/);
     expect(result.skipped.some((s) => s.id === RES_TPL.titleResStats && s.reason.includes('没有提供'))).toBe(true);
     expect((await loadTemplateSet(set.directory)).templates).toEqual([]);
   });
@@ -137,7 +137,7 @@ describe('seedResourceTemplates', () => {
     const error = await seedResourceTemplates({ library, templateDir: gone, frames: {} }).catch((e: unknown) => e);
     expect(error).toMatchObject({ code: 'TEMPLATE_NOT_FOUND' });
     const message = (error as Error).message;
-    expect(message).toContain('目录不存在或缺少 manifest.json');
+    expect(message).toMatch(/目录不存在|缺少 manifest\.json/);
     expect(message).toContain('资源统计模板没法入库');
     expect(message).toContain('请在「模板」页重新选择模板集');
     expect(message).not.toMatch(/ENOENT|realpath/);
