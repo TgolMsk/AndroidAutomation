@@ -46,7 +46,12 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
    只读探针并确认」的门槛，只能把告警关掉的再打开（与原版的差异，见下表）。
 5. **`onCycleResult` 在失败轮往上抛之前调用**（宿主钩子，锁内），`step === 'G0'` 就是「恢复阶梯用尽」。只数调度轮；手动轮由用户看着。
 6. **默认值只有一份权威：`defaultAlertsConfig()`。** 主进程、渲染进程、测试都 import 它；设置页的上下限来自 `ALERT_RANGE`。
-7. **卡死 ≠ 掉线**：画面纹丝不动 / 截图一直失败、但实例进程还在 → 判卡死。两个触发点都在调度器的实例锁内：健康探针
+7. **「需要人处理」只有一个出口**（`GAME_UPDATE_REQUIRED` / `AI_RISK_BLOCKED`）：调度器自己的到点唤醒，与 AI 执行器在采集 G0 /
+   采样（含手动刷新、派兵后校准）/ 脚本里的判定，都走 `EtaScheduler.raiseAttention` → 钩子 `raiseNeedsAttention()`：告警中心先暂停
+   （记录 → `setAuto(false)` → 落盘，自动暂停开关关着也暂停），再后台推送；已暂停或同一实例正在暂停途中就不再告警 —— 一段异常一条告警
+   （原版 `!alertCenter.isPaused(i)`）。被暂停的实例 AI 执行器一律不碰（`AiRecoveryService` 的 `paused` 端口）。
+   采样认不出界面时顺序同原版：本模块的顶号 / 维护探针（`probeUnrecognizedFrame`）先在同一帧上跑，命中即接管，AI 不再被问。
+8. **卡死 ≠ 掉线**：画面纹丝不动 / 截图一直失败、但实例进程还在 → 判卡死。两个触发点都在调度器的实例锁内：健康探针
    （完整阈值 `freezeMinutes`）与「连续采样失败、马上要按掉线暂停」（降档门槛）。重启命令一下发就 `noteRestart()`（失败的也算），
    窗口内超过 `freezeRestartLimit` 次 → 转「模拟器或游戏掉线」暂停。恢复流程接 AbortSignal（自动调度关掉 / 助手退出）。
 

@@ -4,6 +4,9 @@
  * AI off), then the AI executor; an AI verdict「低风险资源更新」 reuses the update wait. GAME_UPDATE_REQUIRED /
  * AI_RISK_BLOCKED go to `onNeedsAttention` and are rethrown (the caller never presses BACK after them).
  *
+ * ★ An instance the alerts module has paused (kicked, offline, needs a human…) waits for a person: none of the automatic
+ * chains consults the AI or taps it (`paused` port, checked before the chain and again before every tap).
+ *
  * Runs in main, inside the caller's instance ownership: the gather cycle's or the sample's instance lock (the vision
  * job waits on the hook), or the script run's lease (the script worker waits on its aiConsult). Every capture and tap
  * goes through the instance's device lane and re-checks the instance identity against the one that writer was
@@ -54,6 +57,11 @@ export interface AiRecoveryDeps {
   };
   /** Run a check-then-act unit on the instance's device lane. */
   lane?<T>(index: number, work: () => Promise<T>): Promise<T>;
+  /**
+   * Why the alerts module paused this instance (`AlertCenter.pauseInfo`), or null. ★ A paused instance is not touched
+   * by any automatic chain (no consult, no update tap, no AI tap); checked before a chain and before every tap.
+   */
+  paused?(index: number): string | null;
   /**
    * The identity (`record.createdAt`) the sample or gather cycle now running on the instance was admitted with (null:
    * none runs, so the gather / sampler chains do not touch the device). Absent: the identity read at the start.
@@ -163,6 +171,8 @@ export class AiRecoveryService {
   async assistScript(request: ScriptAiRequest): Promise<AiAssistResult> {
     if (request.gameId !== this.deps.gameId) return { handled: false, message: '这个游戏没有接入脚本执行期间的 AI 介入。' };
     if (!this.deps.advisor.isActive()) return { handled: false, message: 'AI 顾问没开启（或没配 Key），本次不介入。' };
+    const paused = this.pausedReason(request.instanceIndex);
+    if (paused !== null) return { handled: false, message: `实例 #${request.instanceIndex} 已因异常被暂停（${paused}），AI 不自动操作，请先处理现场。` };
     try {
       if (this.deps.planAiAssist && !(await this.deps.planAiAssist(request.gameId))) {
         return { handled: false, message: '计划配置里关掉了「脚本执行期间允许 AI 介入」。' };
@@ -224,6 +234,13 @@ export class AiRecoveryService {
     return this.deps.admittedIdentity ? { identity: this.deps.admittedIdentity(index) ?? null } : {};
   }
 
+  /** The alerts pause reason, or null. A port that cannot answer counts as paused (never tap on a guess). */
+  private pausedReason(index: number): string | null {
+    if (!this.deps.paused) return null;
+    try { return this.deps.paused(index); }
+    catch { return '暂停状态读不出来'; }
+  }
+
   private async instanceSet(index: number): Promise<TemplateSet | null> {
     try { return await this.deps.instanceTemplateSet(index); }
     catch (error) {
@@ -272,6 +289,9 @@ export class AiRecoveryService {
       tap: (x, y) => onLane(async () => {
         check();
         if (!size.width || !size.height) throw new AppError('INVALID_ARGUMENT', '还没有截图，无法换算点击坐标');
+        // ★ Paused by an alert mid-chain (another chain's verdict): the instance now waits for a person.
+        const paused = this.pausedReason(index);
+        if (paused !== null) throw new AppError('DEVICE_NOT_READY', `实例 #${index} 已因异常被暂停（${paused}），AI 已停止点击`);
         await assertIdentity();
         const foreground = await device.foregroundPackage();
         if (foreground !== packageName) throw new AppError('NOT_FOUND', `游戏已离开前台（当前：${foreground ?? '未知'}），AI 已停止点击`);
@@ -289,6 +309,11 @@ export class AiRecoveryService {
   private async run(options: ChainOptions, existing?: Awaited<ReturnType<AiRecoveryService['session']>>): Promise<UnknownScreenRecovery> {
     const { deps } = this;
     const { index, context, raw, signal, set } = options;
+    const paused = this.pausedReason(index);
+    if (paused !== null) {
+      deps.log('info', `实例 #${index} 已因异常被暂停（${paused}），更新处理与 AI 都不自动操作，交回调用方。`, index);
+      return false;
+    }
     // The update handler needs the calibrated prompt + confirm crops; without them (and with the AI off) there is
     // nothing to do and the device is not touched at all.
     const updateSet = set && set.templates.some((item) => UPDATE_TEMPLATE_IDS.has(item.id)) ? set : null;

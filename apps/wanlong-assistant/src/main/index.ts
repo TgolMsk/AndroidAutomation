@@ -196,55 +196,6 @@ bootstrapApp({
       },
     });
 
-    // ── ai (unknown-screen recovery: gather G0, troop-panel sampler, script runs; see automation/ai-recover/README.md) ──
-    // One routing for the three chains (original recoverUnknownWithUpdate): calibrated game-update handling first (even
-    // with the AI off), then the AI executor — which taps only when「自动处理」(autoActions) is on. Template matching
-    // is asked of the instance's vision worker; taps go through the device lane with identity + foreground checks.
-    const aiRecovery = new AiRecoveryService({
-      gameId: 'wanlong',
-      packageName: gamePlugin('wanlong').packageName,
-      advisor,
-      manager: {
-        getState: async (index) => (await deviceHost.get()).getState(index),
-        device: async (index) => (await deviceHost.get()).device(index),
-      },
-      lane: (index, work) => deviceLanes.run(index, work),
-      // Gather G0 / sampler: act for the AVD the running job was admitted with (script runs carry their own identity).
-      admittedIdentity: (index) => automation.admittedIdentity(index),
-      // Before-tap stability and after-tap change checks run in the instance's vision worker, not on this thread.
-      frames: (index, signal) => ({
-        meanAbsDiff: (a, b, refWidth, refHeight) => automation.frameDiff(index, a, b, refWidth, refHeight, signal),
-        stableTarget: (a, b, box, refWidth, refHeight) => automation.targetStable(index, a, b, box, refWidth, refHeight, signal),
-      }),
-      instanceTemplateSet: (index) => automation.templateSet('wanlong', index),
-      loadTemplateSet: (directory) => loadTemplateSet(directory),
-      recognize: (index, raw, signal) => automation.recognizeScreen(index, raw, signal),
-      match: (index, directory, raw, ids, options) => automation.matchTemplatesIn(index, directory, raw, ids, options),
-      updateVerdict: (index, directory, raw, signal) => automation.checkGameUpdate(index, directory, raw, signal),
-      // Learnt close buttons go through the template library (variance guard, atomic write); the change notification
-      // drops the vision workers' compiled sets, so the next round already uses the new template.
-      saveTemplate: async (directory, draft) => {
-        const saved = await automation.saveTemplateToSet('wanlong', directory, draft);
-        return { id: saved.definition.id, std: saved.std };
-      },
-      // Plan config「脚本执行期间允许 AI 介入」: default on until the plans module stores it (DECISIONS A.3).
-      planAiAssist: async (gameId) => ((await plans.overview(gameId)).config as { aiAssist?: unknown }).aiAssist !== false,
-      // AI_RISK_BLOCKED / GAME_UPDATE_REQUIRED on every chain (scheduled or manual gather, a sample of any kind, the
-      // re-sample after a dispatch, a script run): pause first (awaited), then the scheduler's own「需要人处理」alert
-      // path — the same one a scheduled wake uses, so the alerts module receives all of them. The pause aborts the
-      // in-flight auto work, whose wake then ends silently (no second alert); an instance already paused is not alerted.
-      onNeedsAttention: (index, info) => automation.eta.raiseAttention(index, { code: info.code, message: info.message }),
-      log: (level, message, index) => appLog.record(level, 'ai', message, undefined, index),
-    });
-    automation.setPorts({
-      adviseUnknownScreen: (index, raw, attempt, signal) => aiRecovery.adviseGather(index, raw, attempt, signal),
-    });
-    // ★ Alerts: compose the kicked probe in front of this (original order: kicked probe → update → AI).
-    automation.eta.setHooks({
-      onUnrecognizedFrame: (index, raw, { signal }) => aiRecovery.recoverForSampler(index, raw, signal),
-    });
-    scriptRunner.setAiAssist((request) => aiRecovery.assistScript(request));
-
     // ── alerts / freeze (failure detection, automatic pauses, notifications, freeze watchdog; see src/main/alerts) ──
     const alertShots = new ShotStore(home);
     const alertLog = appLog.scoped('alerts');
@@ -301,6 +252,65 @@ bootstrapApp({
       probeKicked: (index, raw) => alerts.probeKicked(index, raw),
       pauseReason: (index) => alerts.center.pauseInfo(index)?.reason ?? null,
     });
+
+    // ── ai (unknown-screen recovery: gather G0, troop-panel sampler, script runs; see automation/ai-recover/README.md) ──
+    // One routing for the three chains (original recoverUnknownWithUpdate): calibrated game-update handling first (even
+    // with the AI off), then the AI executor — which taps only when「自动处理」(autoActions) is on. Template matching
+    // is asked of the instance's vision worker; taps go through the device lane with identity + foreground checks.
+    // Built after the alerts section: a paused instance is not touched, and「需要人处理」goes through the alerts module.
+    const aiRecovery = new AiRecoveryService({
+      gameId: 'wanlong',
+      packageName: gamePlugin('wanlong').packageName,
+      advisor,
+      manager: {
+        getState: async (index) => (await deviceHost.get()).getState(index),
+        device: async (index) => (await deviceHost.get()).device(index),
+      },
+      lane: (index, work) => deviceLanes.run(index, work),
+      // ★ An instance an alert paused (kicked, offline, needs a human…) waits for a person: no automatic chain consults
+      //   the AI or taps it (checked before each chain and before every tap).
+      paused: (index) => alerts.center.pauseInfo(index)?.reason ?? null,
+      // Gather G0 / sampler: act for the AVD the running job was admitted with (script runs carry their own identity).
+      admittedIdentity: (index) => automation.admittedIdentity(index),
+      // Before-tap stability and after-tap change checks run in the instance's vision worker, not on this thread.
+      frames: (index, signal) => ({
+        meanAbsDiff: (a, b, refWidth, refHeight) => automation.frameDiff(index, a, b, refWidth, refHeight, signal),
+        stableTarget: (a, b, box, refWidth, refHeight) => automation.targetStable(index, a, b, box, refWidth, refHeight, signal),
+      }),
+      instanceTemplateSet: (index) => automation.templateSet('wanlong', index),
+      loadTemplateSet: (directory) => loadTemplateSet(directory),
+      recognize: (index, raw, signal) => automation.recognizeScreen(index, raw, signal),
+      match: (index, directory, raw, ids, options) => automation.matchTemplatesIn(index, directory, raw, ids, options),
+      updateVerdict: (index, directory, raw, signal) => automation.checkGameUpdate(index, directory, raw, signal),
+      // Learnt close buttons go through the template library (variance guard, atomic write); the change notification
+      // drops the vision workers' compiled sets, so the next round already uses the new template.
+      saveTemplate: async (directory, draft) => {
+        const saved = await automation.saveTemplateToSet('wanlong', directory, draft);
+        return { id: saved.definition.id, std: saved.std };
+      },
+      // Plan config「脚本执行期间允许 AI 介入」: default on until the plans module stores it (DECISIONS A.3).
+      planAiAssist: async (gameId) => ((await plans.overview(gameId)).config as { aiAssist?: unknown }).aiAssist !== false,
+      // AI_RISK_BLOCKED / GAME_UPDATE_REQUIRED on every chain (scheduled or manual gather, a sample of any kind, the
+      // re-sample after a dispatch, a script run) take the scheduler's one「需要人处理」exit — the same one a scheduled
+      // wake uses — whose hook is the alerts module (`alerts.raiseNeedsAttention`): pause first (pause record,
+      // setAuto(false), persisted), then notify in the background. The pause aborts the in-flight auto work, whose
+      // wake then ends silently; an instance already paused (or being paused) is not alerted again: one alert, not two.
+      onNeedsAttention: (index, info) => automation.eta.raiseAttention(index, { code: info.code, message: info.message }),
+      log: (level, message, index) => appLog.record(level, 'ai', message, undefined, index),
+    });
+    automation.setPorts({
+      adviseUnknownScreen: (index, raw, attempt, signal) => aiRecovery.adviseGather(index, raw, attempt, signal),
+    });
+    // ★ Unknown sampler frame, original order (wanlong-panel onUnrecognizedFrame): the alerts module's kicked /
+    //   maintenance probe on the same frame → game update → AI. The two modules own separate slots that the scheduler
+    //   runs in that order (`probeUnrecognizedFrame` from alerts.schedulerHooks() above, then this one; a probe hit
+    //   stops the sampler before the AI is asked), so neither setHooks call can replace or reorder the other.
+    //   Gather keeps the original split: G0 asks this advisor before its blind BACK (`adviseUnknownScreen`), and the
+    //   alerts probe runs on the cycle's failure frame (`probeKicked`).
+    automation.eta.setHooks({
+      onUnrecognizedFrame: (index, raw, { signal }) => aiRecovery.recoverForSampler(index, raw, signal),
+    });
+    scriptRunner.setAiAssist((request) => aiRecovery.assistScript(request));
 
     // ── bot (Telegram) ──
     const remoteBot = new ReadOnlyTelegramBot({

@@ -251,6 +251,41 @@ describe('AiRecoveryService', () => {
     expect(compared).toEqual(['stable', 'diff']);
   });
 
+  it('an instance paused by an alert is not touched by any automatic chain: no consult, no update tap, no AI tap', async () => {
+    await enableAi();
+    api.queue({ status: 200, body: chatBody(CLOSE) });
+    const target = { x: 1280, y: 900 };
+    verdicts = [{ target, downloading: false, progress: false }];
+    const service = new AiRecoveryService({ ...deps, paused: (index) => (index === 3 ? '疑似被顶号' : null) });
+    await expect(service.adviseGather(3, screen[0]!, 1)).resolves.toBe(false);
+    await expect(service.recoverForSampler(3, screen[0]!)).resolves.toBe(false);
+    const result = await service.assistScript({
+      gameId: 'wanlong', runId: 'r4', instanceIndex: 3, instanceIdentity: createdAt, scriptId: 's1', templateSetId: null, templateDir: null,
+      stepId: null, reason: '超时', expectTemplateIds: [], signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({ handled: false, message: expect.stringContaining('已因异常被暂停（疑似被顶号）') });
+    expect(taps).toHaveLength(0);
+    expect(api.calls).toHaveLength(0);
+    expect(lane).toBe(0);
+    expect(attention).toHaveLength(0);
+    expect(logs.some((line) => line.includes('已因异常被暂停'))).toBe(true);
+    // A port that cannot answer counts as paused (never tap on a guess).
+    const unsure = new AiRecoveryService({ ...deps, paused: () => { throw new Error('读不出'); } });
+    await expect(unsure.adviseGather(4, screen[0]!, 1)).resolves.toBe(false);
+    expect(taps).toHaveLength(0);
+  });
+
+  it('a pause that lands while the AI is thinking stops the tap', async () => {
+    await enableAi();
+    api.queue({ status: 200, body: chatBody(CLOSE) });
+    // Paused by another chain's alert once the model has been asked.
+    const service = new AiRecoveryService({ ...deps, paused: () => (api.calls.length > 0 ? '掉线' : null) });
+    await expect(service.adviseGather(4, screen[0]!, 1)).resolves.toBe(false);
+    expect(api.calls).toHaveLength(1);
+    expect(taps).toHaveLength(0);
+    expect((await advisor.history())[0]?.message).toContain('已因异常被暂停（掉线）');
+  });
+
   it('script runs: gated by the advisor and the plan switch; the step\'s own templates are the known screen', async () => {
     const request = {
       gameId: 'wanlong', runId: 'r1', instanceIndex: 2, instanceIdentity: 'avd-1', scriptId: 's1', templateSetId: 'tset_test', templateDir: SET_DIR,

@@ -1,9 +1,10 @@
 /**
  * 「需要人处理」 (GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED) raised by the AI chain on every path: the composition root's
  * AI hook is `automation.eta.raiseAttention(index, info)` (original recoverUnknownWithUpdate → alertCenter.raise).
- * It pauses first (awaited, persisted), then alerts once through the scheduler's own attention path — also on the
- * paths the wake loop never sees (the re-sample after a dispatch, a manual refresh, a script run) — and the aborted
- * wake of a scheduled chain stays silent instead of alerting twice.
+ * One exit for every chain — also the paths the wake loop never sees (the re-sample after a dispatch, a manual refresh,
+ * a script run) — whose `onNeedsAttention` hook is the alerts module (pause first, then notify; the end-to-end order
+ * with the real AlertsService is in alerts-e2e.test.ts). Here: the hook is awaited, auto always ends off and persisted,
+ * the fallback pauses before it alerts, and the aborted wake of a scheduled chain stays silent instead of alerting twice.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -40,7 +41,7 @@ describe('AI「需要人处理」 → EtaScheduler.raiseAttention', () => {
   let samples: Array<(req: SampleRequest) => Promise<PanelSample>>;
   let ports: EtaSchedulerPorts;
   let schedulers: EtaScheduler[];
-  let alerts: Array<{ index: number; code: string; autoAtAlert: boolean }>;
+  let alerts: Array<{ index: number; code: string }>;
 
   function make(options: EtaSchedulerOptions = {}): EtaScheduler {
     const scheduler = new EtaScheduler(home, ports, {
@@ -57,7 +58,7 @@ describe('AI「需要人处理」 → EtaScheduler.raiseAttention', () => {
     await scheduler.restore();
     await scheduler.saveConfig({ healthProbeIntervalMin: 0 });
     scheduler.setHooks({
-      onNeedsAttention: (index, info) => { alerts.push({ index, code: info.code, autoAtAlert: scheduler.isAuto(index) }); },
+      onNeedsAttention: (index, info) => { alerts.push({ index, code: info.code }); },
     });
     samples.push(async () => panel(2, 5));
     await scheduler.setAuto(1, true);
@@ -93,10 +94,19 @@ describe('AI「需要人处理」 → EtaScheduler.raiseAttention', () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  it('pauses first (persisted), then alerts once; an instance already paused by an alert is not alerted again', async () => {
+  it('awaits the alerts hook, ends paused (persisted); an instance already paused by an alert is not alerted again', async () => {
     const scheduler = await autoOn();
+    let hookDone = false;
+    scheduler.setHooks({
+      onNeedsAttention: async (index, info) => {
+        await settle();
+        alerts.push({ index, code: info.code });
+        hookDone = true;
+      },
+    });
     await scheduler.raiseAttention(1, RISK);
-    expect(alerts).toEqual([{ index: 1, code: 'AI_RISK_BLOCKED', autoAtAlert: false }]);
+    expect(hookDone).toBe(true);
+    expect(alerts).toEqual([{ index: 1, code: 'AI_RISK_BLOCKED' }]);
     expect(scheduler.getState(1)).toMatchObject({ auto: false, nextWakeAt: null });
     expect(scheduler.listWakes()).toEqual([]);
     // Persisted before the alert: a fresh process restores the instance paused.
@@ -108,6 +118,27 @@ describe('AI「需要人处理」 → EtaScheduler.raiseAttention', () => {
     scheduler.setHooks({ pauseOf: () => ({ reason: RISK.message, at: START }) });
     await scheduler.raiseAttention(1, RISK);
     expect(alerts).toHaveLength(1);
+  });
+
+  it('a throwing alerts hook still leaves the instance paused (the safety net), and raiseAttention never throws', async () => {
+    const scheduler = await autoOn();
+    scheduler.setHooks({ onNeedsAttention: async () => { throw new Error('告警模块坏了'); } });
+    await expect(scheduler.raiseAttention(1, RISK)).resolves.toBeUndefined();
+    expect(scheduler.getState(1)).toMatchObject({ auto: false, nextWakeAt: null });
+  });
+
+  it('without an alerts hook: pauses first (persisted), then the host fallback alert', async () => {
+    const fallback: Array<{ index: number; code: string; autoAtAlert: boolean }> = [];
+    const scheduler: EtaScheduler = make({ onAttentionPause: (index, info) => { fallback.push({ index, code: info.code, autoAtAlert: scheduler.isAuto(index) }); } });
+    await scheduler.restore();
+    await scheduler.saveConfig({ healthProbeIntervalMin: 0 });
+    samples.push(async () => panel(2, 5));
+    await scheduler.setAuto(1, true);
+    await scheduler.raiseAttention(1, RISK);
+    expect(fallback).toEqual([{ index: 1, code: 'AI_RISK_BLOCKED', autoAtAlert: false }]);
+    const reloaded = make();
+    await reloaded.restore();
+    expect(reloaded.getState(1).auto).toBe(false);
   });
 
   it('alerts even when auto is off (a manual cycle or a script run on an instance without auto scheduling)', async () => {
@@ -124,7 +155,7 @@ describe('AI「需要人处理」 → EtaScheduler.raiseAttention', () => {
     samples.push(aiBlocks(scheduler));
     await scheduler.noteDispatches(1, [{ travelTimeMs: 60_000, coord: '100,200', resourceType: 'wood' }]);
     await settle();
-    expect(alerts).toEqual([{ index: 1, code: 'AI_RISK_BLOCKED', autoAtAlert: false }]);
+    expect(alerts).toEqual([{ index: 1, code: 'AI_RISK_BLOCKED' }]);
     expect(scheduler.getState(1)).toMatchObject({ auto: false, nextWakeAt: null });
     expect(scheduler.listWakes()).toEqual([]);
   });
@@ -135,7 +166,7 @@ describe('AI「需要人处理」 → EtaScheduler.raiseAttention', () => {
     vi.setSystemTime(START + 20_000);
     samples.push(aiBlocks(scheduler));
     await expect(scheduler.sampleNow(1)).rejects.toMatchObject({ code: 'AI_RISK_BLOCKED' });
-    expect(alerts).toEqual([{ index: 1, code: 'AI_RISK_BLOCKED', autoAtAlert: false }]);
+    expect(alerts).toEqual([{ index: 1, code: 'AI_RISK_BLOCKED' }]);
     expect(scheduler.isAuto(1)).toBe(false);
     expect(scheduler.listWakes()).toEqual([]);
   });
@@ -147,7 +178,7 @@ describe('AI「需要人处理」 → EtaScheduler.raiseAttention', () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await until(() => alerts.length > 0, '人工处理告警');
     await settle();
-    expect(alerts).toEqual([{ index: 1, code: 'AI_RISK_BLOCKED', autoAtAlert: false }]);
+    expect(alerts).toEqual([{ index: 1, code: 'AI_RISK_BLOCKED' }]);
     expect(scheduler.getState(1)).toMatchObject({ auto: false, failureCount: 0 });
     expect(scheduler.listWakes()).toEqual([]);
   });

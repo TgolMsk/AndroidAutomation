@@ -332,6 +332,100 @@ describe('alerts end to end with the real scheduler (original section 六)', () 
     expect(alerts.center.getPause(4)).toMatchObject({ paused: true, type: 'needsAttention', detail: { 阶段: 'AI 操作风险评估' } });
   });
 
+  // ── 「需要人处理」 from the AI executor (every chain: its hook is EtaScheduler.raiseAttention) ──
+
+  const RISK = { code: 'AI_RISK_BLOCKED', message: 'AI 判断这个确认框会花费钻石，已停止自动操作' };
+  const UPDATE = { code: 'GAME_UPDATE_REQUIRED', message: '游戏资源更新需要人工确认' };
+
+  it('AI attention goes through the alerts module: pause first (record → auto off → persisted), then one push', async () => {
+    await scheduler.setAuto(0, true);
+    await scheduler.raiseAttention(0, RISK);
+    // ★ Paused and persisted when raiseAttention returns; the publish that switched auto off already carried the pause.
+    expect(scheduler.getState(0)).toMatchObject({ auto: false, nextWakeAt: null });
+    const switchedOff = published.find((state) => state.instanceIndex === 0 && !state.auto);
+    expect(switchedOff?.pause).toMatchObject({ kind: 'needsAttention', reason: RISK.message });
+    expect(alerts.center.getPause(0)).toMatchObject({ paused: true, type: 'needsAttention', detail: { 阶段: 'AI 操作风险评估' }, accountName: '主号-王朝A区' });
+    const stored = JSON.parse(await readFile(pausesFile(), 'utf8')) as { pauses: Array<Record<string, unknown>> };
+    expect(stored.pauses.find((item) => item.instanceIndex === 0)).toMatchObject({ paused: true, type: 'needsAttention' });
+    await alerts.center.whenIdle();
+    expect(calls).toHaveLength(1);
+    expect(pushed()[0]).toContain('需要人工介入');
+    expect(alerts.center.getPause(0)).toMatchObject({ notified: true });
+    expect(autoChanges).toEqual([[0, true], [0, false]]);
+
+    // Already paused: the scheduler's own path and the AI's alike stay silent (one alert, not two).
+    await scheduler.raiseAttention(0, UPDATE);
+    await alerts.schedulerHooks().onNeedsAttention!(0, UPDATE);
+    await alerts.center.whenIdle();
+    expect(alerts.center.history().filter((record) => record.event.type === 'needsAttention')).toHaveLength(1);
+    expect(calls).toHaveLength(1);
+    expect(alerts.center.getPause(0).reason).toBe(RISK.message);
+  });
+
+  it('two chains raising at once alert once; an instance paused by another alert is not alerted again', async () => {
+    await scheduler.setAuto(0, true);
+    await Promise.all([scheduler.raiseAttention(0, RISK), scheduler.raiseAttention(0, UPDATE), alerts.raiseNeedsAttention(0, UPDATE)]);
+    await alerts.center.whenIdle();
+    expect(alerts.center.history().filter((record) => record.event.type === 'needsAttention')).toHaveLength(1);
+    expect(calls).toHaveLength(1);
+
+    // Instance 1 was paused as offline: a later risk verdict adds no second alert and keeps the first reason.
+    await alerts.center.raise(makeAlertEvent({ type: 'deviceOffline', instanceIndex: 1, reason: '掉线' }));
+    await scheduler.raiseAttention(1, RISK);
+    await alerts.center.whenIdle();
+    expect(alerts.center.getPause(1)).toMatchObject({ paused: true, type: 'deviceOffline' });
+    expect(alerts.center.history().filter((record) => record.event.instanceIndex === 1)).toHaveLength(1);
+  });
+
+  it('a scheduled cycle whose AI blocks a risky confirm: paused and pushed once, the aborted wake stays silent', async () => {
+    scheduler.setQueueFreeHook(async () => {
+      await scheduler.raiseAttention(0, RISK);
+      throw new SchedulerError('AI_RISK_BLOCKED', RISK.message);
+    });
+    samples.push(async () => panel(2, 5));
+    await scheduler.setAuto(0, true);
+    samples.push(async () => panel(2, 5));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await until(() => alerts.center.isPaused(0), '需要人工介入暂停');
+    await alerts.center.whenIdle();
+    await until(() => false, '', 100).catch(() => undefined);
+    expect(scheduler.getState(0)).toMatchObject({ auto: false, failureCount: 0 });
+    expect(alerts.center.history().filter((record) => record.event.type === 'needsAttention')).toHaveLength(1);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('a script run or manual cycle on an instance without auto: still paused (recorded) and alerted', async () => {
+    await alerts.hub.saveConfig({ detect: { autoPauseEnabled: false } });
+    await scheduler.raiseAttention(3, UPDATE);
+    await alerts.center.whenIdle();
+    expect(alerts.center.getPause(3)).toMatchObject({ paused: true, type: 'needsAttention', detail: { 阶段: '游戏资源更新' } });
+    expect(scheduler.getState(3).auto).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('unknown sampler frame, original order: the kicked probe first (a hit stops the chain), then update / AI', async () => {
+    const ai = vi.fn(async () => 'recovered' as const);
+    // The AI module sets its slot, then the alerts hooks are applied again: neither replaces the other.
+    scheduler.setHooks({ onUnrecognizedFrame: ai });
+    scheduler.setHooks(alerts.schedulerHooks());
+    let seen: Array<boolean | 'recovered' | 'updated'> = [];
+    const unknownOnce = async (req: SampleRequest) => { seen.push(await req.onUnrecognized(frame())); return panel(2, 5); };
+    samples.push(unknownOnce);
+    await scheduler.setAuto(0, true);
+    expect(seen).toEqual(['recovered']);
+    expect(ai).toHaveBeenCalledTimes(1);
+
+    // A kicked dialog: the probe takes the instance over, the AI is never asked (nothing may tap a kicked dialog).
+    match = async (ids) => missing(ids).map((result) => result.templateId === 'tpl_dlg_kicked' ? { ...result, found: true, score: 0.97, reason: undefined } : result);
+    seen = [];
+    vi.setSystemTime(START + 20_000);
+    samples.push(unknownOnce);
+    await scheduler.sampleNow(0).catch(() => undefined);
+    expect(seen).toEqual([true]);
+    expect(ai).toHaveBeenCalledTimes(1);
+    expect(alerts.center.getPause(0)).toMatchObject({ paused: true, type: 'suspectedKicked' });
+  });
+
   it('the kicked probe: missing templates degrade silently; a hit pauses at once with the scene and stops the sampler', async () => {
     const hooks = alerts.schedulerHooks();
     const signal = new AbortController().signal;

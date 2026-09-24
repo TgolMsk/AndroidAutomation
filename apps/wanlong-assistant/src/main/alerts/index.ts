@@ -67,6 +67,8 @@ export class AlertsService {
   readonly failures: FailureTracker;
   readonly freeze: FreezeController;
   private readonly root: string;
+  /** Instances whose 「需要人处理」 raise is still pausing (concurrent raises from two chains alert once). */
+  private readonly attentionInFlight = new Set<number>();
 
   constructor(home: string, private readonly ports: AlertsServicePorts) {
     if (!path.isAbsolute(home)) throw new Error('告警数据目录必须是绝对路径');
@@ -156,8 +158,9 @@ export class AlertsService {
         // hours and nothing samples.
         await this.freeze.tryRecover(index, '健康探针', ctx.signal, true);
       },
-      // A human must look (game update prompt, AI judged a confirm risky): the scheduler already paused it.
-      onNeedsAttention: (index, info) => this.raiseAttention(index, info),
+      // A human must look (game update prompt, AI judged a confirm risky) on any chain, the AI executor's included
+      // (`EtaScheduler.raiseAttention`): pause first, then notify; awaited up to the persisted pause.
+      onNeedsAttention: (index, info) => this.raiseNeedsAttention(index, info),
       pauseOf: (index) => this.center.pauseInfo(index),
     };
   }
@@ -180,7 +183,8 @@ export class AlertsService {
       onSchedulePause: async (_gameId, index, reason) => {
         await this.center.raise(makeAlertEvent({ type: 'schedulePaused', instanceIndex: index, reason, detail: { 计为失败: false } }), { schedulerPaused: true });
       },
-      onNeedsAttention: async (_gameId, index, info) => { this.raiseAttention(index, info); },
+      // The host's fallback path (only while the scheduler hook above is not set): the same deduped pipeline.
+      onNeedsAttention: (_gameId, index, info) => this.raiseNeedsAttention(index, info),
     };
   }
 
@@ -203,6 +207,28 @@ export class AlertsService {
     if (pausesInstance(event.type)) await this.center.raiseInLock(event);
     // A warning (dispatchStalled) need not hold the lock for a network request.
     else this.center.raiseQuietly(event);
+  }
+
+  /**
+   * 「需要人处理」 (GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED) from any chain: the scheduler's own attention path and the AI
+   * executor's (gather G0, sampler, script runs — all through `EtaScheduler.raiseAttention`, which awaits this).
+   * ★ Pause first: the pause record, `setAuto(false)` (aborts the in-flight auto work) and the persisted record; the
+   *   push then runs in the background (a network request must not hold the instance lock). Written even while
+   *   「自动暂停」 is off: nothing may keep tapping past a risk verdict or an update that needs a human.
+   * ★ One alert per stretch (original `!alertCenter.isPaused(i)`): an instance already paused, or with this raise still
+   *   in flight, is not alerted again. Never throws; safe inside the instance lock.
+   */
+  async raiseNeedsAttention(index: number, info: { code: string; message: string }): Promise<void> {
+    if (this.center.isPaused(index) || this.attentionInFlight.has(index)) {
+      this.ports.log('info', `[告警] 实例 #${index} 已暂停（或正在暂停），「需要人工处理」不重复告警：${info.message}`, index);
+      return;
+    }
+    const raising = this.center.raiseInLock(makeAlertEvent({
+      type: 'needsAttention', instanceIndex: index, reason: info.message,
+      detail: { 阶段: info.code === 'AI_RISK_BLOCKED' ? 'AI 操作风险评估' : '游戏资源更新', 自动操作: '已停止，处理后可恢复' },
+    }), { schedulerPaused: true });
+    this.attentionInFlight.add(index);
+    try { await raising; } finally { this.attentionInFlight.delete(index); }
   }
 
   /** IPC `resumeAlertPause` / the bot. ★ Never from inside the instance lock. @throws Chinese when not paused. */
@@ -243,13 +269,6 @@ export class AlertsService {
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
-
-  private raiseAttention(index: number, info: { code: string; message: string }): void {
-    this.center.raiseQuietly(makeAlertEvent({
-      type: 'needsAttention', instanceIndex: index, reason: info.message,
-      detail: { 阶段: info.code === 'AI_RISK_BLOCKED' ? 'AI 操作风险评估' : '游戏资源更新', 自动操作: '已停止，处理后可恢复' },
-    }), { schedulerPaused: true });
-  }
 
   /**
    * Layer 2 on one frame; a hit keeps the scene, raises the pausing alert (awaited in the lock) and returns true.

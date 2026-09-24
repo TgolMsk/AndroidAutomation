@@ -992,24 +992,31 @@ export class EtaScheduler {
 
   /**
    * A human must look (GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED) on any chain — a scheduled wake, a manual cycle or
-   * refresh, the re-sample after a dispatch, a script run (original recoverUnknownWithUpdate → alertCenter.raise).
-   * ★ Pause first (awaited and persisted; it aborts the instance's in-flight auto work, whose wake then ends silently
-   * instead of alerting a second time), then raise the alert through `onNeedsAttention` (or the host fallback). An
-   * instance already paused by an alert (auto off and a pause record) is not alerted again. Never throws; safe inside
-   * the instance lock (`setAuto(false)` never takes it).
+   * refresh, the re-sample after a dispatch, a script run (original recoverUnknownWithUpdate → alertCenter.raise). One
+   * exit for all of them, so each stretch raises one alert:
+   *   - with an `onNeedsAttention` hook (the alerts module) the hook owns the pipeline — ★ pause first (pause record,
+   *     `setAuto(false)`, persisted), then notify in the background — and dedupes an instance already paused; it is
+   *     awaited, then auto is switched off again here as a safety net (idempotent);
+   *   - without one: pause here (awaited and persisted), then the host's fallback alert (`onAttentionPause`).
+   * Switching auto off aborts the instance's in-flight auto work, whose wake then ends silently instead of alerting a
+   * second time. An instance already paused by an alert (auto off and a pause record) is not alerted again. Never
+   * throws; safe inside the instance lock (`setAuto(false)` never takes it).
    */
   async raiseAttention(index: number, info: { code: string; message: string }): Promise<void> {
     let alreadyPaused = false;
     try { alreadyPaused = !this.isAuto(index) && Boolean(this.hooks.pauseOf?.(index)); } catch { alreadyPaused = false; }
-    try { await this.setAuto(index, false, `需要人工处理：${info.message}`); }
-    catch (error) { this.log('warn', `实例 #${index} 需要人工处理，但没能关闭自动调度：${messageOf(error)}`); }
     if (alreadyPaused) {
       this.log('info', `实例 #${index} 已处于暂停状态，本次不重复告警：${info.message}`);
       return;
     }
     const hook = this.hooks.onNeedsAttention;
-    if (hook) this.emit(() => hook(index, info));
-    else this.emit(() => this.options.onAttentionPause?.(index, info));
+    if (hook) {
+      try { await hook(index, info); }
+      catch (error) { this.log('warn', `实例 #${index} 的「需要人工处理」告警没能发出：${messageOf(error)}`); }
+    }
+    try { await this.setAuto(index, false, `需要人工处理：${info.message}`); }
+    catch (error) { this.log('warn', `实例 #${index} 需要人工处理，但没能关闭自动调度：${messageOf(error)}`); }
+    if (!hook) this.emit(() => this.options.onAttentionPause?.(index, info));
   }
 
   /**

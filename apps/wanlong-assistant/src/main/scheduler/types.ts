@@ -89,8 +89,13 @@ export interface SchedulerHooks {
   onMarchGone?(index: number, gone: Array<{ slot: number; coord: string | null }>, at: number): void;
   /** The only source of pause/resume events: fires only when auto really flips. */
   onAutoChanged?(index: number, enabled: boolean, at: number, reason?: string): void;
-  /** GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED: a human must look. The scheduler has already paused the instance. */
-  onNeedsAttention?(index: number, info: { code: string; message: string }): void;
+  /**
+   * GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED: a human must look (`EtaScheduler.raiseAttention`, every chain). Awaited, may
+   * run in lock. ★ The hook owns the whole pipeline (the alerts module: pause first — record, `setAuto(false)`, persist —
+   * then notify in the background) and must dedupe an instance already paused; the scheduler switches auto off again
+   * afterwards only as a safety net. A throwing hook is logged; the instance still ends paused.
+   */
+  onNeedsAttention?(index: number, info: { code: string; message: string }): void | Promise<void>;
   /** Pause record shown in the queue view (alerts module). */
   pauseOf?(index: number): SchedulerPauseInfo | null;
 }

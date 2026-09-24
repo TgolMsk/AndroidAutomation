@@ -11,7 +11,7 @@
 | `update.ts` | `WorkerUpdateRecovery`：游戏数据模块的 `GameUpdateRecovery`（识别 → 点前重新识别、只点一次 → 最长 15 分钟可取消的等待、绝不重复点），识别部分交给实例的视觉工作线程回答（查询 `update`） |
 | `service.ts` | `AiRecoveryService`：三条链路共用的路由 |
 
-## 三条链路（主进程 `index.ts` 的「ai」段落接线）
+## 三条链路（主进程 `index.ts` 的「ai」段落接线，排在「alerts / freeze」段落之后）
 
 | 链路 | 入口 | 已知界面判据 | 需要人处理时 |
 |---|---|---|---|
@@ -22,11 +22,18 @@
 顺序与原版一致：**先**交给游戏更新处理（AI 关着也跑；模板集里没有更新模板时静默跳过），**再**问 AI；AI 判定是低风险资源更新
 （`download_update`，已点或建议不动）时复用更新等待，返回 `'updated'`。`GAME_UPDATE_REQUIRED` / `AI_RISK_BLOCKED` 先交给
 `onNeedsAttention`，再原样上抛——调用方绝不在它们之后按 BACK。组合根把这个端口接到 `EtaScheduler.raiseAttention`（原版
-`recoverUnknownWithUpdate` → `alertCenter.raise`）：**每条链路**都先关自动调度（等落盘；它会中止正在跑的自动流程，那次唤醒随后静默结束、
-不会再告警一次），再走调度器自己的「需要人处理」告警出口（告警模块接的就是它）；已被告警暂停的实例不重复告警。脚本链路的前提是 AI 顾问启用且计划配置 `aiAssist` 不为 false（原版）。
+`recoverUnknownWithUpdate` → `alertCenter.raise`），它是调度器自己的「需要人处理」出口（到点唤醒那条路也走它），出口的钩子是告警模块的
+`AlertsService.raiseNeedsAttention`：**每条链路**都由告警中心**先暂停**（写暂停记录 → `setAuto(false)` → 落盘；关自动调度会中止正在跑的
+自动流程，那次唤醒随后静默结束），**再推送**（后台发，不占实例锁）；已被告警暂停、或同一实例的这条告警还在暂停途中时不重复告警——
+一段异常只有一条告警。脚本链路的前提是 AI 顾问启用且计划配置 `aiAssist` 不为 false（原版）。
 
-★ 顶号探针属于告警模块：它接线时把探针放在 `aiRecovery.recoverForSampler` 之前（原版顺序：顶号探针 → 更新 → AI），
-命中就返回 `true`，不再问 AI。
+★ 被告警暂停的实例（顶号、掉线、需要人处理……）在等人处理：`paused` 端口（`AlertCenter.pauseInfo`）有值时，三条自动链路都**不问 AI、
+不点更新确认、不点任何东西**，交回调用方；每次点击前再查一次（别的链路刚把它暂停时，这一下也不点）。端口读不出按已暂停处理。
+
+★ 顺序（原版 onUnrecognizedFrame）：采样认不出界面时，告警模块的顶号 / 维护探针先在同一帧上跑（`probeUnrecognizedFrame`，
+告警模块的 `schedulerHooks()` 设的槽位），命中就接管、采样器停下，不再问 AI；没命中才轮到这里的 `onUnrecognizedFrame`（更新 → AI）。
+两个模块各占一个槽位、由调度器按这个顺序调用，谁后 `setHooks` 都不会覆盖或打乱对方。采集保持原版分工：G0 在盲按 BACK 之前问这里
+（`adviseUnknownScreen`），顶号探针跑在这一轮的失败现场那一帧上（`probeKicked`）。
 
 ## 安全边界
 

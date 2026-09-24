@@ -107,10 +107,11 @@ automation.eta.setHooks({
   onUnrecognizedFrame: async (index, raw, { signal }) => true | 'recovered' | 'updated' | false,  // AI / 更新
   onMarchGone: (index, gone, at) => stats.record(...),                     // 一趟采集完成（参考指标）
   onAutoChanged: (index, enabled, at, reason) => stats.record(...),        // ★ 暂停 / 恢复事件的唯一来源（只在真的翻转时）
-  onNeedsAttention: (index, { code, message }) => alerts.raise(...),       // GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED，已暂停
-                                                                            // （没人接时走 AutomationHostHooks.onNeedsAttention → insights 兜底告警）
-                                                                            // 其它链路（AI 在手动一轮 / 刷新 / 派兵后校准 / 脚本里）调
-                                                                            // eta.raiseAttention(index, info)：先暂停（落盘）再走同一出口
+  onNeedsAttention: (index, info) => alerts.raiseNeedsAttention(index, info),  // GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED 的唯一出口
+                                                                            // eta.raiseAttention(index, info) 的钩子（到点唤醒、AI 在手动一轮 / 刷新 /
+                                                                            // 派兵后校准 / 脚本里都走它）：被 await；告警中心先暂停（记录 → setAuto(false)
+                                                                            // → 落盘）再后台推送，已暂停的不重复告警；调度器随后再关一次自动调度兜底
+                                                                            // （没人接时：调度器先暂停，再走 AutomationHostHooks.onNeedsAttention 兜底告警）
   pauseOf: (index) => alerts.pauseInfo(index),                             // 队列视图里的暂停原因（记录一变告警模块就调 refreshView(i) 重发）
   log: (level, message) => { ... },
 });
@@ -136,7 +137,7 @@ automation.setPorts({
 automation.setHooks({
   onCycleResult: async (index, fact, source) => alerts.onCycleResult(index, fact),   // 失败的调度轮往上抛之前报
   onDispatched: (index, records, at) => stats.recordDispatches(index, records, at),  // 每趟派兵（轮次失败也报）
-  onNeedsAttention: (gameId, index, info) => alerts.raiseAttention(index, info),      // 兜底：scheduler 的 onNeedsAttention 没人接时
+  onNeedsAttention: (gameId, index, info) => alerts.raiseNeedsAttention(index, info), // 兜底：scheduler 的 onNeedsAttention 没人接时
 });
 ```
 
