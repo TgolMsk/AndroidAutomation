@@ -32,7 +32,7 @@ import { ReadOnlyTelegramBot } from './monitoring';
 import { ShotStore } from './scheduler/shots';
 import { PlanService, ScriptRunner } from './plans';
 import { ResourcesService } from './resources/service';
-import { StatsService, alertRaisedEvent, autoChangedEvent, cycleFailedEvent, dispatchEvents, tripEvents } from './stats';
+import { StatsService, alertRaisedEvent, autoChangedEvent, countsAsAlert, cycleFailedEvent, dispatchEvents, pauseRealityPort, tripEvents } from './stats';
 import { updateBusyCheck, updateLog, UpdateService } from './update';
 import { electronUpdateDeps } from './update/electron-deps';
 
@@ -403,6 +403,11 @@ bootstrapApp({
           item.binding?.index === index && item.binding.instanceCreatedAt === createdAt);
         return { createdAt, accountName: account?.name ?? null };
       },
+      // Open pauses are checked against the scheduler's restored auto switch and the AVD list (reconcilePauses below).
+      pauseStates: pauseRealityPort({
+        isAuto: (index) => automation.eta.isAuto(index),
+        instance: async (index) => (await services.host.get()).getState(index),
+      }),
       snapshotNow: (index) => resources.read(index),
       onToday: (day) => broadcast('stats-today', day),
       onSnapshot: (push) => broadcast('stats-snapshot', push),
@@ -430,7 +435,7 @@ bootstrapApp({
       onAutoChanged: (index, enabled, at, reason) => stats.record(autoChangedEvent(index, enabled, at, reason)),
     });
     insights.onAlertStored((alert) => {
-      if (alert.gameId === 'wanlong' && alert.kind !== 'runFailed') stats.record(alertRaisedEvent(alert.index, alert.kind, alert.at));
+      if (alert.gameId === 'wanlong' && countsAsAlert(alert.kind)) stats.record(alertRaisedEvent(alert.index, alert.kind, alert.at));
     });
 
     // ── ipc ── (one service per line: a ported module appends its own line)
@@ -470,14 +475,17 @@ bootstrapApp({
       /** Each service starts on its own: one failure is logged, shown in the top bar and never blocks the others. */
       async restore() {
         const failures = await runServiceSteps('start', [
+          // First: the shell may reopen the 数据统计 page at once, before the emulator manager has even opened.
+          { name: '数据统计', impact: '数据统计页没有数据，派兵与暂停不会记账', run: () => stats.start() },
           {
             name: '模拟器日志记录', impact: '模拟器管理器的警告不会写入助手日志文件',
             run: async () => (await services.host.get()).on('log', (entry) => appLog.record(entry.level, 'emulator', entry.message, undefined, entry.index)),
           },
-          { name: '数据统计', impact: '数据统计页没有数据，派兵与暂停不会记账', run: () => stats.start() },
           // Alerts first (original order): a wake re-armed by the scheduler may raise an alert right away.
           { name: '异常告警', impact: '掉线、顶号与卡死不会自动暂停或推送', run: async () => { await Promise.all([alerts.hub.ready, alerts.center.ready]); } },
           { name: '自动续跑调度', impact: '自动采集不会续跑', run: () => automation.restoreSchedules() },
+          // After the scheduler restored its switches: close pauses of deleted / resumed instances, carry the rest.
+          { name: '暂停状态核对', impact: '重启前的暂停可能多算或少算', run: () => stats.reconcilePauses() },
           { name: '脚本计划', impact: '定时脚本不会自动运行', run: () => plans.start('wanlong') },
           { name: '只读机器人', impact: 'Telegram 机器人不会响应', run: () => remoteBot.start() },
           { name: '应用内更新', impact: '启动后不会自动检查新版本', run: () => updates.start() },

@@ -68,12 +68,13 @@ export function InsightsPanel({ gameId, index, mode = 'full' }: { gameId: string
     const sequence = ++refreshSequence.current;
     if (showLoading) setLoading(true);
     try {
+      // The 数据统计 page (alerts mode) never shows the old overview: a bad old ledger must not blank its alert list.
       const [nextDays, nextAlerts] = await Promise.all([
-        avdm.insightDays(gameId, index, range),
+        mode === 'alerts' ? Promise.resolve(null) : avdm.insightDays(gameId, index, range),
         avdm.insightAlerts(gameId, index, 50),
       ]);
       if (sequence !== refreshSequence.current) return;
-      setDays(nextDays);
+      if (nextDays) setDays(nextDays);
       setAlerts(nextAlerts);
       setError('');
     } catch (cause) {
@@ -81,7 +82,7 @@ export function InsightsPanel({ gameId, index, mode = 'full' }: { gameId: string
     } finally {
       if (sequence === refreshSequence.current) setLoading(false);
     }
-  }, [gameId, index, range]);
+  }, [gameId, index, range, mode]);
 
   useEffect(() => {
     void refresh(true);

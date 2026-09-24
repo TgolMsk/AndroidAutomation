@@ -13,9 +13,10 @@ import {
 } from '../src/shared/stats';
 import { cstDateKey, cstDayStart, cstNextDayStart, dateKeyToDayStart, formatCstClock, shiftDateKey } from '../src/shared/time';
 import { aggregateDay, isDayEmpty } from '../src/main/stats/aggregate';
-import { cycleFailedEvent, dispatchEvents, autoChangedEvent, tripEvents } from '../src/main/stats/events';
+import { countsAsAlert, cycleFailedEvent, dispatchEvents, autoChangedEvent, tripEvents } from '../src/main/stats/events';
 import type { StatsFact } from '../src/main/stats/facts';
-import { StatsService, type StatsInstanceInfo } from '../src/main/stats/service';
+import { pauseRealityPort } from '../src/main/stats/pause-reality';
+import { StatsService, type StatsInstanceInfo, type StatsPauseReality } from '../src/main/stats/service';
 import { StatsStore } from '../src/main/stats/store';
 
 const MIN = 60_000;
@@ -121,6 +122,9 @@ describe('二、聚合：七种事件', () => {
     expect(tripEvents(1, [{ slot: 0, coord: 'X:9 Y:9' } as { coord: string }], T0)).toEqual([{ kind: 'tripCompleted', at: T0, instanceIndex: 1, coord: 'X:9 Y:9', resource: null }]);
     expect(autoChangedEvent(0, false, T0, '连续失败')).toEqual({ kind: 'paused', at: T0, instanceIndex: 0, reason: '连续失败' });
     expect(autoChangedEvent(0, true, T0)).toEqual({ kind: 'resumed', at: T0, instanceIndex: 0 });
+    // Alerts count real conclusions only: never the per-run notice, never a circuit break (not a failure, no alert).
+    expect(['consecutiveFailures', 'suspectedKicked', 'schedulePaused'].every(countsAsAlert)).toBe(true);
+    expect(['runFailed', 'circuitBroken', '', null].some(countsAsAlert)).toBe(false);
   });
 
   it('counts alerts, an idempotent pause, a 15-minute pause and ignores a stray resume', () => {
@@ -478,6 +482,89 @@ describe('六、统计服务：跨 0 点换日、补记、查询', { timeout: 30
     await later.flush();
     expect(later.today().pausedMs).toBe(3 * HOUR);
     await later.stop();
+  });
+
+  it('answers queries that arrive before start once it has started (the page may ask during app startup)', async () => {
+    const stats = service();
+    const early = stats.daily(null);
+    const range = stats.range(DAY_A, DAY_A);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await stats.start();
+    await expect(early).resolves.toMatchObject({ dateKey: DAY_A });
+    await expect(range).resolves.toHaveLength(1);
+    await stats.stop();
+
+    // A start that never comes is still an error, after a long wait.
+    vi.useFakeTimers();
+    const never = service();
+    const waiting = never.daily(null);
+    const verdict = expect(waiting).rejects.toMatchObject({ code: 'STEP_FAILED', message: expect.stringContaining('尚未启动') });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await verdict;
+  });
+
+  it('checks open pauses against reality: a deleted or resumed instance is never carried again', async () => {
+    const reality = new Map<number, StatsPauseReality>([[0, 'paused'], [1, 'gone'], [2, 'resumed'], [3, 'unknown']]);
+    const asked: number[][] = [];
+    const pauseStates = async (indexes: readonly number[]) => { asked.push([...indexes]); return reality; };
+    const first = service();
+    await first.start();
+    for (const index of [0, 1, 2, 3]) first.record({ kind: 'paused', at: now, instanceIndex: index, reason: '手动关闭' });
+    await first.stop();
+
+    now = T_0000 + 2 * 24 * HOUR + 3 * HOUR; // Beijing 2026-09-12 03:00, two missed days
+    const later = service({ pauseStates });
+    await later.start();
+    // Nothing is carried before the check (the scheduler has not restored its switches yet).
+    expect((await later.daily(DAY_B)).pausedMs).toBe(0);
+    await later.reconcilePauses();
+    expect(asked).toEqual([[0, 1, 2, 3]]);
+    const missed = await later.daily(DAY_B);
+    expect(Object.keys(missed.byInstance).sort()).toEqual(['0', '3']);
+    expect(missed.pausedMs).toBe(2 * 24 * HOUR);
+    const today = later.today();
+    expect(today.byInstance['0']!.pausedSince).toBe(dateKeyToDayStart('2026-09-12'));
+    expect(today.byInstance['3']!.pausedSince).toBe(dateKeyToDayStart('2026-09-12'));
+    expect(today.byInstance['1']).toBeUndefined();
+    expect(today.byInstance['2']).toBeUndefined();
+    // The pause day itself closes at 24:00 as before.
+    expect((await later.daily(DAY_A)).byInstance['1']!.pausedMs).toBe(31 * MIN);
+    expect([...(await new StatsStore(home, 'wanlong').readPauses()).keys()]).toEqual([0, 3]);
+
+    // A pause of today whose instance disappears ends now; a deleted instance is not carried into the next day.
+    later.record({ kind: 'paused', at: now, instanceIndex: 4, reason: '顶号' });
+    await later.idle();
+    reality.set(4, 'gone');
+    now += HOUR;
+    await later.reconcilePauses();
+    expect(later.today().byInstance['4']).toMatchObject({ pausedSince: null, pausedMs: HOUR });
+    reality.set(0, 'gone');
+    now = dateKeyToDayStart('2026-09-13') + MIN;
+    await later.checkRollover(now);
+    expect(later.today().byInstance['0']).toBeUndefined();
+    expect(later.today().byInstance['3']!.pausedSince).toBe(dateKeyToDayStart('2026-09-13'));
+    expect((await later.daily('2026-09-12')).byInstance['0']!.pausedMs).toBe(24 * HOUR);
+    await later.stop();
+
+    // A failing check keeps every pause (as before the check existed).
+    const broken = service({ pauseStates: async () => { throw new Error('管理器没打开'); } });
+    await broken.start();
+    await broken.reconcilePauses();
+    expect(broken.today().byInstance['3']!.pausedSince).toBe(dateKeyToDayStart('2026-09-13'));
+    expect(logs.some((line) => line.includes('核对暂停状态失败'))).toBe(true);
+    await broken.stop();
+  });
+
+  it('classifies pauses from the scheduler switch and the AVD list', async () => {
+    const port = pauseRealityPort({
+      isAuto: (index) => index === 1,
+      instance: async (index) => {
+        if (index === 2) throw Object.assign(new Error('不存在'), { code: 'INSTANCE_NOT_FOUND' });
+        if (index === 3) throw new Error('管理器超时');
+        return {};
+      },
+    });
+    expect([...(await port([0, 1, 2, 3]))]).toEqual([[0, 'paused'], [1, 'resumed'], [2, 'gone'], [3, 'unknown']]);
   });
 
   it('waits for start before applying early events and drops events after stop', async () => {

@@ -315,7 +315,7 @@ export async function readResourceStatsPanel(opts: ReadResourceStatsOptions): Pr
     if (!opts.templates.has(id)) {
       throw new AppError(
         'TEMPLATE_NOT_FOUND',
-        `模板集里缺少「${id}」，读不了资源统计表。请在「模板」页导入资源统计模板（或从截图按规格裁切）。`,
+        `模板集里缺少「${id}」，读不了资源统计表。请到「模板库」页的「资源统计模板」清单用截图按规格裁切（或导入旧版模板集）。`,
         { templateId: id }
       )
     }
@@ -323,7 +323,7 @@ export async function readResourceStatsPanel(opts: ReadResourceStatsOptions): Pr
   if (!opts.templates.hasGlyphs(RES_GLYPH)) {
     throw new AppError(
       'TEMPLATE_NOT_FOUND',
-      `字形集「${RES_GLYPH}」还没入库，读不了资源统计表。请在「模板」页导入资源统计模板（或从截图按规格裁切）。`,
+      `字形集「${RES_GLYPH}」还没入库，读不了资源统计表。请到「模板库」页的「资源统计模板」清单用截图按规格裁切（或导入旧版模板集）。`,
       { glyphSet: RES_GLYPH }
     )
   }

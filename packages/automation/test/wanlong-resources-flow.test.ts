@@ -274,7 +274,7 @@ describe('readResourceStatsPanel', () => {
     const r = await run(io, { templates: t, templateDir: partial });
     expect(r.error?.code).toBe('TEMPLATE_NOT_FOUND');
     expect(r.error?.message).toContain(missing);
-    expect(r.error?.message).toContain('导入资源统计模板');
+    expect(r.error?.message).toContain('「资源统计模板」清单');
     expect(io.actions).toEqual([]);
     expect(io.captures).toBe(0);
   });

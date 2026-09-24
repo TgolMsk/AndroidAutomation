@@ -21,9 +21,22 @@ export interface StatsInstanceInfo {
   accountName: string | null;
 }
 
+/**
+ * What really holds for an instance the ledger still counts as paused (see `StatsService.reconcilePauses`):
+ * 'paused' the auto switch is still off; 'resumed' it is on (the resume fact was lost); 'gone' no AVD at that index;
+ * 'unknown' could not tell (the pause is kept).
+ */
+export type StatsPauseReality = 'paused' | 'resumed' | 'gone' | 'unknown';
+
 export interface StatsServicePorts {
   /** Identity (`record.createdAt`) and bound account name of the AVD at `index`; cached for a minute. */
   instanceInfo?(index: number): Promise<StatsInstanceInfo>;
+  /**
+   * The scheduler's real auto switch and the AVD's existence for these indexes. With this port the open pauses read
+   * back at start are only carried over missed days after `reconcilePauses()` checked them; every midnight checks
+   * them again before carrying them into the new day.
+   */
+  pauseStates?(indexes: readonly number[]): Promise<ReadonlyMap<number, StatsPauseReality>>;
   /** 「读一次资源统计」: read the resource table inside the instance lock. Absent → a Chinese「未接线」error. */
   snapshotNow?(index: number): Promise<ResourceSnapshot>;
   /** Today's bucket changed (throttled to one per second; the new empty day right after midnight). */
@@ -46,6 +59,10 @@ const INFO_TTL_MS = 60_000;
 const MAX_TIMER_MS = 2_147_483_647;
 /** Wake a little after midnight so the date has certainly turned. */
 const ROLLOVER_GRACE_MS = 1_000;
+/** A query that arrives before `start()` waits this long for it (the page may ask while the app is still starting). */
+const START_WAIT_MS = 60_000;
+/** The pause check never holds the fact chain longer than this (the emulator manager may still be opening). */
+const PAUSE_CHECK_TIMEOUT_MS = 15_000;
 
 /**
  * 「每日数据统计」 (original StatsCenter): facts in → Beijing day ledgers on disk → buckets for the page and the bot.
@@ -71,8 +88,12 @@ export class StatsService {
   private readonly coordResource = new Map<string, ResourceType>();
   private readonly info = new Map<number, { at: number; value: StatsInstanceInfo }>();
   private chain: Promise<void>;
+  /** Resolves once `start()` has finished (or `stop()` ran first): early events and queries wait for it. */
+  private readonly startGate: Promise<void>;
   private openGate!: () => void;
   private startPromise: Promise<void> | null = null;
+  /** Carrying the pauses read back at start waits for `reconcilePauses()` (only with the `pauseStates` port). */
+  private backfillPending = false;
   private stopped = false;
   private saveTimer?: NodeJS.Timeout;
   private emitTimer?: NodeJS.Timeout;
@@ -82,7 +103,8 @@ export class StatsService {
     this.gameId = gameId;
     this.now = ports.now ?? Date.now;
     this.store = new StatsStore(home, gameId, (message) => this.log('warn', message));
-    this.chain = new Promise<void>((resolve) => { this.openGate = resolve; });
+    this.startGate = new Promise<void>((resolve) => { this.openGate = resolve; });
+    this.chain = this.startGate;
   }
 
   // ── lifecycle ───────────────────────────────────────────────────────────
@@ -116,7 +138,10 @@ export class StatsService {
       const yesterday = await this.store.readDay(shiftDateKey(this.todayKey, -1));
       for (const fact of sortFacts([...yesterday, ...this.todayFacts])) this.noteCoord(fact);
     } catch { /* bookkeeping only */ }
-    await this.backfillCarries();
+    // With the pause check, pauses are carried only after `reconcilePauses()`: an instance deleted (or resumed with the
+    // resume fact lost) while the app was closed must not gain a 24-hour pause for every missed day.
+    if (this.ports.pauseStates && this.openPauses.size > 0) this.backfillPending = true;
+    else await this.backfillCarries();
     this.armRolloverTimer();
     void this.prune(now);
     this.log('info', `数据统计已就绪：今天（北京）${this.todayKey}，已有派兵 ${this.today().dispatches} 次。`);
@@ -178,6 +203,27 @@ export class StatsService {
       return Promise.resolve();
     }
     return this.recordAsync({ kind: 'snapshot', at: snap.at, instanceIndex: snap.instanceIndex, snapshot: snap });
+  }
+
+  /**
+   * Check the open pauses against reality (`pauseStates` port; call it once the scheduler has restored its state):
+   * a pause whose instance is gone, or whose auto switch is on again (the resume fact was lost to a crash or a failed
+   * write), is closed — today's open span ends now — and never carried again. Then the remaining pauses are carried
+   * over the days the app was closed. Never throws; without the port it does nothing.
+   */
+  reconcilePauses(): Promise<void> {
+    return this.enqueue(async () => {
+      if (!this.todayKey || this.stopped) return;
+      const closed = await this.checkOpenPauses(true);
+      let carried = false;
+      if (this.backfillPending) {
+        this.backfillPending = false;
+        const before = this.todayFacts.length;
+        await this.backfillCarries();
+        carried = this.todayFacts.length !== before;
+      }
+      if (closed.length > 0 || carried) this.scheduleEmit();
+    });
   }
 
   /** Switch the day if Beijing midnight has passed (the timer calls this; tests pass a fake time). */
@@ -262,8 +308,20 @@ export class StatsService {
 
   // ── internals ───────────────────────────────────────────────────────────
 
+  /**
+   * Queries wait for the start gate instead of failing: the page can ask before the app's `restore()` reaches the
+   * statistics (the shell reopens the last page right away). Only a start that never comes is an error.
+   */
   private async ready(): Promise<void> {
-    if (!this.startPromise && !this.stopped) throw new StatsError('STEP_FAILED', '数据统计模块尚未启动。');
+    if (!this.startPromise && !this.stopped) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        this.startGate,
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, START_WAIT_MS); timer.unref?.(); }),
+      ]);
+      clearTimeout(timer);
+      if (!this.startPromise && !this.stopped) throw new StatsError('STEP_FAILED', '数据统计模块尚未启动，请稍后再试。');
+    }
     await this.startPromise?.catch(() => undefined);
   }
 
@@ -405,6 +463,70 @@ export class StatsService {
     catch (error) { this.log('warn', `保存暂停状态失败（重启后这段暂停可能少算）：${messageOf(error)}`); }
   }
 
+  /**
+   * Ask the `pauseStates` port about every open pause and drop the ones that no longer hold ('gone' / 'resumed').
+   * `closeToday`: a dropped pause still open in today's facts gets a `resumed` fact now, so today stops counting it.
+   * A failing or slow port keeps every pause (as before the check). @returns the closed indexes
+   */
+  private async checkOpenPauses(closeToday: boolean): Promise<number[]> {
+    const port = this.ports.pauseStates;
+    if (!port || this.openPauses.size === 0) return [];
+    const indexes = [...this.openPauses.keys()].sort((a, b) => a - b);
+    let states: ReadonlyMap<number, StatsPauseReality>;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      states = await Promise.race([
+        port(indexes),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${PAUSE_CHECK_TIMEOUT_MS / 1000} 秒内没有答复`)), PAUSE_CHECK_TIMEOUT_MS);
+          timer.unref?.();
+        }),
+      ]);
+    } catch (error) {
+      this.log('warn', `核对暂停状态失败，暂停照旧记账：${messageOf(error)}`);
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+    const now = this.now();
+    const closed: number[] = [];
+    for (const index of indexes) {
+      const state = states.get(index);
+      if (state !== 'gone' && state !== 'resumed') continue;
+      const pause = this.openPauses.get(index)!;
+      this.openPauses.delete(index);
+      closed.push(index);
+      this.log('info', state === 'gone'
+        ? `实例 ${index} 已不存在，它的暂停不再计入之后的日子。`
+        : `实例 ${index} 的自动调度已经开着，补记这段暂停的结束（恢复记录丢失）。`);
+      if (closeToday && cstDateKey(now) === this.todayKey && this.pauseOpenToday(index)) {
+        const fact: StatsFact = { id: `reconcile:${index}:${now}`, kind: 'resumed', at: Math.max(now, pause.since), index, instance: pause.instance, account: null };
+        if (!this.todayIds.has(fact.id)) {
+          this.todayFacts.push(fact);
+          this.todayIds.add(fact.id);
+          this.dirty = true;
+          this.scheduleSave();
+        }
+      }
+    }
+    if (closed.length > 0) {
+      try { await this.store.writePauses(this.openPauses); }
+      catch (error) { this.log('warn', `保存暂停状态失败：${messageOf(error)}`); }
+    }
+    return closed;
+  }
+
+  /** Whether today's facts leave a pause of this index open (paused / carried, not resumed since). */
+  private pauseOpenToday(index: number): boolean {
+    let open = false;
+    for (const fact of sortFacts(this.todayFacts)) {
+      if (fact.index !== index) continue;
+      if (fact.kind === 'paused' || fact.kind === 'pauseCarry') open = true;
+      else if (fact.kind === 'resumed') open = false;
+    }
+    return open;
+  }
+
   private carriesFor(key: DateKey): PauseCarryFact[] {
     const dayStart = dateKeyToDayStart(key);
     const out: PauseCarryFact[] = [];
@@ -447,6 +569,9 @@ export class StatsService {
     const target = cstDateKey(at);
     if (!this.todayKey || !(target > this.todayKey)) return;
     await this.flushSave();
+    // An instance deleted (or resumed without a fact) during the day never carries its pause into the next one; the
+    // day it paused closes that span at 24:00 on its own.
+    await this.checkOpenPauses(false);
     const from = this.todayKey;
     const oldest = shiftDateKey(target, -(STATS_RETENTION_DAYS - 1));
     let rolled = 1;

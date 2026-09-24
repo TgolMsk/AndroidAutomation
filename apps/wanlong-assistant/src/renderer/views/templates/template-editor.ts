@@ -204,6 +204,8 @@ export interface QuickPick {
   detail: string;
   tags?: string[];
   threshold?: number;
+  /** Prefilled note (the spec's purpose and crop advice, e.g. the resource-statistics checklist). */
+  note?: string;
 }
 
 /** Quick picks for the ids the set still lacks: one click fills the fixed id, name, tags and threshold. */

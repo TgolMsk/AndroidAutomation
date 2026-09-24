@@ -1,12 +1,12 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRuntimeState, type GatherCycleResult } from '@avdm/automation/wanlong';
 import type { AutomationRun } from '../src/shared/ipc';
 import { InsightsService } from '../src/main/automation/insights';
 import { InsightStore } from '../src/main/automation/insights/store';
-import { cstDateKey } from '../src/main/automation/insights/stats';
+import { cstDateKey, shiftDateKey } from '../src/main/automation/insights/stats';
 
 function run(id: string, index: number, endedAt: number): AutomationRun {
   return {
@@ -81,6 +81,46 @@ describe('automation insights', () => {
     // ★ A failed run is no alert (the original alerts only on thresholds): 2 failed cycles, 1 alert.
     expect((await service.days('wanlong', 1, 1))[0]).toMatchObject({ cycles: 2, failed: 2, alerts: 1 });
     expect((await service.alerts('wanlong', 1)).map((alert) => alert.kind)).toEqual(['consecutiveFailures']);
+  });
+
+  it('skips a damaged day file when listing alerts instead of failing the whole list', async () => {
+    const service = new InsightsService(home);
+    const now = Date.now();
+    await service.recordAlert({
+      id: 'wanlong:1:consecutiveFailures:dmg', gameId: 'wanlong', index: 1, kind: 'consecutiveFailures',
+      severity: 'critical', at: now, message: '连续失败 8 次，已暂停', runId: null,
+    });
+    await service.dispose();
+    const yesterday = shiftDateKey(cstDateKey(now), -1);
+    await writeFile(path.join(home, 'automation', 'insights', 'days', `${yesterday}.json`), '{broken', 'utf8');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      expect((await service.alerts('wanlong', 1)).map((alert) => alert.kind)).toEqual(['consecutiveFailures']);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('跳过无法读取的告警日账'), expect.stringContaining(yesterday));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('notifies alert observers once per newly stored alert (statistics count alert conclusions)', async () => {
+    const service = new InsightsService(home);
+    const seen: string[] = [];
+    const off = service.onAlertStored((alert) => { seen.push(alert.id); });
+    service.onAlertStored(() => { throw new Error('观察者出错'); });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const alert = {
+        id: 'wanlong:3:deviceOffline:z', gameId: 'wanlong', index: 3, kind: 'deviceOffline' as const,
+        severity: 'critical' as const, at: Date.now(), message: '设备掉线', runId: null,
+      };
+      expect(await service.recordAlert(alert)).toBe(true);
+      expect(await service.recordAlert(alert)).toBe(false);
+      off();
+      await service.recordAlert({ ...alert, id: 'wanlong:3:deviceOffline:z2' });
+      expect(seen).toEqual(['wanlong:3:deviceOffline:z']);
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it('accepts every alert type of the alerts module (incl. deviceOffline / emulatorFrozen) with evidence', async () => {

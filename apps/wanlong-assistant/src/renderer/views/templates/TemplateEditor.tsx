@@ -15,6 +15,7 @@ import {
   maskBadge, overwriteTarget, quickPicks, rectText, resolutionWarning, ROI_ADVICE, saveSuccessDetail, stdBadge,
   templateIdProblem, templateSummary, testVerdict, validCrop, type LowVarianceGuidance, type QuickPick,
 } from './template-editor';
+import { ResourceTemplatesCard } from './ResourceTemplatesCard';
 import './TemplatesView.css';
 
 interface TemplateEditorProps {
@@ -319,7 +320,7 @@ export function TemplateEditor({ gameId, index, onChanged, proposal }: TemplateE
   }
 
   function newTemplate(pick?: QuickPick): void {
-    setSelectedId(null); setName(pick?.name ?? ''); setTemplateId(pick?.id ?? ''); setNote(''); setTags(pick?.tags?.join(', ') ?? '');
+    setSelectedId(null); setName(pick?.name ?? ''); setTemplateId(pick?.id ?? ''); setNote(pick?.note ?? ''); setTags(pick?.tags?.join(', ') ?? '');
     setThreshold(pick?.threshold ?? 0.85); setRoi(null); setCrop(null);
     clearDiffShots(); setTestResult(null); setDeleteConfirm(false); setGuidance(null);
     setUsingProposal(false); setProposalReviewed(false);
@@ -514,6 +515,7 @@ export function TemplateEditor({ gameId, index, onChanged, proposal }: TemplateE
             <div className="template-coverage-actions"><button className="btn sm" type="button" onClick={() => void fullCheck()} disabled={busy !== null}>{busy === 'coverage' ? <Spinner size={14} /> : <Icon name="search" />}完整检查（编译全部模板）</button>{coverageError && <span className="template-validation" role="alert">{coverageError}</span>}</div>
           </div>
         </details>}
+        {activeSet && gameId === 'wanlong' && <ResourceTemplatesCard gameId={gameId} index={index} set={activeSet} disabled={busy !== null} onPick={(pick) => newTemplate(pick)} onChanged={onChanged} />}
 
         {activeSet && <div className="template-workspace">
           <aside className="template-library-list" aria-label="当前模板集中的模板">

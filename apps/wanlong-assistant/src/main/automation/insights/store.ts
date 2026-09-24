@@ -174,7 +174,10 @@ export class InsightStore {
     const today = cstDateKey(now);
     const out: InsightAlert[] = [];
     for (let offset = 0; offset < RETENTION_DAYS && out.length < limit; offset++) {
-      const day = await this.read(shiftDateKey(today, -offset));
+      let day: DayFile;
+      // One damaged day never blanks the whole alert list: it is skipped with a warning (the file is left alone).
+      try { day = await this.read(shiftDateKey(today, -offset)); }
+      catch (error) { console.warn('[wanlong] 跳过无法读取的告警日账：', error instanceof Error ? error.message : String(error)); continue; }
       out.push(...day.alerts.filter((item) => item.gameId === gameId && (index === null || item.index === index)).reverse());
     }
     return out.sort((a, b) => b.at - a.at).slice(0, limit);

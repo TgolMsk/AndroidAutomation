@@ -44,6 +44,15 @@ export function autoChangedEvent(index: number, enabled: boolean, at: number, re
     : { kind: 'paused', at, instanceIndex: index, reason: reason ?? null };
 }
 
+/**
+ * Whether a stored alert of this kind is a real alert conclusion for the 告警 count. ★ Not the per-run「运行失败」
+ * notice (`runFailed`) and not a circuit break (`circuitBroken`: a designed stop that raises no alert, original alerts
+ * iron rule 1; older insights ledgers stored one per break, which `circuitBreaks` already counts).
+ */
+export function countsAsAlert(kind: unknown): boolean {
+  return typeof kind === 'string' && kind !== '' && kind !== 'runFailed' && kind !== 'circuitBroken';
+}
+
 export function alertRaisedEvent(index: number, alertType: string, at: number): StatsAlertRaisedEvent {
   return { kind: 'alertRaised', at, instanceIndex: index, alertType };
 }

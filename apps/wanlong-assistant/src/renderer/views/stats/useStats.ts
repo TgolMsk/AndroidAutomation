@@ -48,6 +48,9 @@ export function useStats(gameId: string, visible: boolean): StatsStore {
   const mineRef = useRef(mine);
   mineRef.current = mine;
   const selectSeq = useRef(0);
+  /** The last full load missed something (today, the selected day or the recent list): the next push or poll reloads. */
+  const incomplete = useRef(false);
+  const loadingRef = useRef(false);
 
   const update = useCallback((fn: (current: StatsViewState) => StatsViewState) => {
     setState((current) => {
@@ -59,6 +62,7 @@ export function useStats(gameId: string, visible: boolean): StatsStore {
 
   const load = useCallback(async () => {
     if (!gameId) return;
+    loadingRef.current = true;
     setLoading(true);
     const localToday = cstDateKey(Date.now());
     let todayKey = localToday;
@@ -83,19 +87,30 @@ export function useStats(gameId: string, visible: boolean): StatsStore {
     } else {
       update((current) => (current.selected || current.selectedKey !== todayKey ? current : { ...current, selected: current.today }));
     }
+    let recentFailed = false;
     try {
       const recent = await avdm.statsRange(gameId, shiftDateKey(todayKey, -(RECENT_DAYS - 1)), todayKey);
       update((current) => ({ ...current, recent }));
     } catch {
-      // The recent table is secondary: the error above already says what is wrong.
+      // The recent table is secondary: the error above already says what is wrong (the next push reloads it).
+      recentFailed = true;
     }
     try {
       setElsewhere(new Set(await avdm.resourcesReading(gameId)));
     } catch { /* busy state only */ }
+    incomplete.current = failure !== null || recentFailed;
     setError(failure);
     setLoaded(true);
+    loadingRef.current = false;
     setLoading(false);
   }, [gameId, update]);
+
+  /** After a failed load (e.g. the app was still starting) the next sign of life reloads everything, not only today. */
+  const healIfIncomplete = useCallback((): boolean => {
+    if (!incomplete.current) return false;
+    if (!loadingRef.current) void load();
+    return true;
+  }, [load]);
 
   const selectDay = useCallback(async (key: DateKey) => {
     const seq = ++selectSeq.current;
@@ -147,14 +162,16 @@ export function useStats(gameId: string, visible: boolean): StatsStore {
   useEffect(() => {
     if (!visible || !gameId) return;
     const timer = window.setInterval(() => {
+      if (healIfIncomplete()) return;
       avdm.statsDaily(gameId, null).then((today) => update((current) => applyTodayPush(current, today))).catch(() => undefined);
     }, SAFETY_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [visible, gameId, update]);
+  }, [visible, gameId, update, healIfIncomplete]);
 
   useAvdmEvent('stats-today', (today) => {
     if (today.gameId !== gameId) return;
     update((current) => applyTodayPush(current, today));
+    healIfIncomplete();
   });
 
   useAvdmEvent('resources-reading', (event) => {

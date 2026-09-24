@@ -23,6 +23,16 @@ const TAPS_PER_SHELL = 32;
  * the gather pre-gate ladder may consult the advisor twice).
  */
 const WHITELIST_BUDGET = { closePopup: 1, exitCancel: 2, probeBack: 1, advise: 2 } as const;
+type WhitelistAction = keyof typeof WHITELIST_BUDGET;
+/**
+ * A resource-table read allows only the popup's own × before its gate (original resources precheck): no blind BACK,
+ * no exit-dialog cancel, no advisor. Enforced here too, not only by the worker's own code.
+ */
+const RESOURCES_WHITELIST_BUDGET: Readonly<Record<WhitelistAction, number>> = { closePopup: 1, exitCancel: 0, probeBack: 0, advise: 0 };
+
+function whitelistBudget(spec: VisionJobSpec): Readonly<Record<WhitelistAction, number>> {
+  return spec.kind === 'resources' ? RESOURCES_WHITELIST_BUDGET : WHITELIST_BUDGET;
+}
 /** A read-only query (recognize / match on a frame main holds) never takes longer than this. */
 const DEFAULT_QUERY_TIMEOUT_MS = 60_000;
 
@@ -258,7 +268,7 @@ export class VisionWorkerPool {
 /** One job on one worker: device RPC, the two-level input gate, timeouts and settle-once bookkeeping. */
 class Job {
   private approved = false;
-  private readonly spent: Record<keyof typeof WHITELIST_BUDGET, number> = { closePopup: 0, exitCancel: 0, probeBack: 0, advise: 0 };
+  private readonly spent: Record<WhitelistAction, number> = { closePopup: 0, exitCancel: 0, probeBack: 0, advise: 0 };
   private deviceQueue: Promise<void> = Promise.resolve();
   private readonly shots: Promise<void>[] = [];
   private settled = false;
@@ -412,8 +422,10 @@ class Job {
     if (!this.approved) throw new SchedulerError('PROBE_REJECTED', `探针通过前禁止注入设备输入（${what}）`);
   }
 
-  private spend(kind: keyof typeof WHITELIST_BUDGET): void {
-    if (this.spent[kind] >= WHITELIST_BUDGET[kind]) {
+  private spend(kind: WhitelistAction): void {
+    const budget = whitelistBudget(this.spec)[kind];
+    if (budget === 0) throw new SchedulerError('PROBE_REJECTED', `探针通过前禁止注入设备输入（这类作业不允许 ${kind}）`);
+    if (this.spent[kind] >= budget) {
       throw new SchedulerError('PROBE_REJECTED', `探针通过前的恢复动作次数已用完（${kind}），不再盲点`);
     }
     this.spent[kind]++;

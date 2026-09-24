@@ -6,10 +6,12 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { AppError, canonicalDirectory, TemplateLibrary, type MatchResult, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
 import {
-  cycleFactOf, normalizeGatherConfig, startupFailureFact, type DispatchRecord, type GatherCycleFact,
-  type GatherCycleResult, type KickedProbeResult, type PanelSample, type ResourceSnapshot, type ShotPolicy,
+  cycleFactOf, normalizeGatherConfig, RESOURCE_SEED_FRAMES, RESOURCE_TEMPLATE_CATALOG, resourceSeedPlan,
+  seedResourceTemplates, startupFailureFact, type DispatchRecord, type GatherCycleFact, type GatherCycleResult,
+  type KickedProbeResult, type PanelSample, type ResourceSeedFrame, type ResourceSnapshot, type ShotPolicy,
 } from '@avdm/automation/wanlong';
 import { coerceGatherConfig, describeBlockingIssues, validateGatherConfigInput } from '@avdm/automation/wanlong/pure';
+import type { ResourceTemplateSeedResult } from '../../shared/ipc/resources';
 import type { AutomationGameSummary, AutomationProbeReport, AutomationRun, AutomationSchedule, AutomationSettings, TemplateAlphaPreview, TemplateCapture, TemplateCoverage, TemplateImportResult, TemplatesChange, TemplateTestOptions, TemplateTestResult } from '../../shared/ipc';
 import { withLabelledLease } from '../app/instance-access';
 import { broadcast } from '../events';
@@ -325,6 +327,55 @@ export class AutomationHost {
       saveShot: (label, raw) => this.shots.save(i, label, raw),
       log: (level, message) => this.logLine(level, `[实例 #${i}][资源统计] ${message}`),
     }), options.signal);
+  }
+
+  /**
+   * 「资源统计模板」: crop the resource-statistics templates (RESOURCE_TEMPLATE_CATALOG, the resource-stats.json spec)
+   * out of whole-frame screenshots into the instance's set (original `seedResourceTemplates`, fed by the user's own
+   * frames instead of repository shots). A write follows the template-save rules: no automation running on the
+   * instance, auto-resume switched off (a changed template needs a fresh probe), the device lease held, every template
+   * through TemplateLibrary.save (variance guard, atomic write) and one change event (caches drop what they compiled).
+   * Ids the set already has are kept unless `overwrite`; nothing to write takes no lock and changes nothing.
+   */
+  async seedResourceTemplates(
+    gameId: string, index: number, frames: Partial<Record<ResourceSeedFrame, Uint8Array>>,
+    options: { overwrite?: boolean; files?: Partial<Record<ResourceSeedFrame, string>> } = {},
+  ): Promise<ResourceTemplateSeedResult> {
+    if (gameId !== GATHER_GAME_ID) throw new AppError('INVALID_ARGUMENT', '该游戏没有资源统计模板');
+    const i = asIndex(index);
+    const provided = RESOURCE_SEED_FRAMES.filter((frame) => (frames[frame]?.byteLength ?? 0) > 0);
+    if (provided.length === 0) throw new AppError('INVALID_ARGUMENT', '没有提供任何截图');
+    const current = await this.templateSet(gameId, i);
+    if (!current) throw new AppError('TEMPLATE_NOT_FOUND', '请先为该实例选择或创建模板集，再裁资源统计模板');
+    const overwrite = options.overwrite === true;
+    const existing = new Set(current.templates.map((item) => item.id));
+    const kept = overwrite ? [] : RESOURCE_TEMPLATE_CATALOG.filter((item) => existing.has(item.id));
+    const catalog = RESOURCE_TEMPLATE_CATALOG.filter((item) => overwrite || !existing.has(item.id));
+    const writable = resourceSeedPlan(catalog).drafts.some((draft) => provided.includes(draft.frame));
+    const log = (level: LogLevel, message: string) => this.logLine(level, `[实例 #${i}][资源统计模板] ${message}`);
+    const seed = (directory: string) => seedResourceTemplates({
+      // Same-id replacement is only ever an explicit choice (the library refuses it otherwise).
+      library: { save: (dir, draft) => this.templates.save(dir, overwrite ? { ...draft, overwrite: true } : draft) },
+      templateDir: directory, frames, catalog, log,
+    });
+    let pausedSchedule = false;
+    let directory = current.directory;
+    const result = !writable ? await seed(directory) : await this.withControlLock(i, async () => {
+      this.assertTemplateEditable(i);
+      const set = await this.templateSet(gameId, i);
+      if (!set) throw new AppError('TEMPLATE_NOT_FOUND', '请先为该实例选择或创建模板集，再裁资源统计模板');
+      directory = set.directory;
+      this.probeConfirmed.delete(i);
+      if ((await this.scheduler.get(gameId, i)).enabled) { await this.scheduler.disable(gameId, i); pausedSchedule = true; }
+      return this.withDeviceLease(i, () => seed(directory));
+    });
+    if (result.saved.length > 0) this.emitTemplatesChanged(gameId, directory, 'save', result.saved);
+    return {
+      setId: result.setId, directory, frames: provided, files: options.files ?? {},
+      saved: result.saved,
+      skipped: [...kept.map((item) => ({ id: item.id, reason: '模板集里已有，没有覆盖（勾选「覆盖已有」才按截图重裁）' })), ...result.skipped],
+      failed: result.failed, pausedSchedule,
+    };
   }
 
   games(): AutomationGameSummary[] {

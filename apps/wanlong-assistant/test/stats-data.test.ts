@@ -63,6 +63,39 @@ describe('instance identity isolation', { timeout: 30_000 }, () => {
     expect(day.byInstance['0@avd-old']).toMatchObject({ instanceIndex: 0, instanceCreatedAt: 'avd-old', replaced: true, dispatches: 1, failures: 1, accountName: '旧号' });
     await stats.stop();
   });
+
+  it('never lends the old account through a pause of the old AVD (paused, resumed or carried over midnight)', async () => {
+    const home = await tempHome();
+    let now = T0;
+    let info: StatsInstanceInfo = { createdAt: 'avd-old', accountName: '旧号' };
+    const stats = new StatsService(home, { now: () => now, instanceInfo: async () => info });
+    await stats.start();
+    stats.record({ kind: 'dispatch', at: now, instanceIndex: 0, resource: 'wood', storage: 100, coord: null, level: null, travelTimeSec: null });
+    stats.record({ kind: 'paused', at: now + HOUR, instanceIndex: 0, reason: '顶号' });
+    await stats.idle();
+    now += 4 * HOUR;
+    info = { createdAt: 'avd-new', accountName: null };
+    stats.record({ kind: 'dispatch', at: now, instanceIndex: 0, resource: 'gold', storage: 7, coord: null, level: null, travelTimeSec: null });
+    await stats.idle();
+    const day = stats.today();
+    // The pause belongs to the index (its auto switch), but the new AVD's row never shows the old account.
+    expect(day.byInstance['0']).toMatchObject({ instanceCreatedAt: 'avd-new', accountName: null, pausedSince: T0 + HOUR, dispatches: 1 });
+    expect(day.byInstance['0@avd-old']).toMatchObject({ accountName: '旧号', dispatches: 1 });
+    await stats.stop();
+
+    // A pause carried into the next day from the old AVD, a resume by the old AVD's record, and the new AVD's work.
+    const next = dateKeyToDayStart('2026-09-10');
+    const base = { index: 0, account: '旧号', instance: 'avd-old' };
+    const facts: StatsFact[] = [
+      { ...base, id: 'carry:0:2026-09-10', kind: 'pauseCarry', at: next, since: T0 + HOUR },
+      { ...base, id: 'r', kind: 'resumed', at: next + HOUR },
+      { ...dispatchFact('d-new', next + 2 * HOUR), instance: 'avd-new', account: null },
+    ];
+    const carried = aggregateDay('wanlong', '2026-09-10', facts, next + 3 * HOUR);
+    expect(carried.byInstance['0']).toMatchObject({ instanceCreatedAt: 'avd-new', accountName: null, pausedMs: HOUR });
+    // Without a newer identity the same AVD's pause still names its account.
+    expect(aggregateDay('wanlong', '2026-09-10', facts.slice(0, 2), next + 3 * HOUR).byInstance['0']).toMatchObject({ accountName: '旧号', pausedMs: HOUR });
+  });
 });
 
 describe('concurrent writers and damaged state', { timeout: 30_000 }, () => {
@@ -125,6 +158,8 @@ describe('import of the old insights ledger', { timeout: 30_000 }, () => {
       ],
       alerts: [
         alert('a-run', dateKeyToDayStart('2026-09-10') + HOUR, 'runFailed'),
+        // Older ledgers stored an alert per circuit break: it is already counted as a circuit break (run-3).
+        alert('a-circuit', dateKeyToDayStart('2026-09-10') + 2 * HOUR, 'circuitBroken'),
         alert('a-kick', dateKeyToDayStart('2026-09-10') + 3 * HOUR, 'suspectedKicked'),
         alert('a-other', dateKeyToDayStart('2026-09-10') + 3 * HOUR, 'suspectedKicked', 'other-game'),
       ],

@@ -88,7 +88,9 @@ export function aggregateDay(gameId: string, dateKey: DateKey, facts: readonly S
     // Pause time belongs to the index (the auto switch is per index), counted in its current bucket.
     const pauseFact = fact.kind === 'paused' || fact.kind === 'resumed' || fact.kind === 'pauseCarry';
     const bucket = bucketOf(fact.index, pauseFact ? null : fact.instance);
-    if (fact.account !== null) bucket.accountName = fact.account;
+    // ★ A pause fact lands in the index's current bucket whatever AVD raised it: it names that bucket's account only
+    //   when it came from that same AVD, so a recreated instance never borrows the old one's account.
+    if (fact.account !== null && (!pauseFact || fact.instance === bucket.instanceCreatedAt)) bucket.accountName = fact.account;
     switch (fact.kind) {
       case 'dispatch':
         addDispatch(day.byResource[fact.resource], fact.storage);

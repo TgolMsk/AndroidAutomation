@@ -421,16 +421,19 @@ async function runGather(job: ActiveJob, spec: Extract<VisionJobSpec, { kind: 'g
  *   the only input before that is one tap on a popup's own ×. Main approves formal input with the same gate.
  *   After approval `readResourceStatsPanel` opens the dialog, reads it and always restores the main screen.
  */
+/** Where the user gets the resource-statistics templates (template page checklist, or the old template set). */
+const RESOURCE_TEMPLATE_HINT = '请到「模板库」页的「资源统计模板」清单，用截图按规格裁切（或用「导入 / 合并旧模板集」导入旧版模板）。';
+
 async function runResources(job: ActiveJob, spec: Extract<VisionJobSpec, { kind: 'resources' }>): Promise<VisionJobResult> {
   const set = await templates(spec.templateDir);
   const g = set.gather;
   for (const id of RESOURCE_REQUIRED_TEMPLATES) {
     if (!g.has(id)) {
-      throw new AppError('TEMPLATE_NOT_FOUND', `模板集里缺少「${id}」，读不了资源统计表。请在「模板」页导入资源统计模板（或从截图按规格裁切）。`, { templateId: id });
+      throw new AppError('TEMPLATE_NOT_FOUND', `模板集里缺少「${id}」，读不了资源统计表。${RESOURCE_TEMPLATE_HINT}`, { templateId: id });
     }
   }
   if (!g.hasGlyphs(RES_GLYPH)) {
-    throw new AppError('TEMPLATE_NOT_FOUND', `字形集「${RES_GLYPH}」还没入库，读不了资源统计表。请在「模板」页导入资源统计模板（或从截图按规格裁切）。`, { glyphSet: RES_GLYPH });
+    throw new AppError('TEMPLATE_NOT_FOUND', `字形集「${RES_GLYPH}」还没入库，读不了资源统计表。${RESOURCE_TEMPLATE_HINT}`, { glyphSet: RES_GLYPH });
   }
   checkAbort(job);
   const foreground = await request<string | null>(job, { op: 'foregroundPackage', args: [] });

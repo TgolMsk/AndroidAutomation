@@ -22,7 +22,8 @@ function finite(value: unknown): value is number {
  * skipped. Ids are deterministic (`ins:<runId>…`), so importing the same file twice adds nothing.
  *   · each dispatch → a dispatch fact (coordinate / level / travel time were not stored: null)
  *   · a cycle with outcome 'error' → a failure; 'circuitBroken' → a circuit break
- *   · every alert except the per-run 「运行失败」 notice → an alert (the original counted alert conclusions only)
+ *   · every alert except the per-run 「运行失败」 notice and the old per-break 「熔断」 alert → an alert (the original
+ *     counted alert conclusions only; a circuit break raises none and is already a `circuitBreaks` from its cycle)
  */
 export function insightsFileFacts(raw: unknown, gameId: string, cutoff: number): { facts: StatsFact[]; skipped: number } {
   const facts: StatsFact[] = [];
@@ -49,7 +50,8 @@ export function insightsFileFacts(raw: unknown, gameId: string, cutoff: number):
   }
   for (const alert of Array.isArray(raw['alerts']) ? raw['alerts'] : []) {
     if (!isRecord(alert)) { skipped++; continue; }
-    if (alert['gameId'] !== gameId || alert['kind'] === 'runFailed') continue;
+    // Not the per-run「运行失败」notice, not a circuit break (already counted as `circuitBreaks` from its cycle).
+    if (alert['gameId'] !== gameId || alert['kind'] === 'runFailed' || alert['kind'] === 'circuitBroken') continue;
     const id = alert['id'];
     const index = alert['index'];
     const at = alert['at'];

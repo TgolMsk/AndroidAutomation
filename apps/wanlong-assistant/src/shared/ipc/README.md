@@ -12,7 +12,7 @@
 | `insights.ts` | 现有洞察、通知、只读机器人 | `src/main/ipc/insights.ts` |
 | `alerts.ts` / `bot.ts` | 告警 / 机器人（空） | 同名文件 |
 | `stats.ts` | 每日数据统计：按北京日期的日桶、区间、读一次资源统计；推送 `stats-today` / `stats-snapshot` | `src/main/ipc/stats.ts` |
-| `resources.ts` | 读游戏资源统计表（实例锁内）、正在读的实例；推送 `resources-reading` | `src/main/ipc/resources.ts` |
+| `resources.ts` | 读游戏资源统计表（实例锁内）、正在读的实例、按规格从截图裁资源统计模板；推送 `resources-reading` | `src/main/ipc/resources.ts` |
 | `advisor.ts` | AI 顾问 | `src/main/ipc/advisor.ts` |
 | `scheduler.ts` / `instances.ts` / `update.ts` | ETA 调度 / 实例级操作 / 应用内更新（空） | 同名文件 |
 | `app.ts` | 后台服务启动失败、应用设置（`app-settings-changed`）、数据目录、环境自检（`app-health`）、运行日志（`app-log`）、主进程提示（`app-toast`）、实例占用查询；旧版导入待后续模块追加 | `src/main/ipc/app.ts` |

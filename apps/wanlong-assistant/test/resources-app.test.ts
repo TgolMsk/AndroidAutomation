@@ -192,6 +192,10 @@ describe('WanlongGatherRunner.readResources (vision-worker job)', { timeout: 30_
         ids['popup2'] = worker.request({ op: 'tap', args: [5, 6, 'closePopup'] });
         ids['plain'] = worker.request({ op: 'tap', args: [7, 8] });
         ids['back'] = worker.request({ op: 'key', args: ['BACK'] });
+        // The whitelisted recovery actions of samples / cycles are not open to a resources read (main enforces it).
+        ids['probeBack'] = worker.request({ op: 'key', args: ['BACK', 'probeBack'] });
+        ids['exitCancel'] = worker.request({ op: 'tap', args: [9, 9, 'exitCancel'] });
+        ids['advise'] = worker.request({ op: 'advise', args: [frame(), 1] });
         ids['launch'] = worker.request({ op: 'ensureGame', args: [] });
       }
       if (message.type === 'response' && message.id === ids['launch']) worker.fail('不在主界面', 'STEP_FAILED');
@@ -202,6 +206,9 @@ describe('WanlongGatherRunner.readResources (vision-worker job)', { timeout: 30_
     expect(worker.responses.get(ids['popup2']!)).toMatchObject({ ok: false, error: { code: 'PROBE_REJECTED' } });
     expect(worker.responses.get(ids['plain']!)).toMatchObject({ ok: false, error: { message: expect.stringContaining('探针通过前禁止注入设备输入') } });
     expect(worker.responses.get(ids['back']!)).toMatchObject({ ok: false });
+    for (const id of ['probeBack', 'exitCancel', 'advise']) {
+      expect(worker.responses.get(ids[id]!)).toMatchObject({ ok: false, error: { code: 'PROBE_REJECTED', message: expect.stringContaining('探针通过前禁止注入设备输入') } });
+    }
     expect(worker.responses.get(ids['launch']!)).toMatchObject({ ok: true, value: 'failed' });
     expect(taps).toEqual([[5, 6]]);
     expect(keys).toEqual([]);
