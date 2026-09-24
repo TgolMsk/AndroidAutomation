@@ -209,6 +209,13 @@ bootstrapApp({
         device: async (index) => (await deviceHost.get()).device(index),
       },
       lane: (index, work) => deviceLanes.run(index, work),
+      // Gather G0 / sampler: act for the AVD the running job was admitted with (script runs carry their own identity).
+      admittedIdentity: (index) => automation.admittedIdentity(index),
+      // Before-tap stability and after-tap change checks run in the instance's vision worker, not on this thread.
+      frames: (index, signal) => ({
+        meanAbsDiff: (a, b, refWidth, refHeight) => automation.frameDiff(index, a, b, refWidth, refHeight, signal),
+        stableTarget: (a, b, box, refWidth, refHeight) => automation.targetStable(index, a, b, box, refWidth, refHeight, signal),
+      }),
       instanceTemplateSet: (index) => automation.templateSet('wanlong', index),
       loadTemplateSet: (directory) => loadTemplateSet(directory),
       recognize: (index, raw, signal) => automation.recognizeScreen(index, raw, signal),
@@ -222,15 +229,11 @@ bootstrapApp({
       },
       // Plan config「脚本执行期间允许 AI 介入」: default on until the plans module stores it (DECISIONS A.3).
       planAiAssist: async (gameId) => ((await plans.overview(gameId)).config as { aiAssist?: unknown }).aiAssist !== false,
-      // AI_RISK_BLOCKED / GAME_UPDATE_REQUIRED: a scheduled gather or sample rethrows the code and the scheduler pauses
-      // and alerts itself (pauseForAttention). A script run or a manual cycle pauses auto here and raises the alert.
-      onNeedsAttention: async (index, info, context) => {
-        const auto = automation.eta.isAuto(index);
-        if (auto && context !== 'script-run') return;
-        if (auto) void automation.eta.setAuto(index, false, `需要人工处理（${info.stage}）：${info.message}`).catch(() => undefined);
-        await insights.recordAttentionPause('wanlong', index, { code: info.code, message: `${info.stage}：${info.message}` })
-          .catch((error: unknown) => appLog.warn('ai', `需要人工处理的告警没能保存：${describeThrown(error)}`, undefined, index));
-      },
+      // AI_RISK_BLOCKED / GAME_UPDATE_REQUIRED on every chain (scheduled or manual gather, a sample of any kind, the
+      // re-sample after a dispatch, a script run): pause first (awaited), then the scheduler's own「需要人处理」alert
+      // path — the same one a scheduled wake uses, so the alerts module receives all of them. The pause aborts the
+      // in-flight auto work, whose wake then ends silently (no second alert); an instance already paused is not alerted.
+      onNeedsAttention: (index, info) => automation.eta.raiseAttention(index, { code: info.code, message: info.message }),
       log: (level, message, index) => appLog.record(level, 'ai', message, undefined, index),
     });
     automation.setPorts({

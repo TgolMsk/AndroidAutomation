@@ -58,7 +58,8 @@ function isRun(value: unknown): value is AutomationRun {
 }
 
 type GatherRunnerPort = Pick<WanlongGatherRunner, 'runOnce' | 'stop' | 'dispose' | 'isRunning'> &
-  Partial<Pick<WanlongGatherRunner, 'sample' | 'healthFrame' | 'invalidateTemplates' | 'recognize' | 'match' | 'updateCheck'>>;
+  Partial<Pick<WanlongGatherRunner, 'sample' | 'healthFrame' | 'invalidateTemplates' | 'recognize' | 'match' | 'updateCheck'>> &
+  Partial<Pick<WanlongGatherRunner, 'frameDiff' | 'targetStable' | 'admittedIdentity'>>;
 
 /** A future durable scheduler may consume a completed cycle and return only a wake it actually stored. */
 export type CycleCompletionSink = (run: AutomationRun, result: GatherCycleResult) => Promise<number | null>;
@@ -915,6 +916,29 @@ export class AutomationHost {
     if (!templateDir || !isAbsolute(templateDir)) throw new Error('模板集目录必须是绝对路径');
     if (!this.gatherRunner.updateCheck) throw new SchedulerError('UNKNOWN', '采集运行器不支持游戏更新识别');
     return this.gatherRunner.updateCheck(i, templateDir, raw, signal);
+  }
+
+  /**
+   * AI executor frame comparisons on the instance's vision worker (point-sampled grey loops kept off the main thread):
+   * the shrink-4 mean absolute difference of two frames. No device, no lock.
+   */
+  async frameDiff(index: number, a: RawFrame, b: RawFrame, refWidth: number, refHeight: number, signal?: AbortSignal): Promise<number> {
+    if (!this.gatherRunner.frameDiff) throw new SchedulerError('UNKNOWN', '采集运行器不支持画面比较');
+    return this.gatherRunner.frameDiff(asIndex(index), a, b, refWidth, refHeight, signal);
+  }
+
+  /** Same worker query: whether a box (reference coordinates) and its surroundings stayed put between two frames. */
+  async targetStable(index: number, a: RawFrame, b: RawFrame, box: { x: number; y: number; w: number; h: number }, refWidth: number, refHeight: number, signal?: AbortSignal): Promise<boolean> {
+    if (!this.gatherRunner.targetStable) throw new SchedulerError('UNKNOWN', '采集运行器不支持画面比较');
+    return this.gatherRunner.targetStable(asIndex(index), a, b, box, refWidth, refHeight, signal);
+  }
+
+  /**
+   * The instance identity (`record.createdAt`) the troop-panel sample or gather cycle now running on `index` was
+   * admitted with; null when none runs. Hooks acting while that job waits on them (AI recovery) act for this AVD only.
+   */
+  admittedIdentity(index: number): string | null {
+    return this.gatherRunner.admittedIdentity?.(asIndex(index)) ?? null;
   }
 
   /**

@@ -190,7 +190,9 @@ describe('ScriptRunner protocol (main side of the worker RPC)', () => {
     const requests: unknown[] = [];
     const handled = runner(fakeScriptDevice(), { workerFactory: makeWorker, aiAssist: async (request) => { requests.push(request); return { handled: true, message: '关掉了' }; } });
     await handled.runner.execute({ ...options(script([], { templateSetId: 'set' })), runId: '00000000-0000-4000-8000-0000000000b3' });
-    expect(requests[0]).toMatchObject({ gameId: 'wanlong', instanceIndex: 2, scriptId: 'test', templateSetId: 'set', stepId: 's', expectTemplateIds: ['x'] });
+    expect(requests[0]).toMatchObject({
+      gameId: 'wanlong', instanceIndex: 2, instanceIdentity: 'identity-1', scriptId: 'test', templateSetId: 'set', stepId: 's', expectTemplateIds: ['x'],
+    });
     expect(answers[2]).toEqual({ handled: true, message: '关掉了' });
   });
 

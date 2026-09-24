@@ -303,7 +303,7 @@ export function AiView(_props: ViewProps) {
               </div>
               <div className="ai-toggle">
                 <Switch checked={draft.refine} label="局部放大精定位" onChange={(next) => setField('refine', next)} />
-                <div><strong>局部放大精定位</strong><small>多问一次，点得更准、裁的模板更贴合。</small></div>
+                <div><strong>局部放大精定位</strong><small>关闭 / 取消建议多问一次，点得更准、裁的模板更贴合；「自动处理」关着时自动链路不多问（只记录建议），手动分析照常精定位。</small></div>
               </div>
               <div className="ai-toggle">
                 <Switch checked={draft.autoHarvest} label="自学模板" onChange={(next) => setField('autoHarvest', next)} />

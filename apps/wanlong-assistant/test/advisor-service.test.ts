@@ -4,8 +4,9 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdvisorService, type AdvisorCapturePort, type AdvisorConsultTarget } from '../src/main/automation/advisor';
 import { adviceRejection, parseAdvice, riskRejection } from '../src/main/automation/advisor/risk';
+import { ADVISOR_FILE_MAX_BYTES, AdvisorStore, emptyAdvisorFile } from '../src/main/automation/advisor/store';
 import type { VisionFetch } from '../src/main/automation/advisor/client';
-import type { AdvisorConfigView, AdvisorRecord } from '../src/shared/ai';
+import type { AdvisorAdvice, AdvisorConfigView, AdvisorRecord } from '../src/shared/ai';
 
 const secret = 'sk-private-123456';
 const target: AdvisorConsultTarget = {
@@ -19,6 +20,18 @@ const safeClose = {
 };
 function reply(value: unknown) {
   return { status: 200, text: async () => JSON.stringify({ model: 'vision-test', choices: [{ message: { content: typeof value === 'string' ? value : JSON.stringify(value) } }] }) };
+}
+/** A blocked risky-popup record at every per-field cap (CJK: 3 bytes a character). */
+function maxedAdvice(): AdvisorAdvice {
+  const cjk = (n: number): string => '风'.repeat(n);
+  return {
+    screen: 'dialog', action: 'tap_confirm', target: { x: 600, y: 430, w: 180, h: 80 }, confidence: 0.97, reason: cjk(200),
+    risk: {
+      level: 'high', effect: 'purchase', buttonText: cjk(80), dialogText: cjk(600), consequence: cjk(240), reason: cjk(240),
+      hazards: Array.from({ length: 20 }, () => cjk(120)),
+    },
+    model: 'vision-test', review: 'blocked', reviewReason: cjk(300), space: 'reference', latencyMs: 1200,
+  };
 }
 function frame(width = 100, height = 80) {
   return { width, height, capturedAt, data: new Uint8Array(width * height * 4).fill(240) };
@@ -110,6 +123,23 @@ describe('AI advisor (read-only service)', () => {
     expect(result.providerCalls).toBe(2);
     // Crop (0,0)–(96,80) doubled to 192×160: (44,34 28×28) on the crop → (22,17 14×14) on the frame.
     expect(result.advice?.target).toEqual({ x: 22, y: 17, w: 14, h: 14 });
+  });
+
+  it('automatic chains skip the refine request while「自动处理」is off (the box is only recorded)', async () => {
+    const input = { gameId: 'wanlong', instanceIndex: 2, context: 'gather-g0', raw: frame(1280, 720), refWidth: 2560, refHeight: 1440, attempt: 1 };
+    await configure({ refine: true, autoActions: false });
+    request.mockResolvedValue(reply({ ...safeClose, target: { x: 200, y: 100, w: 40, h: 40 } }));
+    const recorded = await advisor.consultFrame(input);
+    expect(request).toHaveBeenCalledOnce();
+    expect(recorded).toMatchObject({ providerCalls: 1, advice: { refined: false } });
+
+    await advisor.saveConfig({ autoActions: true });
+    request.mockReset();
+    request.mockResolvedValueOnce(reply({ ...safeClose, target: { x: 200, y: 100, w: 40, h: 40 } }))
+      .mockResolvedValueOnce(reply({ target: { x: 40, y: 40, w: 60, h: 60 }, confidence: .9 }));
+    const acted = await advisor.consultFrame(input);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(acted).toMatchObject({ providerCalls: 2, advice: { refined: true } });
   });
 
   it('blocks a purchased resource even when a model labels it low risk', async () => {
@@ -241,6 +271,56 @@ describe('AI advisor (read-only service)', () => {
     // Saving works again and replaces the warning.
     await fresh.saveConfig({ model: 'vision-test' });
     expect((await fresh.status()).loadWarning).toBeNull();
+  });
+
+  it('keeps 50 records at every field cap under the size bound; the kill switch always saves', async () => {
+    await configure();
+    for (let i = 0; i < 50; i++) {
+      await advisor.note({
+        gameId: 'wanlong', index: 1, context: 'gather-g0', outcome: 'blocked', message: '险'.repeat(500),
+        advice: maxedAdvice(), harvestedTemplateId: null, requiresAttention: true, latencyMs: 1200, providerCalls: 1,
+      });
+    }
+    const file = path.join(home, 'automation', 'advisor.json');
+    expect((await stat(file)).size).toBeLessThanOrEqual(ADVISOR_FILE_MAX_BYTES);
+    await expect(advisor.saveConfig({ enabled: false })).resolves.toMatchObject({ enabled: false });
+    const reloaded = new AdvisorService(home, capture, { fetch: request, now: () => now, log: () => undefined });
+    expect(await reloaded.history()).toHaveLength(50);
+    expect((await reloaded.status()).enabled).toBe(false);
+  });
+
+  it('drops the oldest records to fit the bound instead of refusing to save (the config always fits)', async () => {
+    const store = new AdvisorStore(home, { maxBytes: 64 * 1024 });
+    const records: AdvisorRecord[] = Array.from({ length: 50 }, (_, i) => ({
+      id: `r-${i}`, at: 1_000 + (50 - i), gameId: 'wanlong', index: 1, context: 'gather-g0', outcome: 'blocked',
+      message: '险'.repeat(500), advice: maxedAdvice(), templateProposal: null, harvestedTemplateId: null,
+      requiresAttention: true, latencyMs: 1200, providerCalls: 1,
+    }));
+    const data = { ...emptyAdvisorFile(), history: records };
+    const kept = await store.save(data);
+    expect(kept).toBeGreaterThan(0);
+    expect(kept).toBeLessThan(50);
+    expect((await stat(store.file)).size).toBeLessThanOrEqual(64 * 1024);
+    // Newest first: the file holds exactly the first `kept` records.
+    expect((await store.load()).history.map((item) => item.id)).toEqual(records.slice(0, kept).map((item) => item.id));
+    // A record alone larger than the bound: the config is still written, with no history.
+    const tiny = new AdvisorStore(home, { maxBytes: 8 * 1024 });
+    expect(await tiny.save(data)).toBe(0);
+    expect((await tiny.load()).history).toEqual([]);
+
+    // The service drops what the file could not hold, so the page shows what a restart would.
+    const small = new AdvisorService(home, capture, { fetch: request, now: () => now, log: () => undefined, maxFileBytes: 64 * 1024 });
+    for (const record of records.slice(0, 20)) {
+      await small.note({
+        gameId: 'wanlong', index: 1, context: 'gather-g0', outcome: 'blocked', message: record.message,
+        advice: maxedAdvice(), harvestedTemplateId: null, latencyMs: 1200, providerCalls: 1,
+      });
+    }
+    const shown = await small.history();
+    expect(shown.length).toBeGreaterThan(0);
+    expect(shown.length).toBeLessThan(20);
+    expect((await store.load()).history.map((item) => item.id)).toEqual(shown.map((item) => item.id));
+    await expect(small.saveConfig({ model: 'vision-test-2' })).resolves.toMatchObject({ model: 'vision-test-2' });
   });
 
   it('rejects unknown keys and wrong types, and cannot enable an incomplete config', async () => {

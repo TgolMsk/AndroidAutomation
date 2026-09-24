@@ -178,6 +178,12 @@ export class VisionWorkerPool {
     if (slot.idle) { clearTimeout(slot.idle); slot.idle = undefined; }
     const queryId = this.nextQueryId++;
     const { frame, transfer } = copyFrame(query.frame);
+    let payload: VisionQuery = { ...query, frame };
+    if (query.kind === 'frameDiff') {
+      const other = copyFrame(query.other);
+      payload = { ...query, frame, other: other.frame };
+      transfer.push(...other.transfer);
+    }
     return new Promise<VisionQueryResult>((resolve, reject) => {
       let timer: NodeJS.Timeout | undefined;
       const settle = (): void => {
@@ -194,7 +200,7 @@ export class VisionWorkerPool {
       signal?.addEventListener('abort', onAbort, { once: true });
       timer = setTimeout(() => { settle(); reject(new SchedulerError('TIMEOUT', '图像识别超时')); }, timeoutMs);
       timer.unref?.();
-      try { slot.worker.postMessage({ type: 'query', queryId, query: { ...query, frame } }, transfer); }
+      try { slot.worker.postMessage({ type: 'query', queryId, query: payload }, transfer); }
       catch (error) { settle(); reject(new SchedulerError('UNKNOWN', `无法联系视觉工作线程：${messageOf(error)}`)); }
     });
   }

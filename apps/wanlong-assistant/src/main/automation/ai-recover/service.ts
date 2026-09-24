@@ -6,9 +6,10 @@
  *
  * Runs in main, inside the caller's instance ownership: the gather cycle's or the sample's instance lock (the vision
  * job waits on the hook), or the script run's lease (the script worker waits on its aiConsult). Every capture and tap
- * goes through the instance's device lane, re-checks the instance identity, and every tap re-checks the foreground
- * package. Template matching (recognition, close-button dedupe, update detection) is asked of the instance's
- * long-lived vision worker; OpenCV never runs here.
+ * goes through the instance's device lane and re-checks the instance identity against the one that writer was
+ * admitted with (the running job's, the script run's), and every tap re-checks the foreground package. Template
+ * matching (recognition, close-button dedupe, update detection) and the frame comparisons are asked of the instance's
+ * long-lived vision worker; neither OpenCV nor the per-pixel loops run here.
  */
 import type { MatchResult, RawFrame, TemplateDraft, TemplateSet } from '@avdm/automation';
 import type { AiAssistResult } from '@avdm/automation/script';
@@ -16,6 +17,7 @@ import { AppError, GAME_UPDATE_TPL, recoverUnknownWithUpdate, type OverlayConsul
 import type { AdvisorScreen } from '../../../shared/ai';
 import { promptProfileOf } from '../advisor/profiles';
 import type { ScriptAiRequest } from '../../plans/types';
+import type { FrameComparer } from './frame-diff';
 import { isClosePopupTemplateId, type HarvestPort } from './harvest';
 import { aiRecoverUnknownScreen, type RecoverAdvisorPort, type RecoverIo, type RecoverLogger } from './recover';
 import { NO_UPDATE, WorkerUpdateRecovery, type UpdateVerdict } from './update';
@@ -52,6 +54,13 @@ export interface AiRecoveryDeps {
   };
   /** Run a check-then-act unit on the instance's device lane. */
   lane?<T>(index: number, work: () => Promise<T>): Promise<T>;
+  /**
+   * The identity (`record.createdAt`) the sample or gather cycle now running on the instance was admitted with (null:
+   * none runs, so the gather / sampler chains do not touch the device). Absent: the identity read at the start.
+   */
+  admittedIdentity?(index: number): string | null;
+  /** Frame comparisons on the instance's vision worker (off the main thread). Absent: computed in this process. */
+  frames?(index: number, signal?: AbortSignal): FrameComparer;
   /** The instance's own template set (gather G0 / sampler), or null when none is selected. */
   instanceTemplateSet(index: number): Promise<TemplateSet | null>;
   /** A template set by directory (script runs, fresh ids before a harvest). */
@@ -66,7 +75,10 @@ export interface AiRecoveryDeps {
   saveTemplate(directory: string, draft: TemplateDraft): Promise<{ id: string; std: number }>;
   /** Plan config「脚本执行期间允许 AI 介入」(default true until the plans module provides it). */
   planAiAssist?(gameId: string): Promise<boolean>;
-  /** A human must look (pause + alert). Called before the error is rethrown; a failing hook never hides the error. */
+  /**
+   * A human must look, on every chain: the host pauses first, then alerts (`EtaScheduler.raiseAttention`). Called
+   * before the error is rethrown; a failing hook never hides the error.
+   */
   onNeedsAttention?(index: number, info: AiAttentionInfo, context: AiChainContext): void | Promise<void>;
   log(level: 'debug' | 'info' | 'warn' | 'error', message: string, index?: number): void;
   /** Tests shorten the executor's and the update wait's pauses. */
@@ -83,6 +95,11 @@ interface ChainOptions {
   signal?: AbortSignal;
   /** Template set for update detection, dedupe and harvest (null: none of these). */
   set: TemplateSet | null;
+  /**
+   * The identity the calling writer was admitted with. undefined: read at the start of the session; null: no running
+   * job to act for (the device is not touched).
+   */
+  identity?: string | null;
   recognize?: (raw: RawFrame) => Promise<boolean>;
 }
 
@@ -114,7 +131,7 @@ export class AiRecoveryService {
   async adviseGather(index: number, raw: RawFrame, attempt: number, signal?: AbortSignal): Promise<boolean> {
     const set = await this.instanceSet(index);
     const result = await this.run({
-      index, context: 'gather-g0', raw, attempt, signal, set,
+      index, context: 'gather-g0', raw, attempt, signal, set, ...this.jobIdentity(index),
       recognize: (frame) => this.deps.recognize(index, frame, signal),
     });
     return result !== false;
@@ -128,7 +145,7 @@ export class AiRecoveryService {
     try {
       const set = await this.instanceSet(index);
       return await this.run({
-        index, context: 'scheduler-sample', raw, attempt: 1, signal, set,
+        index, context: 'scheduler-sample', raw, attempt: 1, signal, set, ...this.jobIdentity(index),
         recognize: (frame) => this.deps.recognize(index, frame, signal),
       });
     } catch (error) {
@@ -173,9 +190,11 @@ export class AiRecoveryService {
       const recognize = set && expect.length > 0
         ? async (frame: RawFrame) => (await this.deps.match(index, set.directory, frame, expect, { signal })).some((m) => m.found)
         : undefined;
-      const session = await this.session(index, signal, DEFAULT_REF);
+      const session = await this.session(index, signal, DEFAULT_REF, request.instanceIdentity);
       const raw = await session.io.capture();
-      const result = await this.run({ index, context: 'script-run', raw, attempt: 1, signal, set, ...(recognize ? { recognize } : {}) }, session);
+      const result = await this.run({
+        index, context: 'script-run', raw, attempt: 1, signal, set, identity: request.instanceIdentity, ...(recognize ? { recognize } : {}),
+      }, session);
       if (result === 'updated') return { handled: true, message: '游戏正在更新，已按更新流程处理，稍后重试这一步。' };
       if (result === 'recovered') return { handled: true, message: `AI 顾问已处理挡在前面的界面（${request.reason}）。` };
       return {
@@ -197,6 +216,14 @@ export class AiRecoveryService {
     }
   }
 
+  /**
+   * The identity the running sample / cycle was admitted with (nothing without the port). ★ With the port and no
+   * running job (null) there is no writer to act for: the session refuses to touch the device.
+   */
+  private jobIdentity(index: number): { identity?: string | null } {
+    return this.deps.admittedIdentity ? { identity: this.deps.admittedIdentity(index) ?? null } : {};
+  }
+
   private async instanceSet(index: number): Promise<TemplateSet | null> {
     try { return await this.deps.instanceTemplateSet(index); }
     catch (error) {
@@ -205,14 +232,21 @@ export class AiRecoveryService {
     }
   }
 
-  /** Device access for one recovery: identity checked before every capture and tap, the foreground before every tap. */
-  private async session(index: number, signal: AbortSignal | undefined, ref: { width: number; height: number }) {
+  /**
+   * Device access for one recovery: identity checked before every capture and tap — against the identity the calling
+   * writer was admitted with when known — and the foreground before every tap.
+   */
+  private async session(index: number, signal: AbortSignal | undefined, ref: { width: number; height: number }, admitted?: string | null) {
     const { manager, packageName } = this.deps;
     const check = abortCheck(signal);
     check();
+    if (admitted === null) throw new AppError('DEVICE_NOT_READY', `实例 #${index} 上没有正在运行的采样或采集，AI 不操作设备`);
     const state = await manager.getState(index);
     if (state.status !== 'running') throw new AppError('DEVICE_NOT_READY', `实例 #${index} 尚未就绪，AI 不操作设备`);
-    const createdAt = state.record.createdAt;
+    if (admitted !== undefined && state.record.createdAt !== admitted) {
+      throw new AppError('DEVICE_NOT_READY', `实例 #${index} 已被替换（不是开始这次任务时的那台），AI 不操作设备`);
+    }
+    const createdAt = admitted ?? state.record.createdAt;
     const device = await manager.device(index);
     const onLane = <T>(work: () => Promise<T>): Promise<T> => this.deps.lane ? this.deps.lane(index, work) : work();
     const assertIdentity = async (): Promise<void> => {
@@ -260,7 +294,7 @@ export class AiRecoveryService {
     const updateSet = set && set.templates.some((item) => UPDATE_TEMPLATE_IDS.has(item.id)) ? set : null;
     if (!updateSet && !deps.advisor.isActive()) return false;
     const ref = set ? { width: set.refWidth, height: set.refHeight } : DEFAULT_REF;
-    const session = existing ?? await this.session(index, signal, ref);
+    const session = existing ?? await this.session(index, signal, ref, options.identity);
     session.io.setRef(ref);
     session.io.seed(raw);
     const { io, check } = session;
@@ -293,6 +327,7 @@ export class AiRecoveryService {
             (await deps.match(index, set.directory, image, closeIds, { roi, signal })).some((m) => m.found),
         } : {}),
         harvest,
+        ...(deps.frames ? { frames: deps.frames(index, signal) } : {}),
         log,
         ...(deps.sleep ? { sleep: deps.sleep } : {}),
       });

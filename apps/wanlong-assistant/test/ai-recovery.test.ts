@@ -190,6 +190,8 @@ describe('AiRecoveryService', () => {
     await enableAi();
     api.queue({ status: 200, body: chatBody(PURCHASE) });
     await expect(new AiRecoveryService(deps).recoverForSampler(1, screen[0]!)).rejects.toMatchObject({ code: 'AI_RISK_BLOCKED' });
+    // Every chain tells the alerts port (the host pauses and alerts there), not only gather and scripts.
+    expect(attention).toEqual([{ index: 1, code: 'AI_RISK_BLOCKED', stage: 'AI 操作风险评估', context: 'scheduler-sample' }]);
     const controller = new AbortController();
     controller.abort(new Error('调度已停止'));
     await expect(new AiRecoveryService(deps).recoverForSampler(1, screen[0]!, controller.signal)).rejects.toThrow('调度已停止');
@@ -213,9 +215,45 @@ describe('AiRecoveryService', () => {
     expect((await advisor.history())[0]?.message).toContain('已停止或被替换');
   });
 
+  it('acts for the AVD the running job / script run was admitted with, never for a replacement', async () => {
+    await enableAi();
+    // Gather / sampler: the job was admitted on avd-0; the AVD at this index is avd-1 now.
+    api.queue({ status: 200, body: chatBody(CLOSE) });
+    const replaced = new AiRecoveryService({ ...deps, admittedIdentity: () => 'avd-0' });
+    await expect(replaced.adviseGather(4, screen[0]!, 1)).rejects.toThrow('已被替换');
+    await expect(replaced.recoverForSampler(4, screen[0]!)).resolves.toBe(false);
+    // No running job: nothing to act for.
+    const idle = new AiRecoveryService({ ...deps, admittedIdentity: () => null });
+    await expect(idle.recoverForSampler(4, screen[0]!)).resolves.toBe(false);
+    expect(logs.some((line) => line.includes('没有正在运行的采样或采集'))).toBe(true);
+    // Script run admitted on avd-0.
+    const result = await new AiRecoveryService(deps).assistScript({
+      gameId: 'wanlong', runId: 'r3', instanceIndex: 2, instanceIdentity: 'avd-0', scriptId: 's1', templateSetId: null, templateDir: null,
+      stepId: null, reason: '超时', expectTemplateIds: [], signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({ handled: false, message: expect.stringContaining('已被替换') });
+    expect(taps).toHaveLength(0);
+    expect(api.calls).toHaveLength(0);
+
+    // The admitted AVD is still there: the tap goes through, and the frame checks run where the port says.
+    const compared: string[] = [];
+    screen = [screen[0]!, makeFrame(40)];
+    recognized = (raw) => raw.data[0] === 40;
+    const same = new AiRecoveryService({
+      ...deps, admittedIdentity: () => createdAt,
+      frames: () => ({
+        meanAbsDiff: async () => { compared.push('diff'); return 30; },
+        stableTarget: async () => { compared.push('stable'); return true; },
+      }),
+    });
+    await expect(same.adviseGather(4, screen[0]!, 1)).resolves.toBe(true);
+    expect(taps).toEqual([[920, 120]]);
+    expect(compared).toEqual(['stable', 'diff']);
+  });
+
   it('script runs: gated by the advisor and the plan switch; the step\'s own templates are the known screen', async () => {
     const request = {
-      gameId: 'wanlong', runId: 'r1', instanceIndex: 2, scriptId: 's1', templateSetId: 'tset_test', templateDir: SET_DIR,
+      gameId: 'wanlong', runId: 'r1', instanceIndex: 2, instanceIdentity: 'avd-1', scriptId: 's1', templateSetId: 'tset_test', templateDir: SET_DIR,
       stepId: 'step-3', reason: '等不到「确认」按钮', expectTemplateIds: ['tpl_btn_confirm', 'tpl_missing'], signal: new AbortController().signal,
     };
     const service = new AiRecoveryService({ ...deps, planAiAssist: async () => false });
@@ -252,7 +290,7 @@ describe('AiRecoveryService', () => {
     api.queue({ status: 200, body: chatBody(CLOSE) });
     const service = new AiRecoveryService(deps);
     const result = await service.assistScript({
-      gameId: 'wanlong', runId: 'r2', instanceIndex: 2, scriptId: 's1', templateSetId: null, templateDir: null,
+      gameId: 'wanlong', runId: 'r2', instanceIndex: 2, instanceIdentity: 'avd-1', scriptId: 's1', templateSetId: null, templateDir: null,
       stepId: null, reason: '超时', expectTemplateIds: [], signal: new AbortController().signal,
     });
     expect(result).toMatchObject({ handled: false, message: expect.stringContaining('自动处理') });

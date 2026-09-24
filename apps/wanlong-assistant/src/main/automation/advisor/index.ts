@@ -33,6 +33,8 @@ export interface AdvisorOptions {
   log?: (level: AdvisorLogLevel, message: string) => void;
   /** Display name of a game (used by the neutral prompt). */
   gameName?: (gameId: string) => string;
+  /** Test seam: size bound of advisor.json (default 1 MB). */
+  maxFileBytes?: number;
 }
 
 /** Repeat-confirmation lock: the same confirmation on the same instance is clicked at most once per this window. */
@@ -57,7 +59,7 @@ export class AdvisorService {
   private readonly recentConfirmations = new Map<string, number>();
 
   constructor(home: string, private readonly capture: AdvisorCapturePort, private readonly options: AdvisorOptions = {}) {
-    this.store = new AdvisorStore(home);
+    this.store = new AdvisorStore(home, options.maxFileBytes !== undefined ? { maxBytes: options.maxFileBytes } : {});
     // Tolerant like the original init: an unreadable file never takes the page down; the advisor starts off.
     this.ready = this.store.load().catch((error: unknown) => ({
       ...emptyAdvisorFile(),
@@ -96,9 +98,7 @@ export class AdvisorService {
 
   /** Persist the current state (a snapshot at write time); writes are serialized. */
   private persist(state: AdvisorFile): Promise<void> {
-    const next = this.writes.then(() => this.store.save(state), () => this.store.save(state));
-    this.writes = next.then(() => undefined, () => undefined);
-    return next;
+    return this.persistWith(state, {});
   }
 
   async config(): Promise<AdvisorConfigView> { return toAiConfigView((await this.ready).config); }
@@ -132,9 +132,22 @@ export class AdvisorService {
     });
   }
 
-  /** Save a modified copy first, then adopt it: a failed write leaves the old config in effect. */
+  /**
+   * Save a modified copy first, then adopt it: a failed write leaves the old config in effect. The store leaves the
+   * oldest records out when the file would exceed its size bound (a config save never fails because of the history);
+   * those records are dropped from memory too, so the page shows what a restart would.
+   */
   private persistWith(state: AdvisorFile, change: Partial<AdvisorFile>): Promise<void> {
-    const next = this.writes.then(() => this.store.save({ ...state, ...change }), () => this.store.save({ ...state, ...change }));
+    const write = async (): Promise<void> => {
+      const written = { ...state, ...change };
+      const history = written.history;
+      const kept = await this.store.save(written);
+      if (kept >= history.length) return;
+      const dropped = new Set(history.slice(kept));
+      state.history = state.history.filter((item) => !dropped.has(item));
+      this.log('warn', `AI 顾问记录超过文件大小上限，已丢弃最早的 ${dropped.size} 条。`);
+    };
+    const next = this.writes.then(write, write);
     this.writes = next.then(() => undefined, () => undefined);
     return next;
   }
@@ -341,11 +354,12 @@ export class AdvisorService {
   }
 
   /**
-   * Both stages on a frame: stage one (whole frame JPEG), then refine for close / cancel. The box comes back in
-   * `refWidth × refHeight` space. Never throws.
+   * Both stages on a frame: stage one (whole frame JPEG), then — when `refine` — the magnified crop for close / cancel.
+   * The box comes back in `refWidth × refHeight` space. Never throws.
    */
   private async ask(
     config: AdvisorConfig, gameId: string, raw: RawFrame, refWidth: number, refHeight: number, attempt: number | null, recheck: boolean,
+    refine: boolean,
   ): Promise<{ advice: AdvisorAdvice | null; reason: string; outcome: 'failed' | 'unparsable' | null; providerCalls: number; failureKind?: FrameConsultResult['failureKind'] }> {
     const profile = promptProfileOf(gameId);
     let image: Awaited<ReturnType<typeof encodeFrame>>;
@@ -371,7 +385,7 @@ export class AdvisorService {
     let target = value.target ? scaleBox(value.target, image.width, image.height, refWidth, refHeight) : null;
     let refined = false;
     let providerCalls = 1;
-    if (target && config.refine && (value.action === 'tap_close' || value.action === 'tap_cancel')) {
+    if (target && refine && (value.action === 'tap_close' || value.action === 'tap_cancel')) {
       const better = await this.refineBox(config, profile, raw, target, refWidth, refHeight);
       if (better.sent) providerCalls += 1;
       if (better.box) { target = better.box; refined = true; }
@@ -416,7 +430,10 @@ export class AdvisorService {
     const key = input.instanceIndex === null ? null : `${input.gameId}:${input.instanceIndex}`;
     const skip = this.reserve(state, key, input.instanceIndex === null ? '' : `实例 #${input.instanceIndex} `, input.recheck === true);
     if (skip) return { ...base, advice: null, reason: skip, outcome: 'skipped' };
-    const asked = await this.ask(config, input.gameId, input.raw, input.refWidth, input.refHeight, input.attempt, input.recheck === true);
+    // The magnified crop only sharpens a tap and a learnt template: with「自动处理」off an automatic chain only records
+    // the suggestion, so the second request would be paid for nothing.
+    const refine = config.refine && config.autoActions;
+    const asked = await this.ask(config, input.gameId, input.raw, input.refWidth, input.refHeight, input.attempt, input.recheck === true, refine);
     const latencyMs = Math.max(0, this.now() - start);
     if (!asked.advice) {
       return { advice: null, reason: asked.reason, outcome: asked.outcome ?? 'failed', latencyMs, providerCalls: asked.providerCalls, failureKind: asked.failureKind ?? null };
@@ -458,7 +475,7 @@ export class AdvisorService {
       const skip = this.reserve(state, key, `实例 #${target.index} `, false);
       if (skip) return this.record(state, { ...base, outcome: 'skipped', message: skip });
       const frame = capture.frame;
-      const asked = await this.ask(config, target.gameId, frame, frame.width, frame.height, null, false);
+      const asked = await this.ask(config, target.gameId, frame, frame.width, frame.height, null, false, config.refine);
       const latencyMs = Math.max(0, this.now() - start);
       if (!asked.advice) {
         return this.record(state, { ...base, outcome: asked.outcome ?? 'failed', message: asked.reason, latencyMs, providerCalls: asked.providerCalls });

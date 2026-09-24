@@ -272,6 +272,8 @@ describe('EtaScheduler', () => {
     samples.push(async () => panel(2, 5));
     await vi.advanceTimersByTimeAsync(30_000);
     await until(() => !scheduler.getState(1).auto, '人工处理暂停');
+    // Pause first, then the alert (it follows the persisted pause).
+    await until(() => attention.mock.calls.length > 0, '人工处理告警');
     expect(attention).toHaveBeenCalledWith(1, { code: 'GAME_UPDATE_REQUIRED', message: '游戏需要更新' });
     expect(scheduler.getState(1).failureCount).toBe(0);
   });
@@ -285,6 +287,7 @@ describe('EtaScheduler', () => {
     samples.push(async () => panel(2, 5));
     await vi.advanceTimersByTimeAsync(30_000);
     await until(() => !scheduler.getState(1).auto, '人工处理暂停');
+    await until(() => fallback.mock.calls.length > 0, '兜底告警');
     expect(fallback).toHaveBeenCalledWith(1, { code: 'AI_RISK_BLOCKED', message: '确认框风险过高' });
   });
 

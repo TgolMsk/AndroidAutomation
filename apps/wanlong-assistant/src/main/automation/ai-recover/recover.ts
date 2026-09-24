@@ -18,7 +18,7 @@ import type { RawFrame, Rect } from '@avdm/automation';
 import { AI_ACTION_LABEL, AI_SCREEN_LABEL, type AdvisorAdvice, type AdvisorOutcome, type AdvisorScreen } from '../../../shared/ai';
 import { adviceRejection, backNoneNeedsAttention, confidenceFloor, riskRejection } from '../advisor/risk';
 import type { AdvisorNote, FrameConsultInput, FrameConsultResult } from '../advisor/types';
-import { CHANGED_THRESHOLD, meanAbsDiff, stableTarget } from './frame-diff';
+import { CHANGED_THRESHOLD, localFrameComparer, type FrameComparer } from './frame-diff';
 import { harvestCloseButton, type HarvestPort } from './harvest';
 
 /** What the executor needs from the advisor (credentials, quota and records stay in the advisor). */
@@ -65,6 +65,8 @@ export interface RecoverContext {
   closeButtonCovered?: (raw: RawFrame, roi: Rect) => Promise<boolean>;
   /** Where to learn close buttons; null / absent = never learn. */
   harvest?: HarvestPort | null;
+  /** Frame comparisons: the instance's vision worker in the app (off the main thread); absent = this thread. */
+  frames?: FrameComparer;
   log: RecoverLogger;
   /** Waits (tests shorten them). */
   sleep?: (ms: number) => Promise<void>;
@@ -92,6 +94,7 @@ function defaultSleep(ms: number): Promise<void> {
 export async function aiRecoverUnknownScreen(advisor: RecoverAdvisorPort, ctx: RecoverContext): Promise<RecoverResult> {
   const now = ctx.now ?? Date.now;
   const sleep = ctx.sleep ?? defaultSleep;
+  const frames = ctx.frames ?? localFrameComparer;
   const t0 = now();
   let pendingAdvice: AdvisorAdvice | null = null;
   let providerCalls = 0;
@@ -190,11 +193,11 @@ export async function aiRecoverUnknownScreen(advisor: RecoverAdvisorPort, ctx: R
       }
       const latest = await ctx.io.capture();
       ctx.checkAlive?.();
-      if (!advice.target || !(await stableTarget(clickFrame, latest, advice.target, ctx.refWidth, ctx.refHeight))) {
+      if (!advice.target || !(await frames.stableTarget(clickFrame, latest, advice.target, ctx.refWidth, ctx.refHeight))) {
         return finish('rejected', '复核后画面发生变化，本次未点击，重新判断。', advice, null, true);
       }
       clickFrame = latest;
-    } else if (!(await stableTarget(ctx.raw, clickFrame, advice.target, ctx.refWidth, ctx.refHeight))) {
+    } else if (!(await frames.stableTarget(ctx.raw, clickFrame, advice.target, ctx.refWidth, ctx.refHeight))) {
       return finish('rejected', '等待模型回复期间目标发生变化，本次未点击，重新判断。', advice, null, true);
     }
     if (!(await checkForeground())) return finish('rejected', '点击前前台已变化，停止操作。', advice, null, false, true);
@@ -214,7 +217,7 @@ export async function aiRecoverUnknownScreen(advisor: RecoverAdvisorPort, ctx: R
     const after = await ctx.io.capture();
 
     // ── verify ──
-    const diff = await meanAbsDiff(clickFrame, after, ctx.refWidth, ctx.refHeight);
+    const diff = await frames.meanAbsDiff(clickFrame, after, ctx.refWidth, ctx.refHeight);
     const changed = diff >= CHANGED_THRESHOLD;
     let recognized = false;
     if (ctx.recognize) {

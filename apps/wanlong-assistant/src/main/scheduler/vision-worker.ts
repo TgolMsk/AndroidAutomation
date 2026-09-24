@@ -9,7 +9,9 @@ import {
   serializeError, wanlongPlugin, type GamePresence, type GatherTemplates, type SampleIo, type SchedulerTemplates,
   type UnknownScreenAdvisor,
 } from '@avdm/automation/wanlong';
+import { localFrameComparer } from '../automation/ai-recover/frame-diff';
 import { GATHER_PROBE_TEMPLATE_IDS, inspectGatherProbe } from '../automation/gather-probe-guard';
+import { CompiledSetCache } from './compiled-cache';
 import type {
   MainToWorker, VisionJobResult, VisionJobSpec, VisionQuery, VisionQueryResult, VisionRequest, WorkerToMain,
 } from './vision-protocol';
@@ -40,11 +42,11 @@ interface ActiveJob {
   lastFrame: RawFrame | null;
 }
 
-let compiled: CompiledSet | null = null;
-/** A compile in flight, shared by a job and the read-only queries that arrive meanwhile (never compile twice). */
-let compiling: { dir: string; stamp: string; promise: Promise<CompiledSet> } | null = null;
-/** Bumped by `invalidate`: a compile that started before it never becomes the cache. */
-let generation = 0;
+/**
+ * Compiled sets by directory (a few side by side: the instance's own set and a script run's set, so an AI query during
+ * a script never evicts the set the next sample needs); `invalidate` clears it.
+ */
+const compiled = new CompiledSetCache<CompiledSet>();
 let active: ActiveJob | null = null;
 let nextRequestId = 1;
 /** Game-update detectors per template directory (ai module 'update' queries); each caches its own compiled crops. */
@@ -118,18 +120,7 @@ async function templates(templateDir: string, logTo: Logger = compileLog()): Pro
     throw new AppError('TEMPLATE_NOT_FOUND', `模板集目录里找不到 manifest.json，请在「模板」页重新选择或创建模板集：${templateDir}`);
   }
   const stamp = createHash('sha1').update(manifest).digest('hex');
-  if (compiled && compiled.dir === dir && compiled.stamp === stamp) return compiled;
-  if (compiling && compiling.dir === dir && compiling.stamp === stamp) return compiling.promise;
-  const startedGeneration = generation;
-  const promise = compile(dir, stamp, logTo);
-  compiling = { dir, stamp, promise };
-  try {
-    const set = await promise;
-    if (generation === startedGeneration) compiled = set;
-    return set;
-  } finally {
-    if (compiling?.promise === promise) compiling = null;
-  }
+  return compiled.get(dir, stamp, () => compile(dir, stamp, logTo));
 }
 
 async function compile(dir: string, stamp: string, logTo: Logger): Promise<CompiledSet> {
@@ -437,6 +428,11 @@ async function answerUpdate(templateDir: string, frame: RawFrame): Promise<Visio
 
 async function answer(query: VisionQuery): Promise<VisionQueryResult> {
   if (query.kind === 'update') return answerUpdate(query.templateDir, query.frame);
+  if (query.kind === 'frameDiff') {
+    return query.box
+      ? { kind: 'frameDiff', mean: null, stable: await localFrameComparer.stableTarget(query.frame, query.other, query.box, query.refWidth, query.refHeight) }
+      : { kind: 'frameDiff', mean: await localFrameComparer.meanAbsDiff(query.frame, query.other, query.refWidth, query.refHeight), stable: null };
+  }
   const set = await templates(query.templateDir);
   const g = set.gather;
   if (query.kind === 'recognize') {
@@ -485,7 +481,7 @@ async function run(jobId: number, spec: VisionJobSpec): Promise<void> {
 
 port.on('message', (message: MainToWorker) => {
   if (message.type === 'invalidate') {
-    compiled = null; compiling = null; generation++;
+    compiled.clear();
     for (const updater of updaters.values()) updater.invalidate();
     return;
   }

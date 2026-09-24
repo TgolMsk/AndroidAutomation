@@ -146,6 +146,8 @@ export interface ScriptAiRequest {
   gameId: string;
   runId: string;
   instanceIndex: number;
+  /** `record.createdAt` the run was admitted with: the advisor acts for this AVD only. */
+  instanceIdentity: string;
   scriptId: string;
   templateSetId: string | null;
   templateDir: string | null;

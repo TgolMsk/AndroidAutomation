@@ -2,6 +2,10 @@
  * Frame comparisons of the AI executor (original recover.ts `meanAbsDiff` / `stableTarget`). Both use the vision
  * layer's `prepareFrame`: point-sampled grey at the reference size, or sharp's asynchronous resize for other sizes —
  * no OpenCV. Thresholds are the original ones, in reference coordinates.
+ *
+ * ★ In the app these loops (a few million samples per action on 2560×1440 frames) run in the instance's vision worker
+ * (query `frameDiff`, DECISIONS A.6); the executor reaches them through a `FrameComparer`. The local comparer is for
+ * tests and offline checks.
  */
 import { prepareFrame, type RawFrame } from '@avdm/automation';
 import type { AdvisorBox } from '../../../shared/ai';
@@ -46,3 +50,12 @@ export async function stableTarget(a: RawFrame, b: RawFrame, box: AdvisorBox, re
   }
   return n > 0 && sum / n < 3 && changed / n < 0.015;
 }
+
+/** Where the executor's frame comparisons run (the instance's vision worker in the app). */
+export interface FrameComparer {
+  meanAbsDiff(a: RawFrame, b: RawFrame, refWidth: number, refHeight: number): Promise<number>;
+  stableTarget(a: RawFrame, b: RawFrame, box: AdvisorBox, refWidth: number, refHeight: number): Promise<boolean>;
+}
+
+/** In this thread (tests, offline checks, and the vision worker itself). */
+export const localFrameComparer: FrameComparer = { meanAbsDiff, stableTarget };

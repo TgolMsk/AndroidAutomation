@@ -474,6 +474,56 @@ describe('WanlongGatherRunner', () => {
     expect(queries[0].query.frame.width).toBe(frame().width);
   });
 
+  it('tells main-side hooks which AVD the running sample / cycle was admitted with (ai module), and none after', async () => {
+    const seen: Array<string | null> = [];
+    const sampler = runnerWith((message, worker) => {
+      if (message.type === 'job') worker.request({ op: 'unrecognized', args: [frame()] });
+      if (message.type === 'response') {
+        worker.emit('message', { type: 'result', jobId: worker.jobId, result: { kind: 'sample', sample: {
+          sampledAt: Date.now(), queueUsed: 1, queueTotal: 5, rows: [], warnings: [],
+        } } } satisfies WorkerToMain);
+      }
+    });
+    await sampler.sample(1, {
+      templateDir, config: defaultSchedulerConfig(), deadlineAt: Date.now() + 60_000, signal: new AbortController().signal,
+      allowColdStart: false,
+      onUnrecognized: async () => { seen.push(sampler.admittedIdentity(1), sampler.admittedIdentity(2)); return false; },
+    });
+    expect(seen).toEqual([CREATED_AT, null]);
+    expect(sampler.admittedIdentity(1)).toBeNull();
+
+    const gatherer = runnerWith((message, worker) => {
+      if (message.type === 'job') worker.request({ op: 'advise', args: [frame(), 1] });
+      if (message.type === 'response') worker.fail('done', 'CANCELLED');
+    });
+    const advise = vi.fn(async () => { seen.push(gatherer.admittedIdentity(1)); return false; });
+    await expect(gatherer.runOnce(1, options({ advise }))).rejects.toThrow('done');
+    expect(seen).toEqual([CREATED_AT, null, CREATED_AT]);
+    expect(gatherer.admittedIdentity(1)).toBeNull();
+  });
+
+  it('runs the AI executor\'s frame comparisons in the instance worker, both frames sent along', async () => {
+    const created: FakeWorker[] = [];
+    const runner = runnerWith((message, worker) => {
+      if (message.type === 'query' && message.query.kind === 'frameDiff') {
+        const result = message.query.box
+          ? { kind: 'frameDiff' as const, mean: null, stable: true }
+          : { kind: 'frameDiff' as const, mean: 12.5, stable: null };
+        worker.emit('message', { type: 'queryResult', queryId: message.queryId, ok: true, result } satisfies WorkerToMain);
+      }
+    }, created);
+    await expect(runner.frameDiff(2, frame(), frame(), 2560, 1440)).resolves.toBe(12.5);
+    await expect(runner.targetStable(2, frame(), frame(), { x: 10, y: 20, w: 30, h: 40 }, 2560, 1440)).resolves.toBe(true);
+    const queries = created[0].sentOf('query').map((q) => q.query);
+    expect(queries).toHaveLength(2);
+    for (const query of queries) {
+      if (query.kind !== 'frameDiff') throw new Error('expected frameDiff');
+      expect(query.frame.width).toBe(frame().width);
+      expect(query.other.width).toBe(frame().width);
+    }
+    expect(queries[1]).toMatchObject({ box: { x: 10, y: 20, w: 30, h: 40 }, refWidth: 2560, refHeight: 1440 });
+  });
+
   it('refuses a gather result that skipped the probe gate', async () => {
     const runner = runnerWith((message, worker) => { if (message.type === 'job') worker.finish(); });
     await expect(runner.runOnce(1, options())).rejects.toThrow('越过探针门槛');

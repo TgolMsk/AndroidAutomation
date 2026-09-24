@@ -987,11 +987,29 @@ export class EtaScheduler {
    * `onNeedsAttention` hook, the host's fallback alert path (`onAttentionPause`) raises it, so it is never silent.
    */
   private pauseForAttention(index: number, error: unknown): void {
-    const info = { code: codeOf(error), message: messageOf(error) };
+    void this.raiseAttention(index, { code: codeOf(error), message: messageOf(error) });
+  }
+
+  /**
+   * A human must look (GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED) on any chain — a scheduled wake, a manual cycle or
+   * refresh, the re-sample after a dispatch, a script run (original recoverUnknownWithUpdate → alertCenter.raise).
+   * ★ Pause first (awaited and persisted; it aborts the instance's in-flight auto work, whose wake then ends silently
+   * instead of alerting a second time), then raise the alert through `onNeedsAttention` (or the host fallback). An
+   * instance already paused by an alert (auto off and a pause record) is not alerted again. Never throws; safe inside
+   * the instance lock (`setAuto(false)` never takes it).
+   */
+  async raiseAttention(index: number, info: { code: string; message: string }): Promise<void> {
+    let alreadyPaused = false;
+    try { alreadyPaused = !this.isAuto(index) && Boolean(this.hooks.pauseOf?.(index)); } catch { alreadyPaused = false; }
+    try { await this.setAuto(index, false, `需要人工处理：${info.message}`); }
+    catch (error) { this.log('warn', `实例 #${index} 需要人工处理，但没能关闭自动调度：${messageOf(error)}`); }
+    if (alreadyPaused) {
+      this.log('info', `实例 #${index} 已处于暂停状态，本次不重复告警：${info.message}`);
+      return;
+    }
     const hook = this.hooks.onNeedsAttention;
     if (hook) this.emit(() => hook(index, info));
     else this.emit(() => this.options.onAttentionPause?.(index, info));
-    void this.setAuto(index, false, `需要人工处理：${info.message}`).catch(() => undefined);
   }
 
   /**

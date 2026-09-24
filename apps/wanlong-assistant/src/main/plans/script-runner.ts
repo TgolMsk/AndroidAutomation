@@ -525,7 +525,8 @@ export class ScriptRunner {
     try {
       return await Promise.race([
         assist({
-          gameId: options.gameId, runId: options.runId, instanceIndex: options.instanceIndex, scriptId: options.script.id,
+          gameId: options.gameId, runId: options.runId, instanceIndex: options.instanceIndex, instanceIdentity: options.instanceIdentity,
+          scriptId: options.script.id,
           templateSetId: options.script.templateSetId ?? null, templateDir: options.templateDir,
           stepId: message.stepId, reason: message.reason, expectTemplateIds: message.expectTemplateIds, signal,
         }),

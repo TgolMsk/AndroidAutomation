@@ -109,6 +109,8 @@ automation.eta.setHooks({
   onAutoChanged: (index, enabled, at, reason) => stats.record(...),        // ★ 暂停 / 恢复事件的唯一来源（只在真的翻转时）
   onNeedsAttention: (index, { code, message }) => alerts.raise(...),       // GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED，已暂停
                                                                             // （没人接时走 AutomationHostHooks.onNeedsAttention → insights 兜底告警）
+                                                                            // 其它链路（AI 在手动一轮 / 刷新 / 派兵后校准 / 脚本里）调
+                                                                            // eta.raiseAttention(index, info)：先暂停（落盘）再走同一出口
   pauseOf: (index) => alerts.pauseInfo(index),                             // 队列视图里的暂停原因（记录一变告警模块就调 refreshView(i) 重发）
   log: (level, message) => { ... },
 });
@@ -167,9 +169,15 @@ automation.setHooks({
 - `matchTemplatesIn(i, templateDir, raw, templateIds, options)`：同上，但用指定的模板集目录（AI 模块的脚本链路）。
 - `checkGameUpdate(i, templateDir, raw, signal?)`：游戏资源更新弹窗 / 下载进度的判定（查询 `update`，由工作线程里的
   `GameUpdateRecovery` 回答；缺更新模板时回答「没有更新」）。AI 模块据此在主进程驱动更新处理，主线程不跑 OpenCV。
+- `frameDiff(i, a, b, refW, refH, signal?)` / `targetStable(i, a, b, box, refW, refH, signal?)`：AI 执行器的画面比较
+  （查询 `frameDiff`，两帧一起送过去；点采样灰度循环在 worker 里跑，不占主线程）。
+- `admittedIdentity(i)`：该实例上正在跑的采样 / 采集作业开跑时核对过的实例身份（`record.createdAt`），没有作业时为 null；
+  作业等待钩子时（AI 恢复）主进程侧只为这台 AVD 动手。
 
 ★ 它们是「查询」而不是「作业」：正在跑的采样 / 采集作业等待钩子（`onUnrecognizedFrame`、`adviseUnknownScreen`、`probeKicked`）时，
 同一个 worker 照样回答（作业此时停在 await 上），而再开一个作业只会得到 `CONCURRENCY_LIMIT`。作业与同时到达的查询共用一次编译。
+worker 按目录缓存最多 3 套编译好的模板集（`compiled-cache.ts`，最久未用的先出），所以脚本执行期间 AI 用脚本模板集查询时，
+不会把实例自己那套挤掉、让下一次采样重编。
 `invalidateTemplates()`：让所有 worker 丢弃编译缓存。经宿主保存 / 删除 / 导入的模板（包括 AI 自学用的 `saveTemplateToSet`）已经
 通过 `onTemplatesChanged` 自动调用；绕过宿主写模板的代码才需要手动调它（manifest 指纹比对是最后的兜底）。
 

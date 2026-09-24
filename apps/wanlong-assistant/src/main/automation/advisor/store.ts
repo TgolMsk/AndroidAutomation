@@ -10,7 +10,9 @@ import {
 import { adviceRejection, parseAdvice } from './risk';
 
 export const ADVISOR_HISTORY_LIMIT = AI_HISTORY_LIMIT;
-const MAX_FILE_BYTES = 256 * 1024;
+/** Upper bound of advisor.json: 50 records at every per-field cap need about 600 KB pretty-printed. */
+export const ADVISOR_FILE_MAX_BYTES = 1024 * 1024;
+const MAX_CONSULT_KEYS = 256;
 const TEMPLATE_ID = /^[A-Za-z0-9_.-]{1,128}$/;
 
 export interface AdvisorFile {
@@ -32,6 +34,36 @@ export {
 
 export function emptyAdvisorFile(): AdvisorFile {
   return { version: 1, config: defaultAiConfig(), history: [], calls: [], lastConsultAt: {}, totalConsults: 0 };
+}
+
+/** The newest cooldown stamps only (the keys are `game:index`, so this bound is never reached in practice). */
+function recentConsultStamps(stamps: Record<string, number>): Record<string, number> {
+  const entries = Object.entries(stamps);
+  if (entries.length <= MAX_CONSULT_KEYS) return stamps;
+  return Object.fromEntries(entries.sort((a, b) => b[1] - a[1]).slice(0, MAX_CONSULT_KEYS));
+}
+
+/**
+ * The file text, fitted under `maxBytes` by dropping the oldest records: saving the config (the master switch, the
+ * key) must never depend on how large the history has grown. `kept` = records written (newest first).
+ */
+export function advisorPayload(data: AdvisorFile, maxBytes = ADVISOR_FILE_MAX_BYTES): { payload: string; kept: number } {
+  const render = (history: AdvisorRecord[]): string => `${JSON.stringify({
+    version: 1, config: data.config, history,
+    calls: data.calls.slice(-500), lastConsultAt: recentConsultStamps(data.lastConsultAt), totalConsults: data.totalConsults,
+  }, null, 2)}\n`;
+  let history = data.history.slice(0, ADVISOR_HISTORY_LIMIT);
+  let payload = render(history);
+  while (Buffer.byteLength(payload) > maxBytes && history.length > 0) {
+    // Records are similar in size: drop the estimated overflow at once (at least one), then re-check.
+    const size = Buffer.byteLength(payload);
+    const perRecord = size / (history.length + 1);
+    const drop = Math.max(1, Math.ceil((size - maxBytes) / perRecord));
+    history = history.slice(0, Math.max(0, history.length - drop));
+    payload = render(history);
+  }
+  if (Buffer.byteLength(payload) > maxBytes) throw new Error('AI 顾问配置超过文件大小限制，无法保存。');
+  return { payload, kept: history.length };
 }
 
 function safeText(value: unknown, length: number, config: AdvisorConfig): string {
@@ -117,16 +149,20 @@ export function safeRecord(value: unknown, config: AdvisorConfig): AdvisorRecord
 class CorruptAdvisorFile extends Error {}
 
 /**
- * `~/.avdm/automation/advisor.json` (0600, atomic write under a cross-process file lock, ≤ 256 KB). Reading is
+ * `~/.avdm/automation/advisor.json` (0600, atomic write under a cross-process file lock, ≤ 1 MB: the oldest records
+ * are dropped to fit, so a config save always succeeds). Reading is
  * tolerant like the original `ai.json` loader: a missing file means defaults; a corrupt, oversized or incompatible
  * file is renamed to `advisor.json.corrupt-<time>` as evidence and the advisor starts from defaults (switched off),
  * with a warning for the status line and the log. Error messages carry the path only, never the content.
  */
 export class AdvisorStore {
   readonly file: string;
-  constructor(home: string) {
+  private readonly maxBytes: number;
+  /** @param options.maxBytes test seam for the file size bound. */
+  constructor(home: string, options: { maxBytes?: number } = {}) {
     if (!path.isAbsolute(home)) throw new Error('AI 顾问数据目录必须是绝对路径');
     this.file = path.join(home, 'automation', 'advisor.json');
+    this.maxBytes = options.maxBytes ?? ADVISOR_FILE_MAX_BYTES;
   }
 
   async load(): Promise<AdvisorFile> {
@@ -152,7 +188,7 @@ export class AdvisorStore {
   private async read(): Promise<AdvisorFile> {
     let text: string;
     try {
-      if ((await stat(this.file)).size > MAX_FILE_BYTES) throw new CorruptAdvisorFile('超过 256 KB');
+      if ((await stat(this.file)).size > this.maxBytes) throw new CorruptAdvisorFile(`超过 ${Math.round(this.maxBytes / 1024)} KB`);
       text = await readFile(this.file, 'utf8');
     } catch (error) {
       if (error instanceof CorruptAdvisorFile) throw error;
@@ -175,19 +211,19 @@ export class AdvisorStore {
       history,
       calls: Array.isArray(raw['calls']) ? raw['calls'].filter((at): at is number => typeof at === 'number' && Number.isFinite(at)).slice(-500) : [],
       lastConsultAt: raw['lastConsultAt'] && typeof raw['lastConsultAt'] === 'object' && !Array.isArray(raw['lastConsultAt'])
-        ? Object.fromEntries(Object.entries(raw['lastConsultAt']).filter(([key, at]) =>
-          /^[a-z][a-z0-9-]{0,63}:[0-9]{1,2}$/.test(key) && typeof at === 'number' && Number.isFinite(at))) : {},
+        ? recentConsultStamps(Object.fromEntries(Object.entries(raw['lastConsultAt']).filter(([key, at]) =>
+          /^[a-z][a-z0-9-]{0,63}:[0-9]{1,2}$/.test(key) && typeof at === 'number' && Number.isFinite(at)))) : {},
       totalConsults: typeof raw['totalConsults'] === 'number' && Number.isInteger(raw['totalConsults']) && raw['totalConsults'] >= 0
         ? raw['totalConsults'] : history.filter((item) => item.context !== 'vision-test' && item.providerCalls > 0).length,
     };
   }
 
-  async save(data: AdvisorFile): Promise<void> {
-    const payload = `${JSON.stringify({
-      version: 1, config: data.config, history: data.history.slice(0, ADVISOR_HISTORY_LIMIT),
-      calls: data.calls.slice(-500), lastConsultAt: data.lastConsultAt, totalConsults: data.totalConsults,
-    }, null, 2)}\n`;
-    if (Buffer.byteLength(payload) > MAX_FILE_BYTES) throw new Error('AI 顾问记录达到文件大小限制。');
+  /**
+   * Atomic write. When the history does not fit the size bound the oldest records are left out of the file.
+   * @returns how many history records were written (newest first)
+   */
+  async save(data: AdvisorFile): Promise<number> {
+    const { payload, kept } = advisorPayload(data, this.maxBytes);
     const folder = path.dirname(this.file);
     await mkdir(folder, { recursive: true, mode: 0o700 });
     await withFileLock(`${this.file}.lock`, async () => {
@@ -203,6 +239,7 @@ export class AdvisorStore {
         throw new Error(`无法保存本机 AI 顾问配置或记录：${this.file}`);
       }
     });
+    return kept;
   }
 }
 

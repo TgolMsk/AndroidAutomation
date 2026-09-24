@@ -272,6 +272,8 @@ function stepOf(error: unknown): unknown {
 export class WanlongGatherRunner {
   readonly locks: InstanceLocks;
   private readonly active = new Map<number, ActiveRun>();
+  /** `record.createdAt` each running sample / cycle was admitted with (main-side hooks act for that AVD only). */
+  private readonly admitted = new Map<number, string>();
   private readonly store: GatherRuntimeStore;
   private readonly pool: VisionWorkerPool;
   private readonly lane: DeviceLaneRun | undefined;
@@ -284,6 +286,18 @@ export class WanlongGatherRunner {
   }
 
   isRunning(index: number): boolean { return this.active.has(index); }
+
+  /**
+   * The instance identity (`record.createdAt`) the sample or cycle running on `index` was admitted with, or null when
+   * none runs. Main-side hooks that act while the job waits on them (AI recovery) must act for this AVD only.
+   */
+  admittedIdentity(index: number): string | null { return this.admitted.get(index) ?? null; }
+
+  private async admittedRun<T>(index: number, createdAt: string, work: () => Promise<T>): Promise<T> {
+    this.admitted.set(index, createdAt);
+    try { return await work(); }
+    finally { if (this.admitted.get(index) === createdAt) this.admitted.delete(index); }
+  }
 
   /** Drop compiled templates in every worker (the manifest stamp check covers normal template-library edits). */
   invalidateTemplates(): void { this.pool.invalidate(); }
@@ -302,7 +316,9 @@ export class WanlongGatherRunner {
     const onExternalAbort = () => controller.abort(options.signal?.reason ?? new Error('采集已取消'));
     if (options.signal?.aborted) onExternalAbort();
     else options.signal?.addEventListener('abort', onExternalAbort, { once: true });
-    return this.locks.run(index, '运行采集', () => this.execute(index, options, controller.signal, timeoutMs), { signal: controller.signal })
+    // The admitted identity is dropped inside the lock, so a job that takes the lock next never sees it.
+    return this.locks.run(index, '运行采集', () => this.execute(index, options, controller.signal, timeoutMs)
+      .finally(() => this.admitted.delete(index)), { signal: controller.signal })
       .finally(() => {
         options.signal?.removeEventListener('abort', onExternalAbort);
         this.active.delete(index);
@@ -334,7 +350,7 @@ export class WanlongGatherRunner {
       };
       const { device, createdAt, templateDir } = await this.prepare(index, options.templateDir, options.signal, onDeviceError);
       const timeoutMs = Math.max(1000, options.deadlineAt - Date.now()) + SAMPLE_TIMEOUT_EXTRA_MS;
-      const result = await this.pool.run(index, {
+      const result = await this.admittedRun(index, createdAt, () => this.pool.run(index, {
         kind: 'sample', instanceIndex: index, templateDir, config: options.config, deadlineAt: options.deadlineAt,
         allowColdStart: options.allowColdStart,
       }, {
@@ -343,7 +359,7 @@ export class WanlongGatherRunner {
         ...(options.onFrame ? { onFrame: options.onFrame } : {}),
         ...(options.onCaptureFailed ? { onCaptureFailed: options.onCaptureFailed } : {}),
         ...(options.onUnrecognized ? { onUnrecognized: options.onUnrecognized } : {}),
-      });
+      }));
       if (result.kind !== 'sample') throw new SchedulerError('UNKNOWN', '视觉工作线程返回了错误的结果类型');
       return result.sample;
     }, { signal: options.signal });
@@ -412,6 +428,22 @@ export class WanlongGatherRunner {
     return { target: result.target, downloading: result.downloading, progress: result.progress };
   }
 
+  /** AI executor: shrink-4 mean absolute grey difference of two frames, computed in the instance's worker. */
+  async frameDiff(index: number, a: RawFrame, b: RawFrame, refWidth: number, refHeight: number, signal?: AbortSignal): Promise<number> {
+    assertIndex(index);
+    const result = await this.pool.query(index, { kind: 'frameDiff', frame: a, other: b, refWidth, refHeight }, signal);
+    if (result.kind !== 'frameDiff' || result.mean === null) throw new SchedulerError('UNKNOWN', '视觉工作线程返回了错误的结果类型');
+    return result.mean;
+  }
+
+  /** AI executor: whether a box (reference coordinates) and its surroundings stayed put between two frames. */
+  async targetStable(index: number, a: RawFrame, b: RawFrame, box: { x: number; y: number; w: number; h: number }, refWidth: number, refHeight: number, signal?: AbortSignal): Promise<boolean> {
+    assertIndex(index);
+    const result = await this.pool.query(index, { kind: 'frameDiff', frame: a, other: b, refWidth, refHeight, box: { ...box } }, signal);
+    if (result.kind !== 'frameDiff' || result.stable === null) throw new SchedulerError('UNKNOWN', '视觉工作线程返回了错误的结果类型');
+    return result.stable;
+  }
+
   private async prepare(
     index: number, templateDir: string, signal: AbortSignal, onDeviceError?: (error: unknown) => void,
   ): Promise<{ device: GatherAdbDevice; createdAt: string; templateDir: string }> {
@@ -464,6 +496,7 @@ export class WanlongGatherRunner {
     if (!config.enabled) throw new Error('自动采集未启用');
     const allowColdStart = options.allowColdStart ?? true;
     const { device, createdAt, templateDir } = await this.prepare(index, options.templateDir, signal);
+    this.admitted.set(index, createdAt);
     if (!allowColdStart) {
       const foreground = await device.foregroundPackage();
       if (foreground !== wanlongPlugin.packageName) throw new Error(`万龙觉醒未处于前台（当前：${foreground ?? '未知'}）`);

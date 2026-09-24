@@ -56,13 +56,21 @@ export type VisionQuery =
    * Game-update verdict (ai module): the game-data `GameUpdateRecovery` of `templateDir` answers detect / progress for
    * a frame, so main can drive the update handling (tap, wait) without running OpenCV itself.
    */
-  | { kind: 'update'; templateDir: string; frame: RawFrame };
+  | { kind: 'update'; templateDir: string; frame: RawFrame }
+  /**
+   * AI executor frame comparisons (ai module; point-sampled grey, no templates), kept off the main thread: without
+   * `box` the shrink-4 mean absolute difference of `frame` and `other`, with `box` (reference coordinates) whether the
+   * button and its surroundings stayed put.
+   */
+  | { kind: 'frameDiff'; frame: RawFrame; other: RawFrame; refWidth: number; refHeight: number; box?: { x: number; y: number; w: number; h: number } };
 
 export type VisionQueryResult =
   | { kind: 'recognize'; recognized: boolean }
   | { kind: 'match'; matches: MatchResult[] }
   /** Confirm button (2560×1440 reference) when the calibrated update prompt is shown; progress texts. */
-  | { kind: 'update'; target: { x: number; y: number } | null; downloading: boolean; progress: boolean };
+  | { kind: 'update'; target: { x: number; y: number } | null; downloading: boolean; progress: boolean }
+  /** `mean` without a box, `stable` with one (the other field is null). */
+  | { kind: 'frameDiff'; mean: number | null; stable: boolean | null };
 
 export type VisionRequest =
   | { op: 'capture'; args: [] }
