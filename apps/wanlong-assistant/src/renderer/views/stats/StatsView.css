@@ -1,0 +1,324 @@
+/* 数据统计 page (original features/stats/stats.css, prefix `wls-` → `stats-`). Design tokens only. */
+
+.stats-page {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+  padding-bottom: 24px;
+}
+
+.stats-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stats-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.stats-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Date switcher: ← 2026-09-09 → 今天 */
+.stats-datenav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+}
+
+.stats-datenav-key {
+  min-width: 108px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.stats-datenav-key.is-today {
+  color: var(--accent);
+}
+
+.stats-flip svg {
+  transform: scaleX(-1);
+}
+
+.stats-page .notice {
+  margin-bottom: 0;
+}
+
+.stats-page .notice p {
+  margin: 2px 0 0;
+}
+
+/* Two columns: by resource / by instance (one column on narrow windows). */
+.stats-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 14px;
+  min-width: 0;
+}
+
+/* ── by resource: one row per resource with a share bar ── */
+
+.stats-res-list {
+  display: grid;
+  gap: 12px;
+}
+
+.stats-res-row {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+}
+
+.stats-res-main {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.stats-res-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.stats-res-name {
+  color: var(--text);
+  font-weight: 560;
+}
+
+.stats-res-meta {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.stats-res-amount {
+  justify-self: end;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.stats-res-amount.is-accent {
+  color: var(--accent);
+}
+
+.stats-res-amount.is-zero {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+.stats-bar {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-2);
+}
+
+.stats-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width var(--motion-standard) var(--ease-out);
+}
+
+/* ── tables ── */
+
+.stats-table-scroll {
+  overflow-x: auto;
+}
+
+.stats-table td,
+.stats-table th {
+  vertical-align: middle;
+}
+
+.stats-table-wide {
+  min-width: 900px;
+}
+
+.stats-right {
+  text-align: right !important;
+}
+
+.stats-instance {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.stats-instance-cell {
+  vertical-align: top !important;
+  border-right: 1px solid var(--border);
+}
+
+.stats-stack {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+
+.stats-mono {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-num {
+  display: inline-block;
+  min-width: 2.5em;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* 「失败 / 熔断」 pairs: the two numbers sit next to the slash. */
+.stats-pair .stats-num {
+  min-width: 0;
+}
+
+.stats-micro {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.stats-dim {
+  color: var(--text-faint);
+}
+
+.stats-danger {
+  color: var(--red);
+}
+
+.stats-warning {
+  color: var(--amber);
+}
+
+.stats-accent {
+  color: var(--accent);
+}
+
+.stats-delta-up {
+  color: var(--green);
+}
+
+.stats-delta-down {
+  color: var(--red);
+}
+
+.stats-row-clickable {
+  cursor: pointer;
+}
+
+.stats-row-clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ── snapshots ── */
+
+.stats-snap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.stats-snap-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.stats-snap-select select {
+  min-width: 180px;
+  max-width: 260px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.stats-snap-hint {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.stats-snapshots,
+.stats-subsection {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.stats-subtitle {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.stats-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── empty states ── */
+
+.stats-empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.stats-empty-title {
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+.stats-empty-desc {
+  max-width: 520px;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stats-bar-fill {
+    transition: none;
+  }
+}

@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { AppError, canonicalDirectory, TemplateLibrary, type MatchResult, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
 import {
   cycleFactOf, normalizeGatherConfig, startupFailureFact, type DispatchRecord, type GatherCycleFact,
-  type GatherCycleResult, type KickedProbeResult, type PanelSample, type ShotPolicy,
+  type GatherCycleResult, type KickedProbeResult, type PanelSample, type ResourceSnapshot, type ShotPolicy,
 } from '@avdm/automation/wanlong';
 import { coerceGatherConfig, describeBlockingIssues, validateGatherConfigInput } from '@avdm/automation/wanlong/pure';
 import type { AutomationGameSummary, AutomationProbeReport, AutomationRun, AutomationSchedule, AutomationSettings, TemplateAlphaPreview, TemplateCapture, TemplateCoverage, TemplateImportResult, TemplatesChange, TemplateTestOptions, TemplateTestResult } from '../../shared/ipc';
@@ -61,8 +61,14 @@ function isRun(value: unknown): value is AutomationRun {
 }
 
 type GatherRunnerPort = Pick<WanlongGatherRunner, 'runOnce' | 'stop' | 'dispose' | 'isRunning'> &
-  Partial<Pick<WanlongGatherRunner, 'sample' | 'healthFrame' | 'invalidateTemplates' | 'recognize' | 'match' | 'updateCheck'>> &
+  Partial<Pick<WanlongGatherRunner, 'sample' | 'healthFrame' | 'invalidateTemplates' | 'recognize' | 'match' | 'updateCheck' | 'readResources'>> &
   Partial<Pick<WanlongGatherRunner, 'frameDiff' | 'targetStable' | 'admittedIdentity'>>;
+
+/** Extra run observers (statistics next to alerts); see `AutomationHost.observe`. */
+export type AutomationRunObserver = Pick<AutomationHostHooks, 'onCycleResult' | 'onDispatched'>;
+
+/** A resource read waits this long for a short holder of the instance (a health probe) before calling it busy. */
+const RESOURCE_READ_LOCK_WAIT_MS = 5_000;
 
 /** A future durable scheduler may consume a completed cycle and return only a wake it actually stored. */
 export type CycleCompletionSink = (run: AutomationRun, result: GatherCycleResult) => Promise<number | null>;
@@ -186,6 +192,7 @@ export class AutomationHost {
   private readonly deviceLane: DeviceLaneRun | undefined;
   private ports: AutomationHostPorts = {};
   private hooks: AutomationHostHooks;
+  private readonly observers = new Set<AutomationRunObserver>();
   private readonly workers = new Set<Worker>();
   private readonly runHistory = new Map<string, AutomationRun>();
   private readonly activeRuns = new Map<string, ActiveAutomationRun>();
@@ -279,6 +286,45 @@ export class AutomationHost {
    */
   setHooks(hooks: Partial<AutomationHostHooks>): void {
     this.hooks = { ...this.hooks, ...hooks };
+  }
+
+  /**
+   * Add run observers next to the primary hooks (statistics next to alerts, which own `onCycleResult`): called
+   * after them with the same arguments, each isolated (a throwing observer is logged). Returns the removal.
+   */
+  observe(observer: AutomationRunObserver): () => void {
+    this.observers.add(observer);
+    return () => { this.observers.delete(observer); };
+  }
+
+  /**
+   * Read the in-game resource table (道具 → 资源统计) of one instance inside the instance lock (`eta.exclusive`, the
+   * lock samples and cycles use; refused while a script or login holds the instance). A read never queues behind a
+   * long sample or cycle: after a short wait it answers CONCURRENCY_LIMIT (busy, retry later — not a failure).
+   * Failure scenes follow the app settings' shot policy. Never cold-starts the game.
+   */
+  async readResourceStats(index: number, options: { signal?: AbortSignal } = {}): Promise<ResourceSnapshot> {
+    const i = asIndex(index);
+    if (!this.gatherRunner.readResources) throw new SchedulerError('UNKNOWN', '采集运行器不支持读取资源统计');
+    const settings = await this.store.get(GATHER_GAME_ID, i);
+    if (!settings.templateDir) throw new SchedulerError('TEMPLATE_NOT_FOUND', '请先在「模板」页为该实例选择模板集，再读资源统计');
+    const templateDir = settings.templateDir;
+    if (this.locks.busy(i) && !this.locks.held(i)) {
+      await Promise.race([this.locks.drain(i), new Promise((resolve) => setTimeout(resolve, RESOURCE_READ_LOCK_WAIT_MS).unref?.())]);
+      if (this.locks.busy(i)) {
+        const holder = this.locks.holder(i);
+        throw new SchedulerError('CONCURRENCY_LIMIT', `实例 #${i} 正在${holder ?? '执行其他操作'}，读资源统计稍后再试。`, { instanceIndex: i });
+      }
+    }
+    let shotPolicy: ShotPolicy | undefined;
+    try { shotPolicy = this.hooks.shotPolicy?.(); } catch { shotPolicy = undefined; }
+    return this.eta.exclusive(i, '读资源统计', ({ signal }) => this.gatherRunner.readResources!(i, {
+      templateDir,
+      signal,
+      ...(shotPolicy ? { shotPolicy } : {}),
+      saveShot: (label, raw) => this.shots.save(i, label, raw),
+      log: (level, message) => this.logLine(level, `[实例 #${i}][资源统计] ${message}`),
+    }), options.signal);
   }
 
   games(): AutomationGameSummary[] {
@@ -884,6 +930,10 @@ export class AutomationHost {
     if (fact.outcome === 'cancelled') return;
     try { await this.hooks.onCycleResult?.(index, fact, source); }
     catch (error) { this.logLine('warn', `[实例 #${index}] 异常检测模块处理本轮结果时出错：${messageOf(error)}`); }
+    for (const observer of [...this.observers]) {
+      try { await observer.onCycleResult?.(index, fact, source); }
+      catch (error) { this.logLine('warn', `[实例 #${index}] 本轮结果的观察者出错：${messageOf(error)}`); }
+    }
   }
 
   private async instanceIdentity(index: number): Promise<{ status: string; createdAt: string } | null> {
@@ -1194,8 +1244,13 @@ export class AutomationHost {
     // ★ Facts go out before a failed scheduled cycle throws (gatherForScheduler awaits this `done`).
     await this.reportFact(index, fact, source);
     if (result.dispatched.length > 0) {
-      try { await this.hooks.onDispatched?.(index, result.dispatched, Date.now()); }
+      const dispatchedAt = Date.now();
+      try { await this.hooks.onDispatched?.(index, result.dispatched, dispatchedAt); }
       catch (error) { this.logLine('warn', `[实例 #${index}] 派兵统计无法保存：${messageOf(error)}`); }
+      for (const observer of [...this.observers]) {
+        try { await observer.onDispatched?.(index, result.dispatched, dispatchedAt); }
+        catch (error) { this.logLine('warn', `[实例 #${index}] 派兵统计无法保存：${messageOf(error)}`); }
+      }
       if (source === 'manual') {
         // A manual cycle still teaches the queue view what the new marches gather; the next sample reads the timers.
         await this.eta.noteDispatches(index, result.dispatched.map((record) => ({

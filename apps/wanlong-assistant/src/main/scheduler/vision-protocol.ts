@@ -1,7 +1,8 @@
 /** Messages between the main process and the long-lived per-instance vision worker. Types only. */
 import type { AndroidKey, MatchResult, ProbeReport, RawFrame } from '@avdm/automation';
 import type {
-  GatherConfig, GatherCycleResult, GatherRuntimeState, PanelSample, SchedulerConfig, SerializedError, ShotPolicy,
+  GatherConfig, GatherCycleResult, GatherRuntimeState, PanelSample, ResourceSnapshot, SchedulerConfig, SerializedError,
+  ShotPolicy,
 } from '@avdm/automation/wanlong';
 
 /** Whitelisted pre-approval taps (see troopPanel.ts SampleTapIntent). */
@@ -28,11 +29,18 @@ export type VisionJobSpec =
     shotPolicy: ShotPolicy;
     /** Whether main offers the unknown-screen advisor (AI / update handling) at G0. */
     advisor: boolean;
+  }
+  | {
+    /** Read the in-game resource table (道具 → 资源统计) and go back; no input unless on the main screen. */
+    kind: 'resources';
+    instanceIndex: number;
+    templateDir: string;
   };
 
 export type VisionJobResult =
   | { kind: 'sample'; sample: PanelSample }
-  | { kind: 'gather'; result: GatherCycleResult };
+  | { kind: 'gather'; result: GatherCycleResult }
+  | { kind: 'resources'; snapshot: ResourceSnapshot };
 
 /**
  * Read-only questions about a frame main already holds (AI click verification, kicked probe, freeze recovery). The

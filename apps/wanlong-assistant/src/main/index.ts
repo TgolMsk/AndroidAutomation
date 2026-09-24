@@ -31,6 +31,8 @@ import { AlertsService, createAvdFreezeRecoveryIo, KICKED_TEMPLATE_IDS, ledgerAl
 import { ReadOnlyTelegramBot } from './monitoring';
 import { ShotStore } from './scheduler/shots';
 import { PlanService, ScriptRunner } from './plans';
+import { ResourcesService } from './resources/service';
+import { StatsService, alertRaisedEvent, autoChangedEvent, cycleFailedEvent, dispatchEvents, tripEvents } from './stats';
 import { updateBusyCheck, updateLog, UpdateService } from './update';
 import { electronUpdateDeps } from './update/electron-deps';
 
@@ -389,6 +391,48 @@ bootstrapApp({
       log: updateLogLine,
     }), { autoCheck: !process.env['AVDM_SCREENSHOT_PATH'], log: updateLogLine });
 
+    // ── stats / resources (daily statistics by Beijing date, resource-table reads; see src/main/stats/README.md) ──
+    const statsLog = appLog.scoped('stats');
+    const stats = new StatsService(home, {
+      // Facts carry the AVD identity and the account bound to that exact AVD (a recreated instance inherits nothing).
+      instanceInfo: async (index) => {
+        let createdAt: string | null = null;
+        try { createdAt = (await (await services.host.get()).getState(index)).record.createdAt; } catch { createdAt = null; }
+        if (!createdAt) return { createdAt: null, accountName: null };
+        const account = (await accounts.list('wanlong')).find((item) =>
+          item.binding?.index === index && item.binding.instanceCreatedAt === createdAt);
+        return { createdAt, accountName: account?.name ?? null };
+      },
+      snapshotNow: (index) => resources.read(index),
+      onToday: (day) => broadcast('stats-today', day),
+      onSnapshot: (push) => broadcast('stats-snapshot', push),
+      log: (level, message) => statsLog[level](message),
+    });
+    const resources: ResourcesService = new ResourcesService('wanlong', {
+      // Vision worker job inside `eta.exclusive` (the instance lock of samples and cycles); busy → retry later.
+      read: (index) => automation.readResourceStats(index),
+      record: (snapshot) => stats.recordSnapshot(snapshot),
+      onReading: (index, reading) => broadcast('resources-reading', { gameId: 'wanlong', index, reading }),
+      log: (level, message) => statsLog[level](message),
+    });
+    // Dispatches and failed cycles are observed next to the alerts module's own `onCycleResult`; trips and pauses come
+    // from the ETA scheduler (★ onAutoChanged is the only source of pause/resume facts); alerts are counted when an
+    // alert conclusion is stored (never the per-run「运行失败」notice).
+    automation.observe({
+      onDispatched: (index, records, at) => { for (const event of dispatchEvents(index, records, at)) stats.record(event); },
+      onCycleResult: async (index, fact) => {
+        const event = cycleFailedEvent(index, fact, Date.now());
+        if (event) stats.record(event);
+      },
+    });
+    automation.eta.setHooks({
+      onMarchGone: (index, gone, at) => { for (const event of tripEvents(index, gone, at)) stats.record(event); },
+      onAutoChanged: (index, enabled, at, reason) => stats.record(autoChangedEvent(index, enabled, at, reason)),
+    });
+    insights.onAlertStored((alert) => {
+      if (alert.gameId === 'wanlong' && alert.kind !== 'runFailed') stats.record(alertRaisedEvent(alert.index, alert.kind, alert.at));
+    });
+
     // ── ipc ── (one service per line: a ported module appends its own line)
     registerWanlongIpcHandlers({
       automation,
@@ -417,6 +461,8 @@ bootstrapApp({
         },
       }),
       updateCenter: updates.center,
+      stats,
+      resources,
       windows: services.windows,
     });
 
@@ -428,6 +474,7 @@ bootstrapApp({
             name: '模拟器日志记录', impact: '模拟器管理器的警告不会写入助手日志文件',
             run: async () => (await services.host.get()).on('log', (entry) => appLog.record(entry.level, 'emulator', entry.message, undefined, entry.index)),
           },
+          { name: '数据统计', impact: '数据统计页没有数据，派兵与暂停不会记账', run: () => stats.start() },
           // Alerts first (original order): a wake re-armed by the scheduler may raise an alert right away.
           { name: '异常告警', impact: '掉线、顶号与卡死不会自动暂停或推送', run: async () => { await Promise.all([alerts.hub.ready, alerts.center.ready]); } },
           { name: '自动续跑调度', impact: '自动采集不会续跑', run: () => automation.restoreSchedules() },
@@ -453,6 +500,7 @@ bootstrapApp({
           { name: '登录检查', run: () => homeVerifier.dispose() },
           { name: '自动化运行', run: () => automation.dispose() },
           { name: '运行统计', run: () => insights.dispose() },
+          { name: '数据统计', run: () => stats.stop() },
           { name: '设备通道', run: () => deviceLanes.dispose() },
           {
             name: '运行日志',

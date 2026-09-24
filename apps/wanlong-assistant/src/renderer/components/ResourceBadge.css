@@ -1,0 +1,33 @@
+/* Resource badge: a glyph on the resource's series colour. Tokens only. */
+
+.resource-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid currentColor;
+  border-radius: 7px;
+  font-weight: 650;
+  line-height: 1;
+  user-select: none;
+}
+
+.resource-badge.is-gold {
+  background: var(--amber-bg);
+  color: var(--amber);
+}
+
+.resource-badge.is-wood {
+  background: var(--green-bg);
+  color: var(--green);
+}
+
+.resource-badge.is-iron {
+  background: var(--panel-3);
+  color: var(--text-2);
+}
+
+.resource-badge.is-mana {
+  background: var(--accent-bg);
+  color: var(--accent);
+}

@@ -4,14 +4,16 @@ import { join } from 'node:path';
 import { parentPort } from 'node:worker_threads';
 import { matchTemplate, prepareFrame, type DevicePort, type MatchResult, type ProbeReport, type RawFrame } from '@avdm/automation';
 import {
-  AppError, FAILURE_SHOT_LABELS, GameUpdateRecovery, POPUP_CLOSE_ROI, TPL, assertGatherTemplatesComplete, buildSchedulerTemplates,
-  closePopupTemplates, createGatherIo, isRecognizableScreen, loadGatherTemplates, runGatherCycle, sampleTroopPanel,
-  serializeError, wanlongPlugin, type GamePresence, type GatherTemplates, type SampleIo, type SchedulerTemplates,
-  type UnknownScreenAdvisor,
+  AppError, FAILURE_SHOT_LABELS, GameUpdateRecovery, POPUP_CLOSE_ROI, RES_GLYPH, RESOURCE_REQUIRED_TEMPLATES, TPL,
+  assertGatherTemplatesComplete, buildSchedulerTemplates, closePopupTemplates, createGatherIo,
+  invalidateResourceUnitTemplates, isRecognizableScreen, loadGatherTemplates, loadResourceUnitTemplates,
+  readResourceStatsPanel, runGatherCycle, sampleTroopPanel, serializeError, wanlongPlugin, type GamePresence,
+  type GatherTemplates, type SampleIo, type SchedulerTemplates, type UnknownScreenAdvisor,
 } from '@avdm/automation/wanlong';
 import { localFrameComparer } from '../automation/ai-recover/frame-diff';
 import { GATHER_PROBE_TEMPLATE_IDS, inspectGatherProbe } from '../automation/gather-probe-guard';
 import { CompiledSetCache } from './compiled-cache';
+import { inspectResourceProbe } from '../resources/probe';
 import type {
   MainToWorker, VisionJobResult, VisionJobSpec, VisionQuery, VisionQueryResult, VisionRequest, WorkerToMain,
 } from './vision-protocol';
@@ -410,6 +412,74 @@ async function runGather(job: ActiveJob, spec: Extract<VisionJobSpec, { kind: 'g
   return { kind: 'gather', result };
 }
 
+// ── resources job (道具 → 资源统计) ─────────────────────────────────────────
+
+/**
+ * Read the resource table (original readResourceStatsForInstance, run inside the instance lock by main).
+ * ★ Zero input unless the game is on the main screen: the required templates and glyph set are checked first, then
+ *   the game must be in front and the frame must pass the resources gate (world map or city, exactly one anchor);
+ *   the only input before that is one tap on a popup's own ×. Main approves formal input with the same gate.
+ *   After approval `readResourceStatsPanel` opens the dialog, reads it and always restores the main screen.
+ */
+async function runResources(job: ActiveJob, spec: Extract<VisionJobSpec, { kind: 'resources' }>): Promise<VisionJobResult> {
+  const set = await templates(spec.templateDir);
+  const g = set.gather;
+  for (const id of RESOURCE_REQUIRED_TEMPLATES) {
+    if (!g.has(id)) {
+      throw new AppError('TEMPLATE_NOT_FOUND', `模板集里缺少「${id}」，读不了资源统计表。请在「模板」页导入资源统计模板（或从截图按规格裁切）。`, { templateId: id });
+    }
+  }
+  if (!g.hasGlyphs(RES_GLYPH)) {
+    throw new AppError('TEMPLATE_NOT_FOUND', `字形集「${RES_GLYPH}」还没入库，读不了资源统计表。请在「模板」页导入资源统计模板（或从截图按规格裁切）。`, { glyphSet: RES_GLYPH });
+  }
+  checkAbort(job);
+  const foreground = await request<string | null>(job, { op: 'foregroundPackage', args: [] });
+  if (foreground !== PACKAGE) {
+    throw new AppError('STEP_FAILED', `游戏不在前台（当前是 ${foreground ?? '未知'}），读资源统计需要游戏停在城内或世界地图；一次都没点。`, { step: 'precheck' });
+  }
+  const mainScreen = async (raw: RawFrame): Promise<boolean> => inspectResourceProbe(await probeOf(job, set, raw)).ok;
+  let raw = await capture(job);
+  if (!(await mainScreen(raw))) {
+    const popup = await findClosePopup(set, raw);
+    if (popup) {
+      log(job, 'info', `预检：找到弹窗关闭按钮（${popup.templateId} ${popup.score}），先点它关掉。`);
+      await request<void>(job, { op: 'tap', args: [Math.round(popup.centerX * raw.width / g.refWidth), Math.round(popup.centerY * raw.height / g.refHeight), 'closePopup'] });
+      await sleep(job, 900);
+      raw = await capture(job);
+    }
+    if (!(await mainScreen(raw))) {
+      const reason = inspectResourceProbe(await probeOf(job, set, raw));
+      const { frame, transfer } = copyFrame(raw);
+      post({ type: 'shot', jobId: job.jobId, label: 'res-precheck-not-main', raw: frame }, transfer);
+      throw new AppError('STEP_FAILED',
+        `当前不在主界面（可能开着面板或弹窗${reason.ok ? '' : `：${reason.reason}`}），为安全起见一次都没点。请先回到城内或世界地图再读资源统计。`,
+        { step: 'precheck' });
+    }
+  }
+  await approve(job, set);
+  checkAbort(job);
+  const io = createGatherIo(devicePort(job), {
+    refWidth: g.refWidth, refHeight: g.refHeight, signal: job.controller.signal,
+    log: (level, message) => log(job, level, message),
+  });
+  const units = await loadResourceUnitTemplates(set.dir, (message) => log(job, 'warn', message));
+  const snapshot = await readResourceStatsPanel({
+    io,
+    templates: g,
+    units,
+    instanceIndex: spec.instanceIndex,
+    signal: job.controller.signal,
+    log: (level, message) => log(job, level, message),
+    // Every resource-read shot is a failure scene (precheck / navigation / unreadable cell / restore); main keeps it
+    // unless the shot policy is「不留痕」.
+    onShot: (label, frameRaw) => {
+      const { frame, transfer } = copyFrame(frameRaw);
+      post({ type: 'shot', jobId: job.jobId, label, raw: frame }, transfer);
+    },
+  });
+  return { kind: 'resources', snapshot };
+}
+
 // ── read-only queries (any time, also during a job) ──────────────────────
 
 /** The calibrated update prompt and progress texts on a frame (game-data `GameUpdateRecovery`, silent without templates). */
@@ -469,7 +539,8 @@ async function run(jobId: number, spec: VisionJobSpec): Promise<void> {
   const job: ActiveJob = { jobId, controller: new AbortController(), pending: new Map(), approved: false, lastFrame: null };
   active = job;
   try {
-    const result = spec.kind === 'sample' ? await runSample(job, spec) : await runGather(job, spec);
+    const result = spec.kind === 'sample' ? await runSample(job, spec)
+      : spec.kind === 'resources' ? await runResources(job, spec) : await runGather(job, spec);
     post({ type: 'result', jobId, result });
   } catch (error) {
     const err = job.controller.signal.aborted ? aborted(job) : error;
@@ -483,6 +554,7 @@ port.on('message', (message: MainToWorker) => {
   if (message.type === 'invalidate') {
     compiled.clear();
     for (const updater of updaters.values()) updater.invalidate();
+    invalidateResourceUnitTemplates();
     return;
   }
   if (message.type === 'query') { void runQuery(message.queryId, message.query); return; }

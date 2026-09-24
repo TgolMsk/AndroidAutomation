@@ -15,6 +15,7 @@ import {
   type GatherRuntimeState,
   type KickedProbeResult,
   type PanelSample,
+  type ResourceSnapshot,
   type SchedulerConfig,
   type ShotPolicy,
 } from '@avdm/automation/wanlong';
@@ -23,6 +24,7 @@ import { InstanceLocks } from '../scheduler/instance-lock';
 import type { HealthFrame, LogLevel } from '../scheduler/types';
 import { VisionWorkerPool, type VisionDevice, type VisionJobContext, type VisionWorkerLike } from '../scheduler/vision-pool';
 import type { VisionQuery } from '../scheduler/vision-protocol';
+import { inspectResourceProbe } from '../resources/probe';
 import { inspectGatherProbe } from './gather-probe-guard';
 
 const GAME_ID = 'wanlong';
@@ -84,6 +86,20 @@ export interface SampleOnceOptions {
   onUnrecognized?(raw: RawFrame): Promise<boolean | 'recovered' | 'updated'>;
   log?(level: LogLevel, message: string): void;
 }
+
+/** One resource-table read (道具 → 资源统计), run in the instance's vision worker. */
+export interface ReadResourcesOptions {
+  templateDir: string;
+  signal: AbortSignal;
+  timeoutMs?: number;
+  /** App settings shot policy: every resource-read shot is a failure scene, kept unless the policy is `never`. */
+  shotPolicy?: ShotPolicy;
+  saveShot?(label: string, raw: RawFrame): Promise<string | null>;
+  log?(level: LogLevel, message: string): void;
+}
+
+/** A resource read opens a dialog, reads up to two frames and goes back: a few seconds; this is the hard cap. */
+const RESOURCE_READ_TIMEOUT_MS = 3 * 60_000;
 
 /** Options of a read-only template match on a frame main already holds (kicked probe, AI verification). */
 export interface MatchQueryOptions {
@@ -362,6 +378,37 @@ export class WanlongGatherRunner {
       }));
       if (result.kind !== 'sample') throw new SchedulerError('UNKNOWN', '视觉工作线程返回了错误的结果类型');
       return result.sample;
+    }, { signal: options.signal });
+  }
+
+  /**
+   * Read the in-game resource table (original readResourceStatsForInstance) inside the instance lease (re-entered
+   * when the caller holds it through `eta.exclusive`). The worker sends no input unless the game is on the main
+   * screen; main approves formal input only for the world map or the city (never an open troop panel), re-checks the
+   * foreground and the AVD identity before every input, and never cold-starts the game for a read.
+   */
+  readResources(index: number, options: ReadResourcesOptions): Promise<ResourceSnapshot> {
+    assertIndex(index);
+    return this.locks.run(index, '读资源统计', async () => {
+      const { device, createdAt, templateDir } = await this.prepare(index, options.templateDir, options.signal);
+      const base = this.context(index, device, createdAt, options.signal, options.timeoutMs ?? RESOURCE_READ_TIMEOUT_MS, false);
+      const policy = options.shotPolicy ?? 'onFail';
+      const result = await this.pool.run(index, { kind: 'resources', instanceIndex: index, templateDir }, {
+        ...base,
+        approve: async (probe: ProbeReport) => {
+          const decision = inspectResourceProbe(probe);
+          if (!decision.ok) throw new Error(decision.reason);
+          await base.approve(probe);
+        },
+        ...(options.log ? { log: options.log } : {}),
+        onShot: async (label, raw) => {
+          if (policy === 'never' || !options.saveShot) return;
+          try { await options.saveShot(label, raw); }
+          catch (error) { options.log?.('warn', `留痕「${label}」落盘失败：${messageOf(error)}`); }
+        },
+      });
+      if (result.kind !== 'resources') throw new SchedulerError('UNKNOWN', '视觉工作线程返回了错误的结果类型');
+      return result.snapshot;
     }, { signal: options.signal });
   }
 

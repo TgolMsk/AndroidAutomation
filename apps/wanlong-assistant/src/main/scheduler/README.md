@@ -149,6 +149,11 @@ automation.setHooks({
 });
 ```
 
+`setHooks` 按键合并，同一个钩子只能有一个主人（`onCycleResult` 归告警模块）。其他模块要同时观察，用
+`automation.observe({ onCycleResult?, onDispatched? })`：在主钩子之后以同样的参数调用，各自隔离，返回取消函数（数据统计就这样接）。
+读游戏资源统计表用 `automation.readResourceStats(i)`（`eta.exclusive(i, '读资源统计')` 里跑视觉工作线程的 `resources` 作业，
+见 `src/main/resources/README.md`）。
+
 `onCycleResult` 的 `GatherCycleFact`：outcome / step（`'G0'` = 恢复阶梯用尽，含开跑前的阶梯）/ errorCode / dispatched / captures / shotPath / kicked。
 **在失败的调度轮往上抛之前**报；「这一轮压根没跑起来」（开跑前的检查、模板、运行器在出结果前就失败）也补报一次
 （`step: null`，message 以「采集流程没能启动：」开头）；取消的轮次、让路（`CONCURRENCY_LIMIT`）、被中止与需要人处理

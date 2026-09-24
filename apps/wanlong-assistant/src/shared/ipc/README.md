@@ -10,7 +10,9 @@
 | `plans.ts` | 任务计划与脚本库 | `src/main/ipc/plans.ts` |
 | `runs.ts` | 脚本执行监控：临时运行、运行快照、暂停 / 继续 / 停止、运行日志、留痕截图、匹配调试、ADBKeyboard 输入法；事件 `plan-run` / `run-logs` / `run-matches` | `src/main/ipc/runs.ts` |
 | `insights.ts` | 现有洞察、通知、只读机器人 | `src/main/ipc/insights.ts` |
-| `stats.ts` / `alerts.ts` / `bot.ts` / `resources.ts` | 统计 / 告警 / 机器人 / 资源统计（空） | 同名文件 |
+| `alerts.ts` / `bot.ts` | 告警 / 机器人（空） | 同名文件 |
+| `stats.ts` | 每日数据统计：按北京日期的日桶、区间、读一次资源统计；推送 `stats-today` / `stats-snapshot` | `src/main/ipc/stats.ts` |
+| `resources.ts` | 读游戏资源统计表（实例锁内）、正在读的实例；推送 `resources-reading` | `src/main/ipc/resources.ts` |
 | `advisor.ts` | AI 顾问 | `src/main/ipc/advisor.ts` |
 | `scheduler.ts` / `instances.ts` / `update.ts` | ETA 调度 / 实例级操作 / 应用内更新（空） | 同名文件 |
 | `app.ts` | 后台服务启动失败、应用设置（`app-settings-changed`）、数据目录、环境自检（`app-health`）、运行日志（`app-log`）、主进程提示（`app-toast`）、实例占用查询；旧版导入待后续模块追加 | `src/main/ipc/app.ts` |

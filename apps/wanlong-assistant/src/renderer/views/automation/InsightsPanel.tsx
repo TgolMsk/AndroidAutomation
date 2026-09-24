@@ -49,9 +49,13 @@ function summarize(days: InsightDay[]): InsightDay | null {
   return summary;
 }
 
-export function InsightsPanel({ gameId, index }: { gameId: string; index: number | null }) {
+/**
+ * `mode="alerts"` hides the old 数据概览 tab: the 数据统计 page shows the statistics itself and keeps only the alert
+ * list and the pointer to the notification settings here.
+ */
+export function InsightsPanel({ gameId, index, mode = 'full' }: { gameId: string; index: number | null; mode?: 'full' | 'alerts' }) {
   const { navigate } = useNavigation();
-  const [tab, setTab] = useState<'overview' | 'alerts' | 'notifications'>('overview');
+  const [tab, setTab] = useState<'overview' | 'alerts' | 'notifications'>(mode === 'alerts' ? 'alerts' : 'overview');
   const [range, setRange] = useState<7 | 30>(7);
   const [days, setDays] = useState<InsightDay[]>([]);
   const [alerts, setAlerts] = useState<InsightAlert[]>([]);
@@ -96,11 +100,13 @@ export function InsightsPanel({ gameId, index }: { gameId: string; index: number
   return (
     <section className="insights-panel" aria-label="自动化统计与通知">
       <div className="insights-topline">
-        <div><span className="insights-eyebrow">INSIGHTS</span><h3>统计与通知</h3><p>根据已记录的采集运行与派兵事实生成。日期按北京时间归属。</p></div>
+        {mode === 'alerts'
+          ? <div><span className="insights-eyebrow">ALERTS</span><h3>告警与通知</h3><p>最近告警与推送设置入口。告警时间按北京时间显示。</p></div>
+          : <div><span className="insights-eyebrow">INSIGHTS</span><h3>统计与通知</h3><p>根据已记录的采集运行与派兵事实生成。日期按北京时间归属。</p></div>}
         <button className="btn xs" onClick={() => void refresh(true)} disabled={loading}><Icon name="refresh" />刷新</button>
       </div>
       <nav className="insights-tabs" aria-label="统计与通知页面">
-        {([['overview', '数据概览'], ['alerts', '告警记录'], ['notifications', '通知设置']] as const).map(([key, label]) =>
+        {([['overview', '数据概览'], ['alerts', '告警记录'], ['notifications', '通知设置']] as const).filter(([key]) => mode === 'full' || key !== 'overview').map(([key, label]) =>
           <button key={key} type="button" className={tab === key ? 'is-active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => setTab(key)}>{label}</button>)}
       </nav>
       {error && <div className="insights-inline-error" role="alert">数据读取失败：{error}<button className="btn xs" onClick={() => void refresh(true)}>重试</button></div>}

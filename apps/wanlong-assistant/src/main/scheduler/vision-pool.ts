@@ -391,8 +391,8 @@ class Job {
         if (this.ctx.onShot) this.shots.push(this.ctx.onShot(message.label, message.raw).catch(() => undefined));
         return;
       case 'result':
-        if (message.result.kind === 'gather' && !this.approved) {
-          this.finish(new SchedulerError('PROBE_REJECTED', '采集工作线程越过探针门槛'));
+        if ((message.result.kind === 'gather' || message.result.kind === 'resources') && !this.approved) {
+          this.finish(new SchedulerError('PROBE_REJECTED', message.result.kind === 'gather' ? '采集工作线程越过探针门槛' : '资源统计读取越过探针门槛'));
           return;
         }
         this.finish(undefined, message.result);

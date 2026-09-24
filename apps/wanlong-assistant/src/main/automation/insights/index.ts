@@ -18,6 +18,7 @@ function terminalAt(run: AutomationRun): number {
  */
 export class InsightsService {
   private readonly store: InsightStore;
+  private readonly alertObservers = new Set<(alert: InsightAlert) => void>();
 
   constructor(home: string) {
     this.store = new InsightStore(home);
@@ -64,7 +65,20 @@ export class InsightsService {
    * @returns false when the id was already recorded
    */
   async recordAlert(alert: InsightAlert): Promise<boolean> {
-    return this.store.addAlert(alert);
+    if (!await this.store.addAlert(alert)) return false;
+    for (const observer of [...this.alertObservers]) {
+      try { observer({ ...alert }); } catch (error) { console.error('[wanlong] 告警观察者出错', error); }
+    }
+    return true;
+  }
+
+  /**
+   * Observe every newly stored alert (the statistics module counts alert conclusions). Observers are isolated and
+   * see each alert id once. Returns the unsubscribe function.
+   */
+  onAlertStored(observer: (alert: InsightAlert) => void): () => void {
+    this.alertObservers.add(observer);
+    return () => { this.alertObservers.delete(observer); };
   }
 
   async dispose(): Promise<void> { /* Every write is awaited by its caller. */ }
