@@ -7,12 +7,18 @@ export type {
   StaminaValue, TravelTimeSource, WakeInfo,
 } from '@avdm/automation/wanlong/pure';
 
-/** Why an instance's automatic schedule is paused (filled by the alerts module; null while running or never paused). */
+/**
+ * Why an instance's automatic schedule is paused: an alerts pause record (`pauseOf` hook), else the scheduler's own
+ * safety pause (`consecutiveFailures`) or needs-attention pause. Null while running or never paused.
+ */
 export interface SchedulerPauseInfo {
   reason: string;
+  /** When it paused (ms); 0 when unknown (a safety pause restored after a restart). */
   at: number;
-  /** Alert kind that paused it, e.g. deviceOffline / kicked / needsAttention. */
+  /** Alert kind that paused it, e.g. deviceOffline / suspectedKicked / needsAttention / consecutiveFailures. */
   kind?: string;
+  /** `scheduler` for the scheduler's own pause; absent for an alerts pause record. */
+  source?: 'alerts' | 'scheduler';
 }
 
 /** One instance's queue as the renderer sees it: the game's queue model plus the assistant's bookkeeping. */
@@ -20,7 +26,7 @@ export interface SchedulerQueueState extends InstanceQueueState {
   gameId: string;
   /** Consecutive real failures (samples or cycles); non-failure outcomes reset it. */
   failureCount: number;
-  /** Set when an alert paused the instance; null otherwise. */
+  /** Set while the instance is paused (alerts record or the scheduler's own pause); null otherwise. */
   pause: SchedulerPauseInfo | null;
   /** Another process owns the scheduler for this game; this window only shows state. */
   readOnly?: boolean;
@@ -40,14 +46,22 @@ export interface SchedulerServiceStatus {
   since: number | null;
 }
 
+export interface SchedulerSetAutoOptions {
+  probeCapturedAt?: number;
+}
+
 export interface SchedulerApi {
   /** Every instance the scheduler knows about, sorted by index. */
   schedulerStates(gameId: string): Promise<SchedulerQueueState[]>;
   schedulerState(gameId: string, index: number): Promise<SchedulerQueueState>;
   /** Open the troop panel, read it and close it; never dispatches. Throttled by `minSampleIntervalMs`. */
   schedulerSample(gameId: string, index: number): Promise<SchedulerQueueState>;
-  /** Same path as `setAutomationSchedule`: readiness gate + one read-only sample (cold-starts the game); disabling always works. */
-  schedulerSetAuto(gameId: string, index: number, enabled: boolean): Promise<SchedulerQueueState>;
+  /**
+   * Same path as `setAutomationSchedule`: readiness gate + one read-only sample (cold-starts the game); disabling always
+   * works. `probeCapturedAt`: the `capturedAt` of the passing probe the user just confirmed, so it counts as the
+   * first-enable probe gate instead of a second probe (a stale or unknown id falls back to probing again).
+   */
+  schedulerSetAuto(gameId: string, index: number, enabled: boolean, opts?: SchedulerSetAutoOptions): Promise<SchedulerQueueState>;
   schedulerConfig(gameId: string): Promise<SchedulerConfig>;
   saveSchedulerConfig(gameId: string, patch: Partial<SchedulerConfig>): Promise<SchedulerConfig>;
   schedulerWakes(gameId: string): Promise<WakeInfo[]>;

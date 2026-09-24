@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { defaultSchedulerConfig, type SchedulerConfig } from '@avdm/automation/wanlong/pure';
-import type { SchedulerQueueState, SchedulerServiceStatus } from '../../../shared/ipc';
+import type { SchedulerQueueState, SchedulerServiceStatus, SchedulerSetAutoOptions } from '../../../shared/ipc';
 import { avdm, errMsg } from '../../api';
 import { resumeInstance } from './pause-port';
 
@@ -152,12 +152,13 @@ export async function sampleQueue(gameId: string, index: number): Promise<string
 /**
  * Switch auto scheduling (the same path as the old 自动续跑 switch: readiness gate, first-enable probe gate, then one
  * read-only sample). The busy map is read from the store, so a stale closure cannot let a double click through.
+ * `opts.probeCapturedAt`: the passing probe the user just confirmed (it counts as the first-enable probe gate).
  */
-export async function setQueueAuto(gameId: string, index: number, enabled: boolean): Promise<string | null> {
+export async function setQueueAuto(gameId: string, index: number, enabled: boolean, opts?: SchedulerSetAutoOptions): Promise<string | null> {
   if (snapshot.autoBusy[index]) return '这个实例的开关正在切换，等它完成再点。';
   update((current) => ({ autoBusy: flag(current.autoBusy, index, true) }));
   try {
-    upsertQueueState(await avdm.schedulerSetAuto(gameId, index, enabled));
+    upsertQueueState(await (opts ? avdm.schedulerSetAuto(gameId, index, enabled, opts) : avdm.schedulerSetAuto(gameId, index, enabled)));
     return null;
   } catch (error) {
     return describeSchedulerError(error);

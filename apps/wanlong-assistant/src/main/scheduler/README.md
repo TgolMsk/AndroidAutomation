@@ -71,6 +71,8 @@ ScheduleCompat (compat.ts)              旧 AutomationSchedule 视图（渲染�
 - **首次开启要过只读探针**（DECISIONS C）：`AutomationHost.setSchedule(true)`（IPC 的 `setAutomationSchedule` / `schedulerSetAuto`）
   在主进程再跑一次 `probe()`，`launchReady` 才放行（渲染进程另有确认勾选）。通过记录按「实例身份 + 模板集」记在内存里，
   模板或采集配置一改就作废；之后再开启不必重探（游戏没开也会被冷启动）。恢复路径（告警恢复、机器人）直接调 `eta.setAuto(i, true)`，不过探针。
+  开启对话框刚确认过的那次探针可以直接算数：`schedulerSetAuto(g, i, true, { probeCapturedAt })` 带回它的 `capturedAt`，
+  主进程只认自己 `probe()` 记下的、同一实例身份与模板集、之后没改过模板 / 配置、5 分钟内的通过记录，否则照旧重探。
 - **就绪门槛**（原版 `assertInstanceAutomationReady`）= 账号模块的 `AccountManager.readiness()`，经 `AutomationHostHooks.automationReadiness`
   接入：基础实例（`InstanceProvisioner` 记录的那一个）、登录向导进行中、绑定账号未完成登录检查或实例已被替换时拒绝；未绑定账号的实例放行。
   用户开启（`setSchedule`，在探针之前）、恢复路径（`eta.setAuto(i, true)`）、面板立即刷新、每次采样与每轮开跑前都问它，关闭时从不问。
@@ -93,6 +95,8 @@ ScheduleCompat (compat.ts)              旧 AutomationSchedule 视图（渲染�
 - **模板变更立即失效**：宿主订阅自己的 `onTemplatesChanged`（保存 / 删除 / 导入），立刻让所有视觉 worker 丢弃编译缓存；
   worker 里按 manifest 指纹的比对保留为兜底（别的进程 / tplkit 在盘上改了模板集）。
 - 连续 8 次真失败（可配 `maxConsecutiveFailures`）自动暂停并调用 `onScheduleStop` 告警 —— 本仓库原有的安全阀，原版没有。
+  这次暂停（以及「需要人工处理」暂停）写进队列视图的 `SchedulerQueueState.pause`（`source: 'scheduler'`），`pauseOf` 钩子
+  （告警模块的暂停记录）优先；重启后只剩落盘的失败计数时仍按阈值显示安全暂停。界面只读 `pause`，不再自己镜像阈值。
 
 ## 给后续模块的接口
 

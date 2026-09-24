@@ -4,27 +4,23 @@
  * The alerts module owns pause records (reason, time, scene shot, advice, push result) and the real resume path
  * (clear the record + the push cooldown, then `eta.setAuto(i, true)` outside the lock). It is being ported in
  * parallel, so the gather UI reads pauses only through this file:
- *   · `pauseInfoOf(state)` — today derived from the scheduler's queue state: the alerts hook `pauseOf` fills
- *     `SchedulerQueueState.pause`; until it is wired, the scheduler's own safety pause (auto switched off after
- *     `SAFETY_PAUSE_FAILURES` consecutive real failures) is shown as a 「连续失败熔断」 pause.
+ *   · `pauseInfoOf(state)` — reads `SchedulerQueueState.pause` only: the alerts hook `pauseOf` fills it with the pause
+ *     record; without one, the scheduler fills in its own pause (safety pause after its configurable
+ *     `maxConsecutiveFailures`, needs-attention pause), so no threshold is mirrored here.
  *   · `resumeInstance(gameId, index)` — today `schedulerSetAuto(gameId, index, true)`.
  * Integration: point both at the alerts IPC (pause records / resume) and keep every caller unchanged.
  * ★ Known gaps of the temporary port, both closed by that switch (keep them in mind until it happens):
  *   1. `schedulerSetAuto(true)` is the user's switch (`AutomationHost.setSchedule`), so after an app restart a resume
  *      needs a fresh read-only probe that passes; the original resume (alerts:resume) calls `eta.setAuto(i, true)`
  *      outside the lock with no probe gate.
- *   2. Only the safety pause is recognized here. The scheduler's needsAttention pauses (GAME_UPDATE_REQUIRED,
- *      AI_RISK_BLOCKED) and readiness pauses switch auto off with a reason that is not in the queue state, so those
- *      instances neither turn red nor offer 恢复 until the alerts pause records fill `SchedulerQueueState.pause`.
+ *   2. The scheduler's own needs-attention pause lives in memory only (lost on an app restart), and readiness pauses
+ *      (account not checked, base instance) are not pauses in the queue state; the alerts pause records close both.
  *
  * Rules kept from the original: paused is judged by `paused`, never by `!auto` (the user switching auto off is not
  * a pause); resume goes through its own confirmation and this port, never through the auto switch.
  */
 import type { SchedulerQueueState } from '../../../shared/ipc';
 import { avdm } from '../../api';
-
-/** Same as the scheduler's `DEFAULT_MAX_CONSECUTIVE_FAILURES` (src/main/scheduler/service.ts). */
-export const SAFETY_PAUSE_FAILURES = 8;
 
 export interface GatherPauseInfo {
   instanceIndex: number;
@@ -67,26 +63,23 @@ export function notPaused(instanceIndex: number): GatherPauseInfo {
   return { instanceIndex, paused: false, kind: null, title: '', reason: null, at: null, advice: null, source: null };
 }
 
-/** The pause of one instance as the gather UI shows it (see the file header). */
-export function pauseInfoOf(state: Pick<SchedulerQueueState, 'instanceIndex' | 'auto' | 'failureCount' | 'error' | 'pause'> | null | undefined,
+/**
+ * The pause of one instance as the gather UI shows it (see the file header). Only `state.pause` decides: the user
+ * switching auto off is never a pause, and the failure threshold is the scheduler's alone.
+ */
+export function pauseInfoOf(state: Pick<SchedulerQueueState, 'instanceIndex' | 'error' | 'pause'> | null | undefined,
   instanceIndex = state?.instanceIndex ?? -1): GatherPauseInfo {
-  if (!state) return notPaused(instanceIndex);
-  if (state.pause) {
-    const text = state.pause.kind ? PAUSE_KIND_TEXT[state.pause.kind] : undefined;
-    return {
-      instanceIndex: state.instanceIndex, paused: true, kind: state.pause.kind ?? null, title: text?.title ?? '已暂停',
-      reason: state.pause.reason || null, at: state.pause.at || null, advice: text?.advice ?? null, source: 'alerts',
-    };
-  }
-  if (!state.auto && state.failureCount >= SAFETY_PAUSE_FAILURES) {
-    const text = PAUSE_KIND_TEXT['consecutiveFailures']!;
-    return {
-      instanceIndex: state.instanceIndex, paused: true, kind: 'consecutiveFailures', title: text.title,
-      reason: `连续 ${state.failureCount} 次失败，自动调度已暂停${state.error ? `：${state.error}` : '。'}`,
-      at: null, advice: text.advice, source: 'scheduler',
-    };
-  }
-  return notPaused(state.instanceIndex);
+  if (!state?.pause) return notPaused(state?.instanceIndex ?? instanceIndex);
+  const { pause } = state;
+  const text = pause.kind ? PAUSE_KIND_TEXT[pause.kind] : undefined;
+  const source = pause.source ?? 'alerts';
+  // A scheduler pause restored after a restart (no time) carries no message: the latest sampling error says what failed.
+  const reason = source === 'scheduler' && !pause.at && pause.reason && state.error
+    ? `${pause.reason.replace(/。$/, '')}：${state.error}` : pause.reason || null;
+  return {
+    instanceIndex: state.instanceIndex, paused: true, kind: pause.kind ?? null, title: text?.title ?? '已暂停',
+    reason, at: pause.at || null, advice: text?.advice ?? null, source,
+  };
 }
 
 /** Indexes of paused instances, in order (the overview's red alert). */

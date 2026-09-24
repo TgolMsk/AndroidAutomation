@@ -30,11 +30,19 @@ export const schedulerHandlers: DomainHandlers<SchedulerApi, SchedulerServices> 
     gatherGame(gameId);
     return automation.eta.sampleNow(asIndex(index));
   },
-  async schedulerSetAuto({ automation }, gameId, index, enabled) {
+  async schedulerSetAuto({ automation }, gameId, index, enabled, opts) {
     const id = gatherGame(gameId);
     const i = asIndex(index);
+    const on = flag(enabled, '自动续跑开关');
+    let probeCapturedAt: number | undefined;
+    if (opts !== undefined && opts !== null) {
+      const value = patchObject(opts, '开启选项').probeCapturedAt;
+      if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) throw new Error('探针编号无效');
+      probeCapturedAt = value;
+    }
     // Same path as setAutomationSchedule (control lock, busy checks, readiness gate, first sample).
-    await automation.setSchedule(id, i, flag(enabled, '自动续跑开关'));
+    if (probeCapturedAt === undefined) await automation.setSchedule(id, i, on);
+    else await automation.setSchedule(id, i, on, { probeCapturedAt });
     return automation.eta.getState(i);
   },
   async schedulerConfig({ automation }, gameId): Promise<SchedulerConfig> {

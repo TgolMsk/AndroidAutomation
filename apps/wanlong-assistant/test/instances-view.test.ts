@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { InstanceState } from '@avdm/core';
 import type { GameAccount } from '../src/main/automation/accounts/types';
 import type { AutomationProbeReport, SchedulerQueueState } from '../src/shared/ipc';
-import { countUp, filterInstances, frameResolutionHint, resolutionWarning } from '../src/renderer/views/instances/instance-model';
-import { describeGatherStatus } from '../src/renderer/views/gather/InstanceGatherControls';
+import { countUp, filterInstances, frameResolutionHint, resolutionWarning, scriptRunProgress } from '../src/renderer/views/instances/instance-model';
+import { describeGatherStatus, sampleBlockedReason } from '../src/renderer/views/gather/InstanceGatherControls';
 import { onlineState, resumeMessage } from '../src/renderer/views/gather/InstanceMarchCard';
 import { probeVerdict } from '../src/renderer/views/gather/EnableAutoDialog';
 import { probeReady } from '../src/renderer/views/gather/InstanceRunDrawer';
@@ -75,6 +75,26 @@ describe('auto-gather cell status line (priority order, original describeStatus)
     expect(wake).toMatchObject({ text: '下次唤醒 12:00:00', tone: null, tip: '队列释放校验（已退避 2 次）（北京时间）' });
     expect(describeGatherStatus(state({ lastSampleOk: true, lastSampledAt: NOW - 30_000 }), notPaused(1), false, NOW).text).toBe('上次采样 30 秒前');
     expect(describeGatherStatus(state(), notPaused(1), false, NOW).text).toBe('未采样');
+  });
+});
+
+describe('auto-gather cell actions (a disabled action always says why)', () => {
+  it('采样 is blocked with its real reason: booting, stopping, error, stopped, sampling, operating', () => {
+    expect(sampleBlockedReason('running', false, false)).toBeNull();
+    expect(sampleBlockedReason('booting', false, false)).toContain('正在启动');
+    expect(sampleBlockedReason('starting', false, false)).toContain('正在启动');
+    expect(sampleBlockedReason('stopping', false, false)).toContain('正在关机');
+    expect(sampleBlockedReason('error', false, false)).toContain('错误状态');
+    expect(sampleBlockedReason('stopped', false, false)).toBe('实例未开机，无法采样。');
+    expect(sampleBlockedReason('running', true, true)).toContain('等这次采样完成');
+    expect(sampleBlockedReason('running', false, true)).toContain('设备操作');
+  });
+
+  it('当前执行 shows step progress, or rounds and steps in loop mode (original)', () => {
+    expect(scriptRunProgress({ stepDone: 3, stepTotal: 12, iteration: 0 })).toEqual({ percent: 25, text: '已完成 3 / 12 步' });
+    expect(scriptRunProgress({ stepDone: 14, stepTotal: 12, iteration: 0 }).percent).toBe(100);
+    expect(scriptRunProgress({ stepDone: 7, stepTotal: null, iteration: 2 })).toEqual({ percent: null, text: '第 2 轮｜已执行 7 步' });
+    expect(scriptRunProgress({ stepDone: 0, stepTotal: 0, iteration: 0 }).percent).toBeNull();
   });
 });
 

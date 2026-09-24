@@ -204,9 +204,28 @@ describe('legacy wanlong-panel accounts.json', () => {
     const { rows } = previewLegacyAccounts(file, PKG, { daily: 'daily-import-abc123', gather: 'gather-import-x' });
     expect(rows[0]?.defaultScriptId).toBe('daily-import-abc123');
     // The renamed old `daily` wins over an old key that happens to equal its new id; gather is not a script id.
-    expect(rows[0]?.scriptParams).toEqual({ 'daily-import-abc123': { rounds: 2 }, weekly: { on: true }, gather: { configJson: '{}' } });
+    expect(rows[0]?.scriptParams).toEqual({ 'daily-import-abc123': { rounds: 2 }, weekly: { on: true }, gather: { configJson: expect.any(String) } });
     expect(previewLegacyAccounts(file, PKG).rows[0]?.defaultScriptId).toBe('daily');
     expect(() => previewLegacyAccounts(file, PKG, { daily: '../x' })).toThrow('脚本编号对照表无效');
+  });
+});
+
+describe('legacy gather config', () => {
+  const file = (configJson: string) => ({ version: 1, accounts: [{ id: 'acc_main', name: '主号', enabled: true, scriptParams: { gather: { configJson } } }] });
+
+  it('passes the save gate, arrives switched off and says so', () => {
+    const { entries, rows } = previewLegacyAccounts(file(JSON.stringify({ version: 2, enabled: true, safety: { maxCapturesPerCycle: 45 } })), PKG);
+    const config = JSON.parse(String(rows[0]?.scriptParams?.gather?.configJson)) as { version: number; enabled: boolean; safety: { maxCapturesPerCycle: number } };
+    expect(config).toMatchObject({ version: 2, enabled: false, safety: { maxCapturesPerCycle: 45 } });
+    expect(entries[0]).toMatchObject({ importable: true, scriptParamCount: 1, reason: expect.stringContaining('关闭总开关') });
+  });
+
+  it('leaves out a config the gather page would refuse (never clamped later) and still imports the account', () => {
+    for (const json of ['{ broken', JSON.stringify({ version: 2, safety: { maxCapturesPerCycle: 'many' } }), JSON.stringify({ version: 1 })]) {
+      const { entries, rows } = previewLegacyAccounts(file(json), PKG);
+      expect(rows[0]?.scriptParams).toBeUndefined();
+      expect(entries[0]).toMatchObject({ importable: true, scriptParamCount: 0, reason: expect.stringContaining('旧采集配置没有导入') });
+    }
   });
 });
 

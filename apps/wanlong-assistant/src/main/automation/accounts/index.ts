@@ -353,8 +353,19 @@ export class AccountManager {
     return account;
   }
 
-  /** Replace (or with `null` remove) the account's parameter overrides for one script. */
+  /**
+   * Replace (or with `null` remove) the account's parameter overrides for one script. ★ The gather namespace is refused:
+   * its only writer is the gather config page (`AutomationHost.saveSettings` → `saveGatherConfig`), which validates the
+   * config, switches the schedule off (a changed policy needs a fresh probe) and holds the device lease.
+   */
   async setScriptParams(accountId: string, scriptId: string, params: Record<string, ScriptParamValue> | null): Promise<GameAccount> {
+    if (scriptId === GATHER_PARAM_SCOPE) {
+      throw new Error('采集配置不能在这里修改：请在「采集总览」打开该实例的采集配置保存（保存时会校验，并关掉自动采集等重新探测）');
+    }
+    return this.writeScriptParams(accountId, scriptId, params);
+  }
+
+  private async writeScriptParams(accountId: string, scriptId: string, params: Record<string, ScriptParamValue> | null): Promise<GameAccount> {
     const account = await this.store.setScriptParams(accountId, scriptId, params);
     this.notifyAccounts(account.gameId);
     return account;
@@ -502,7 +513,10 @@ export class AccountManager {
     return { accountId: account.id, accountName: account.name, config: config as Record<string, unknown> };
   }
 
-  /** Replace (or with `null` remove) the gather config stored on an account (`scriptParams.gather.configJson`). */
+  /**
+   * Replace (or with `null` remove) the gather config stored on an account (`scriptParams.gather.configJson`). Only for
+   * `AutomationHost.saveSettings`, which has validated it, switched the schedule off and holds the device lease.
+   */
   async saveGatherConfig(accountId: string, config: Record<string, unknown> | null): Promise<GameAccount> {
     if (config !== null && (typeof config !== 'object' || Array.isArray(config))) throw new Error('采集配置无效');
     const account = await this.store.get(accountId);
@@ -510,7 +524,7 @@ export class AccountManager {
     const next: Record<string, ScriptParamValue> = { ...(account.scriptParams?.[GATHER_PARAM_SCOPE] ?? {}) };
     if (config === null) delete next[GATHER_PARAM_KEY];
     else next[GATHER_PARAM_KEY] = JSON.stringify(config);
-    return this.setScriptParams(accountId, GATHER_PARAM_SCOPE, Object.keys(next).length > 0 ? next : null);
+    return this.writeScriptParams(accountId, GATHER_PARAM_SCOPE, Object.keys(next).length > 0 ? next : null);
   }
 
   async setEnabled(accountId: string, enabled: boolean): Promise<GameAccount> {

@@ -139,6 +139,7 @@ export interface LegacyAccountPreview {
   note: string;
   /** False when the row is skipped (other game package, duplicate, invalid, imported before). */
   importable: boolean;
+  /** Why the row is skipped, or for an importable row what was left out or changed (script params, the gather config). */
   reason?: string;
   /** The account a previous import created from this row (the row is skipped and mapped to it). */
   importedAs?: string;

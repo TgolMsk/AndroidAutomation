@@ -22,7 +22,7 @@ export function PauseDetails({ pause, instanceName }: { pause: GatherPauseInfo; 
       {pause.advice && <div className="gather-pause-advice">处置：{pause.advice}</div>}
       <div className="gather-micro">
         {pause.at ? `暂停于 ${beijingTime(pause.at, 'full')}（北京时间）` : '暂停时刻未记录'}
-        {pause.source === 'scheduler' && ' · 调度器连续失败后自动关闭了自动采集'}
+        {pause.source === 'scheduler' && (pause.kind === 'consecutiveFailures' ? ' · 调度器连续失败后自动关闭了自动采集' : ' · 调度器自动关闭了自动采集')}
       </div>
     </section>
   );

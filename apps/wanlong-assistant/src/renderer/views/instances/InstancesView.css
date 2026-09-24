@@ -192,3 +192,33 @@
 .instances-inline .search {
   width: 260px;
 }
+
+/* 当前执行: status tag + script name, then the step progress (original: tag + name, progress bar below). */
+.instances-run {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-width: 140px;
+  max-width: 220px;
+}
+
+.instances-run-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.instances-run-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.instances-run-progress {
+  display: grid;
+  gap: 2px;
+}

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_GATHER_CONFIG, RESOURCE_LABEL } from '@avdm/automation/wanlong/pure';
 import type { AutomationSettings } from '../src/shared/ipc';
 import {
-  configOriginOf, describeGatherConfigBadge, draftOf, originText, savedMessage, saveTargetText, storageWarnings,
+  configOriginOf, configSwitchState, describeGatherConfigBadge, draftOf, originText, savedMessage, saveTargetText, storageWarnings,
 } from '../src/renderer/views/gather/config-model';
 import { GATHER_RESOURCE_META, readResourceType } from '../src/renderer/views/gather/resources';
 
@@ -20,6 +20,26 @@ describe('config storage view (account first, instance fallback)', () => {
     expect(originText('default', {}, 3)).toBe('尚未保存过，当前是默认配置');
     expect(saveTargetText('主号', 1)).toBe('配置存在账号「主号」里，跟着账号走。');
     expect(saveTargetText(null, 1)).toContain('这个实例还没绑账号');
+  });
+
+  it('a bound account without a config: the instance copy still in effect is named, never 「未绑定账号」', () => {
+    const view = settings({ version: 2, enabled: true });
+    expect(configOriginOf(view, '主号')).toBe('instance-unmoved');
+    const text = originText('instance-unmoved', view, 2, '主号');
+    expect(text).toBe('绑定账号「主号」里还没有采集配置，当前生效的是实例 #2 本机设置里的那份（点「保存」会把它存进账号）');
+    expect(text).not.toContain('未绑定账号');
+    // No config anywhere: defaults, whether bound or not; the account copy wins whenever it exists.
+    expect(configOriginOf(settings({}), '主号')).toBe('default');
+    expect(configOriginOf(settings({ version: 2 }, { configAccount: { id: 'a', name: '主号' } }), '主号')).toBe('account');
+  });
+
+  it('the table\'s config switch state: nothing while loading, 「unreadable」 for a copy that cannot be read', () => {
+    expect(configSwitchState(undefined)).toBe('loading');
+    expect(configSwitchState({ error: '读取失败' })).toBe('unreadable');
+    expect(configSwitchState({ settings: settings({}, { accountConfigError: '已损坏' }) })).toBe('unreadable');
+    expect(configSwitchState({ settings: settings({}, { settingsError: '格式不兼容' }) })).toBe('unreadable');
+    expect(configSwitchState({ settings: settings({ version: 2, enabled: true }) })).toBe('on');
+    expect(configSwitchState({ settings: settings({}) })).toBe(DEFAULT_GATHER_CONFIG.enabled ? 'on' : 'off');
   });
 
   it('an unreadable account copy says so instead of pretending the instance copy is in effect', () => {

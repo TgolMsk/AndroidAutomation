@@ -99,12 +99,22 @@ export const AUTOMATION_METHODS = [
   'probeAutomation', 'runAutomation', 'stopAutomation', 'automationRuns', 'automationSchedules', 'setAutomationSchedule',
 ] as const satisfies readonly (keyof AutomationApi)[];
 
+/** An instance's settings (template set or gather config) were saved: pages showing them reload. */
+export interface AutomationSettingsChange {
+  gameId: string;
+  index: number;
+  at: number;
+}
+
 export interface AutomationEvents {
   'automation-run': AutomationRun;
   'automation-schedule': AutomationSchedule;
+  'automation-settings-changed': AutomationSettingsChange;
 }
 
-export const AUTOMATION_EVENTS = ['automation-run', 'automation-schedule'] as const satisfies readonly (keyof AutomationEvents)[];
+export const AUTOMATION_EVENTS = [
+  'automation-run', 'automation-schedule', 'automation-settings-changed',
+] as const satisfies readonly (keyof AutomationEvents)[];
 
 export type AutomationContractCheck = [
   Assert<ListsExactly<AutomationApi, typeof AUTOMATION_METHODS>>,

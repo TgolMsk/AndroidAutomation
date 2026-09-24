@@ -35,6 +35,13 @@ never inherited by index alone. Binding moves the instance copy into an account 
 refused, never replaced or clamped; what is stored is the normalization of exactly the validated document), and
 switches an enabled schedule off (a changed policy needs a fresh probe).
 
+Only the config page writes it: the generic `accountSetScriptParams` refuses the `gather` namespace, and a legacy
+account import validates the old config the same way (refused → left out with a note; accepted → imported switched
+off). A bound account without a config of its own still runs the instance copy; the page then says so
+(`instance-unmoved`: 「绑定账号「X」里还没有采集配置，当前生效的是实例 #i 本机设置里的那份」) and 保存 moves it into the
+account. Every settings save broadcasts `automation-settings-changed`, so the badges of both pages (the overview is
+kept alive) reload whichever page saved.
+
 A copy that cannot be read never locks the page (original `loadGatherConfig`: fall back to defaults and say so):
 `getAutomationSettings` returns `accountConfigError` (the bound account's JSON is corrupt; `config` is empty, the
 form shows defaults) or `settingsError` (the instance file is unreadable / incompatible; a salvage keeps the template
@@ -43,16 +50,20 @@ rebuilds the instance file (the broken one is kept as `<i>.json.corrupt`). Runs 
 
 ## Pause port (to be replaced by the alerts module)
 
-`pauseInfoOf(state)` reads `SchedulerQueueState.pause` (filled by the alerts module's `pauseOf` hook) and, until
-that exists, shows the scheduler's own safety pause (auto off after 8 consecutive failures) as 「连续失败熔断」.
+`pauseInfoOf(state)` reads only `SchedulerQueueState.pause`: the alerts module's `pauseOf` record, else the scheduler's
+own pause (its safety pause after `maxConsecutiveFailures`, its needs-attention pause), so no threshold is mirrored.
 `resumeInstance()` is `schedulerSetAuto(true)` today. Point both at the alerts IPC and replace `PauseDetails` with the
 full PauseBanner; no caller changes. Rules kept: paused ≠ `!auto`; resume only through its own confirmation.
-Known gaps until then (see the header of `pause-port.ts`): a resume after an app restart needs a passing probe, and
-needsAttention / readiness pauses are not shown as paused.
+Known gaps until then (see the header of `pause-port.ts`): a resume after an app restart needs a passing probe, the
+scheduler's needs-attention pause is in memory only, and readiness pauses are not shown as paused.
 
 ## Deliberate differences
 
 - Times on cards and tooltips are Beijing time (DECISIONS A.8), the original used the host clock.
 - An unbound instance is not a config problem (its own config applies); the original flagged it.
-- Enabling auto always shows a fresh probe verdict; the main process still enforces its own probe gate.
+- A bound account without a config shows the instance copy that is still in effect (runs use it too), not the
+  original's defaults: a failed bind migration never looks like lost settings, and 保存 finishes the move.
+- Enabling auto always shows a fresh probe verdict; the main process still enforces its own probe gate, accepting the
+  pass the user confirmed (`probeCapturedAt`, ≤ 5 min, no edit since) instead of probing twice. Probes and enables in
+  the dialog run at most two at a time.
 - Esc closes only the topmost layer (shell `escape-layers.ts`, used by Drawer / Modal / Menu), as antd did.

@@ -1,5 +1,7 @@
+import { normalizeGatherConfig } from '@avdm/automation/wanlong';
+import { coerceGatherConfig, describeBlockingIssues, validateGatherConfigInput } from '@avdm/automation/wanlong/pure';
 import { normalizeScriptParamSet, type LegacyAccountRow } from './store';
-import { GATHER_PARAM_SCOPE, type LegacyAccountPreview, type ScriptParams } from './types';
+import { GATHER_PARAM_KEY, GATHER_PARAM_SCOPE, type LegacyAccountPreview, type ScriptParamValue, type ScriptParams } from './types';
 
 const SCRIPT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$/;
 const MAX_LEGACY_ACCOUNTS = 512;
@@ -31,8 +33,25 @@ function mapScriptId(id: string, map: Record<string, string>): string {
   return Object.hasOwn(map, id) ? map[id]! : id;
 }
 
-function legacyParams(value: unknown, map: Record<string, string>): ScriptParams | undefined {
-  if (value === undefined) return undefined;
+/**
+ * The old account's gather config (`scriptParams.gather.configJson`) goes through the same save gate as the gather
+ * config page (`validateGatherConfigInput`: refused, never silently clamped at run time) and arrives switched off
+ * (DECISIONS B「导入的自动化一律默认关闭」). A config that does not pass is left out and the preview says why.
+ */
+function legacyGatherParams(params: Record<string, ScriptParamValue>): { set?: Record<string, ScriptParamValue>; note?: string } {
+  const json = params[GATHER_PARAM_KEY];
+  if (typeof json !== 'string' || !json.trim()) return {};
+  let raw: unknown;
+  try { raw = JSON.parse(json); } catch { raw = undefined; }
+  const blocking = raw === undefined ? '采集配置不是合法 JSON' : describeBlockingIssues(validateGatherConfigInput(raw));
+  if (blocking) return { note: `旧采集配置没有导入（${blocking.replace(/[。.]$/, '')}），导入后请在采集配置里重新设置` };
+  const config = { ...normalizeGatherConfig(coerceGatherConfig(raw)), enabled: false };
+  return { set: { [GATHER_PARAM_KEY]: JSON.stringify(config) }, note: '旧采集配置已导入并关闭总开关，核对后请在采集配置里重新打开' };
+}
+
+function legacyParams(value: unknown, map: Record<string, string>): { params?: ScriptParams; notes: string[] } {
+  const notes: string[] = [];
+  if (value === undefined) return { notes };
   if (!record(value)) throw new Error('invalid');
   const out: ScriptParams = {};
   const mappedKey = new Map<string, boolean>();
@@ -43,10 +62,18 @@ function legacyParams(value: unknown, map: Record<string, string>): ScriptParams
     const mapped = key !== id;
     // Two old keys landing on one id: the renamed script wins over an old id that happens to equal its new id.
     if (mappedKey.has(key) && (mappedKey.get(key) || !mapped)) continue;
-    out[key] = normalizeScriptParamSet(params);
+    const set = normalizeScriptParamSet(params);
+    if (key === GATHER_PARAM_SCOPE) {
+      const gather = legacyGatherParams(set);
+      if (gather.note) notes.push(gather.note);
+      if (!gather.set) continue;
+      out[key] = gather.set;
+    } else {
+      out[key] = set;
+    }
     mappedKey.set(key, mapped);
   }
-  return Object.keys(out).length ? out : undefined;
+  return { ...(Object.keys(out).length ? { params: out } : {}), notes };
 }
 
 /**
@@ -95,11 +122,12 @@ export function previewLegacyAccounts(
       row.defaultScriptId = entry.defaultScriptId = mapScriptId(item.defaultScriptId, map);
     }
     try {
-      const params = legacyParams(item.scriptParams, map);
+      const { params, notes } = legacyParams(item.scriptParams, map);
       if (params) {
         row.scriptParams = params;
         entry.scriptParamCount = Object.keys(params).length;
       }
+      if (notes.length) entry.reason = notes.join('；');
     } catch {
       entry.reason = '脚本参数格式不兼容，已忽略（账号本身会导入）';
     }

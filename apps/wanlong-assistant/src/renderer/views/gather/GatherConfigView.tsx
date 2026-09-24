@@ -87,10 +87,13 @@ export function GatherConfigView({ gameId, index, boundAccount, autoOn, onSaved,
     return () => { alive = false; };
   }, [gameId, index]);
 
-  const origin: GatherConfigOrigin = settings ? configOriginOf(settings) : 'default';
+  const origin: GatherConfigOrigin = settings ? configOriginOf(settings, boundAccount) : 'default';
   const warnings = storageWarnings(settings);
-  /** Saving is the repair for an unreadable or index-inherited copy, so it is allowed without edits. */
-  const needsSave = Boolean(loadError) || warnings.length > 0 || Boolean(settings?.configReplaced);
+  /**
+   * Saving is the repair for an unreadable or index-inherited copy, and moves an instance copy still in effect into the
+   * bound account, so it is allowed without edits.
+   */
+  const needsSave = Boolean(loadError) || warnings.length > 0 || Boolean(settings?.configReplaced) || origin === 'instance-unmoved';
   const issues = useMemo(() => validateGatherConfig(cfg), [cfg]);
   const blocked = hasBlockingIssue(issues);
   const errorCount = issues.filter((issue) => issue.level === 'error').length;
@@ -206,11 +209,17 @@ export function GatherConfigView({ gameId, index, boundAccount, autoOn, onSaved,
           <div>这份配置是这个序号上已被删除的旧实例留下的（实例 #{index} 已重建），采集不会按序号沿用它、在重新保存之前会拒绝开跑。核对后点「保存」才算这个实例自己的配置。</div>
         </div>
       )}
+      {origin === 'instance-unmoved' && (
+        <div className="notice info" role="status">
+          <Icon name="info" />
+          <div>{originText(origin, settings ?? {}, index, boundAccount)}。核对后点一次「保存」，以后就跟着账号走。</div>
+        </div>
+      )}
       <p className="gather-micro">{saveTargetText(boundAccount, index)}</p>
 
       {/* ── 总开关 ── */}
       <ConfigSection title="总开关"
-        desc={<span>关掉之后调度器完全不会为这个实例安排采集任务，已经在途的队伍不受影响（游戏会自己把它们带回来）。当前配置来源：<b>{originText(origin, settings ?? {}, index)}</b>。</span>}
+        desc={<span>关掉之后调度器完全不会为这个实例安排采集任务，已经在途的队伍不受影响（游戏会自己把它们带回来）。当前配置来源：<b>{originText(origin, settings ?? {}, index, boundAccount)}</b>。</span>}
         extra={<>
           {errorCount > 0 && <span className="wl-ui-tag is-danger">{errorCount} 处错误</span>}
           {warnCount > 0 && <span className="wl-ui-tag is-warning">{warnCount} 处提醒</span>}
@@ -554,7 +563,7 @@ export function GatherConfigView({ gameId, index, boundAccount, autoOn, onSaved,
       {/* ── 吸底操作条 ── */}
       <div className="gather-actions">
         <span className="gather-actions-msg">
-          {dirty ? '有未保存的修改' : `已同步 · ${originText(origin, settings ?? {}, index)}`}
+          {dirty ? '有未保存的修改' : `已同步 · ${originText(origin, settings ?? {}, index, boundAccount)}`}
           {blocked && <span className="gather-actions-err">　{errorCount} 处错误未修复</span>}
           {dirty && autoOn && <span className="gather-actions-warn">　保存后会关闭这个实例的自动采集（改了策略要重新探测）</span>}
         </span>

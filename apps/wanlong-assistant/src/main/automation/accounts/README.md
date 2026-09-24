@@ -54,6 +54,9 @@
   「先读绑定账号、没有再回落到实例文件」（`AutomationHost.settings` / `saveSettings`、采样与每轮开跑，端口
   `accountGatherConfig` / `saveAccountGatherConfig`），所以组合根接上了 `instanceGatherConfig`（`AutomationHost.instanceGatherConfig`）：
   绑定会把实例上的配置搬进账号（账号已有配置时不覆盖并提示），解绑时提示配置留在账号里。
+  ★ 采集配置唯一的写入口是采集配置页（`AutomationHost.saveSettings`：校验、关自动采集等重新探测、持租约），
+  所以通用的 `setScriptParams` / `accountSetScriptParams` 拒绝 `gather` 这个命名空间；旧账号导入里的采集配置同样过
+  `validateGatherConfigInput`，过不了就不导入（预览里说明原因），过得了就以总开关关闭的状态导入。
 
 ## 与原版的差异
 

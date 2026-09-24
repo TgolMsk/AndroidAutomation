@@ -24,14 +24,16 @@ import { CloneFromBaseDialog } from '../accounts/BaseInstanceCard';
 import { InstanceAccountCell } from '../accounts/InstanceAccountCell';
 import { useAccounts, useBaseInstance, useLoginSessions } from '../accounts/useAccounts';
 import { batchTargets, type BatchKind } from '../gather/batch';
+import { configSwitchState } from '../gather/config-model';
 import { GatherConfigDrawer } from '../gather/GatherConfigDrawer';
 import { InstanceGatherControls } from '../gather/InstanceGatherControls';
 import { pauseInfoOf } from '../gather/pause-port';
 import { useGatherConfigBadges } from '../gather/useGatherConfigBadges';
 import { useGatherControls } from '../gather/useGatherControls';
 import { useGatherQueues } from '../gather/queue-store';
+import type { ScriptRunSnapshot } from '../../../main/plans/types';
 import type { ViewProps } from '../types';
-import { countUp, filterInstances, resolutionWarning, type StatusFilter } from './instance-model';
+import { countUp, filterInstances, resolutionWarning, scriptRunProgress, type StatusFilter } from './instance-model';
 import './InstancesView.css';
 
 const MAX_INSTANCES = 64;
@@ -43,6 +45,27 @@ type Dialog =
   | { kind: 'clone'; index: number }
   | { kind: 'edit'; index: number }
   | { kind: 'remove'; index: number };
+
+/** 当前执行 of a script run: status tag + script name, then a step progress bar (or rounds and steps in loop mode). */
+function ScriptRunCell({ run }: { run: ScriptRunSnapshot }) {
+  const progress = scriptRunProgress(run);
+  return (
+    <div className="instances-run" title={`${run.scriptName}（${run.source === 'plan' ? '计划任务' : '临时运行'}）`}>
+      <div className="instances-run-head">
+        <SemanticTag tone={run.status === 'paused' ? 'warning' : 'accent'}>{scriptRunBadge(run)}</SemanticTag>
+        <span className="instances-run-name">{run.scriptName}</span>
+      </div>
+      {progress.percent === null ? <small className="dim">{progress.text}</small> : (
+        <div className="instances-run-progress">
+          <div className="progress" role="progressbar" aria-label={`${run.scriptName} 执行进度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent}>
+            <div className="progress-bar" style={{ width: `${progress.percent}%` }} />
+          </div>
+          <small className="dim">{progress.text}</small>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * 模拟器实例 (original views/InstancesView.tsx): every AVD with its state, bound account, current activity and the
@@ -95,7 +118,7 @@ export function InstancesView({ visible }: ViewProps) {
     return account && boundTo(account, byIndex.get(i)) ? account : null;
   };
   const controls = useGatherControls(gameId, game?.packageName ?? '', queues, nameOf);
-  const { badges, refresh: refreshBadges } = useGatherConfigBadges(gameId, instances.map((instance) => instance.record.index),
+  const { badges, entries: configEntries, refresh: refreshBadges } = useGatherConfigBadges(gameId, instances.map((instance) => instance.record.index),
     (i) => queues.byInstance[i]?.auto === true, (i) => boundAccountOf(i) !== null);
 
   const visibleInstances = useMemo(() => filterInstances(instances, accounts, query, statusFilter), [instances, accounts, query, statusFilter]);
@@ -205,8 +228,9 @@ export function InstancesView({ visible }: ViewProps) {
     }
   }
 
-  const batchDisabled = batchRunning !== null || visibleInstances.length === 0;
-  const batchHint = batchRunning !== null ? '上一次批量操作还在进行' : visibleInstances.length === 0 ? '当前筛选下没有实例' : undefined;
+  const batchDisabled = !gameId || batchRunning !== null || visibleInstances.length === 0;
+  const batchHint = !gameId ? '游戏模块未加载，暂时不能批量采集' : batchRunning !== null ? '上一次批量操作还在进行'
+    : visibleInstances.length === 0 ? '当前筛选下没有实例' : undefined;
   const batchItems: MenuItem[] = [
     { label: '全部开启自动采集', icon: 'play', disabled: batchDisabled, hint: batchHint, onClick: () => void runBatch('on') },
     { label: '全部关闭自动采集', icon: 'stop', disabled: batchDisabled, hint: batchHint, onClick: () => void runBatch('off') },
@@ -351,8 +375,7 @@ export function InstancesView({ visible }: ViewProps) {
                           <td>
                             <div className="instances-activity">
                               {gatherRun && <SemanticTag tone={gatherRun.status === 'stopping' ? 'warning' : 'accent'}>{gatherRun.status === 'stopping' ? '采集停止中' : '采集中'}</SemanticTag>}
-                              {script && <span title={`${script.scriptName}（${script.source === 'plan' ? '计划任务' : '临时运行'}）`}>
-                                <SemanticTag tone={script.status === 'paused' ? 'warning' : 'accent'}>{scriptRunBadge(script)}</SemanticTag></span>}
+                              {script && <ScriptRunCell run={script} />}
                               {!gatherRun && !script && <span className="dim">空闲</span>}
                             </div>
                           </td>
@@ -360,7 +383,7 @@ export function InstancesView({ visible }: ViewProps) {
                             {gameId ? (
                               <InstanceGatherControls instance={instance} state={state} pause={pauseInfoOf(state)} now={now}
                                 sampling={queues.sampling[i] === true} toggling={queues.autoBusy[i] === true} resuming={queues.resuming[i] === true}
-                                configEnabled={badges[i]?.enabled === true} hasAccount={Boolean(account)} isBase={isBase}
+                                config={configSwitchState(configEntries[i])} configTip={badges[i]?.text} hasAccount={Boolean(account)} isBase={isBase}
                                 onToggleAuto={(target, on) => void controls.toggleAuto(target, on)} onSample={(target) => void controls.sample(target)}
                                 onResume={controls.resume} onOpenConfig={setConfigFor} onOpenAccounts={() => navigate('accounts')} />
                             ) : <span className="dim">—</span>}

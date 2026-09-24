@@ -13,20 +13,30 @@ import {
 } from '@avdm/automation/wanlong/pure';
 import type { AutomationSettings } from '../../../shared/ipc';
 
-/** `account-broken`: the bound account's copy cannot be parsed, so the form shows defaults (original warning path). */
-export type GatherConfigOrigin = 'account' | 'account-broken' | 'instance' | 'default';
+/**
+ * `account-broken`: the bound account's copy cannot be parsed, so the form shows defaults (original warning path).
+ * `instance-unmoved`: an account is bound but holds no config, so the instance's own copy is still the one in effect
+ * (runs use it too); saving moves it into the account (a bind whose migration failed, or a copy kept on the instance).
+ */
+export type GatherConfigOrigin = 'account' | 'account-broken' | 'instance' | 'instance-unmoved' | 'default';
 
-/** Where the shown config came from. */
-export function configOriginOf(settings: Pick<AutomationSettings, 'config' | 'configAccount' | 'accountConfigError'>): GatherConfigOrigin {
+/** Where the shown config came from. `boundAccount`: name of the account bound to this AVD, if any. */
+export function configOriginOf(settings: Pick<AutomationSettings, 'config' | 'configAccount' | 'accountConfigError'>,
+  boundAccount: string | null = null): GatherConfigOrigin {
   if (settings.configAccount) return 'account';
   if (settings.accountConfigError) return 'account-broken';
-  return Object.keys(settings.config).length > 0 ? 'instance' : 'default';
+  if (Object.keys(settings.config).length === 0) return 'default';
+  return boundAccount ? 'instance-unmoved' : 'instance';
 }
 
 /** 「当前配置来源」 text (original ORIGIN_TEXT, adapted to the account-or-instance storage). */
-export function originText(origin: GatherConfigOrigin, settings: Pick<AutomationSettings, 'configAccount'>, index: number): string {
+export function originText(origin: GatherConfigOrigin, settings: Pick<AutomationSettings, 'configAccount'>, index: number,
+  boundAccount: string | null = null): string {
   if (origin === 'account') return `存于绑定账号「${settings.configAccount?.name ?? ''}」（accounts.json，跟着账号走）`;
   if (origin === 'account-broken') return '绑定账号里的那份读不出来，当前显示的是默认配置（保存后覆盖账号里的那份）';
+  if (origin === 'instance-unmoved') {
+    return `绑定账号「${boundAccount ?? ''}」里还没有采集配置，当前生效的是实例 #${index} 本机设置里的那份（点「保存」会把它存进账号）`;
+  }
   if (origin === 'instance') return `存于实例 #${index} 的本机设置（未绑定账号）`;
   return '尚未保存过，当前是默认配置';
 }
@@ -84,6 +94,15 @@ export interface GatherConfigEntry {
   settings?: AutomationSettings;
   /** The settings could not be read (e.g. a corrupt settings file). */
   error?: string;
+}
+
+/** The config master switch as the instance table shows it; `loading` shows nothing (never a false 「配置未启用」). */
+export type ConfigSwitchState = 'loading' | 'unreadable' | 'on' | 'off';
+
+export function configSwitchState(entry: GatherConfigEntry | undefined): ConfigSwitchState {
+  if (!entry) return 'loading';
+  if (!entry.settings || entry.settings.accountConfigError || entry.settings.settingsError) return 'unreadable';
+  return draftOf(entry.settings).enabled ? 'on' : 'off';
 }
 
 /**

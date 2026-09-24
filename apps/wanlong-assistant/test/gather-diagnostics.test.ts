@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { MarchState } from '@avdm/automation/wanlong/pure';
 import type { SchedulerQueueState } from '../src/shared/ipc';
 import { attentionCount, collectDiagnostics, diagnosticsTip, worstLevel } from '../src/renderer/views/gather/diagnostics';
-import { SAFETY_PAUSE_FAILURES, notPaused, pauseInfoOf, pausedIndexes } from '../src/renderer/views/gather/pause-port';
+import { notPaused, pauseInfoOf, pausedIndexes } from '../src/renderer/views/gather/pause-port';
 
 const NOW = 1_800_000_000_000;
 
@@ -21,7 +21,7 @@ function row(slot: number, patch: Partial<MarchState> = {}): MarchState {
   };
 }
 
-describe('pause port (derived from the scheduler until the alerts module plugs in)', () => {
+describe('pause port (reads the queue state pause until the alerts module plugs in)', () => {
   it('an alerts pause record wins, with the original alert title and advice', () => {
     const pause = pauseInfoOf(state({ pause: { reason: '账号在其他设备登录', at: NOW, kind: 'suspectedKicked' } }));
     expect(pause).toMatchObject({ paused: true, kind: 'suspectedKicked', title: '疑似被顶号', reason: '账号在其他设备登录', at: NOW, source: 'alerts' });
@@ -29,11 +29,18 @@ describe('pause port (derived from the scheduler until the alerts module plugs i
     expect(pauseInfoOf(state({ pause: { reason: '', at: NOW } }))).toMatchObject({ paused: true, title: '已暂停', reason: null });
   });
 
-  it('the scheduler safety pause (auto off after N consecutive failures) is a 连续失败熔断 pause; a user switch-off is not', () => {
-    expect(pauseInfoOf(state({ auto: false, failureCount: SAFETY_PAUSE_FAILURES, error: '截图超时' }))).toMatchObject({
-      paused: true, kind: 'consecutiveFailures', title: '连续失败熔断', reason: '连续 8 次失败，自动调度已暂停：截图超时', source: 'scheduler',
+  it('the scheduler\'s own safety pause comes from the queue state (no mirrored threshold); a user switch-off is not a pause', () => {
+    const live = { reason: '连续 8 次失败，自动调度已暂停：截图超时', at: NOW, kind: 'consecutiveFailures', source: 'scheduler' as const };
+    expect(pauseInfoOf(state({ auto: false, failureCount: 8, error: '截图超时', pause: live }))).toMatchObject({
+      paused: true, kind: 'consecutiveFailures', title: '连续失败熔断', reason: live.reason, at: NOW, source: 'scheduler',
     });
-    expect(pauseInfoOf(state({ auto: false, failureCount: 3 })).paused).toBe(false);
+    // Restored after a restart: no time, the latest sampling error completes the reason.
+    const restored = { reason: '连续 8 次失败，自动调度已暂停。', at: 0, kind: 'consecutiveFailures', source: 'scheduler' as const };
+    expect(pauseInfoOf(state({ auto: false, failureCount: 8, error: 'ADB 截图失败', pause: restored }))).toMatchObject({
+      reason: '连续 8 次失败，自动调度已暂停：ADB 截图失败', at: null,
+    });
+    // Failure counts alone never make a pause here: only the scheduler knows its (configurable) threshold.
+    expect(pauseInfoOf(state({ auto: false, failureCount: 12 })).paused).toBe(false);
     expect(pauseInfoOf(state({ auto: true, failureCount: 9 })).paused).toBe(false);
     expect(pauseInfoOf(null, 4)).toEqual(notPaused(4));
     expect(pausedIndexes([pauseInfoOf(state({ instanceIndex: 5, pause: { reason: 'x', at: 1 } })), notPaused(1),

@@ -28,14 +28,20 @@ export async function readOccupancy(indices: readonly number[]): Promise<{ holde
   };
 }
 
+interface Settle {
+  resolve(ran: boolean): void;
+  reject(error: unknown): void;
+}
+
 /**
  * Instance lifecycle guard for the instances page: before stop / restart / remove, ask main who is using the
  * instances (gather, scheduler, login, script plans, another process's lease) and let the user confirm. Render
- * `dialog` somewhere in the page; `guard()` resolves true when the action ran, false when the user cancelled.
+ * `dialog` somewhere in the page; `guard()` resolves true when the action ran, false when the user cancelled, and
+ * rejects with the action's error when it failed (asked or not), so the caller's error toast always fires.
  */
 export function useInstanceLifecycleGuard(): { guard: (request: LifecycleRequest) => Promise<boolean>; dialog: ReactNode } {
   const [pending, setPending] = useState<{ request: LifecycleRequest; confirmation: LifecycleConfirmation } | null>(null);
-  const settle = useRef<((ran: boolean) => void) | null>(null);
+  const settle = useRef<Settle | null>(null);
 
   const guard = useCallback(async (request: LifecycleRequest): Promise<boolean> => {
     const { holders, unknown } = await readOccupancy(request.indices);
@@ -47,16 +53,16 @@ export function useInstanceLifecycleGuard(): { guard: (request: LifecycleRequest
       await request.run();
       return true;
     }
-    return new Promise<boolean>((resolve) => {
-      settle.current?.(false);
-      settle.current = resolve;
+    return new Promise<boolean>((resolve, reject) => {
+      settle.current?.resolve(false);
+      settle.current = { resolve, reject };
       setPending({ request, confirmation });
     });
   }, []);
 
   const close = () => {
     setPending(null);
-    settle.current?.(false);
+    settle.current?.resolve(false);
     settle.current = null;
   };
 
@@ -72,10 +78,13 @@ export function useInstanceLifecycleGuard(): { guard: (request: LifecycleRequest
         </>
       )}
       onConfirm={async () => {
-        await pending.request.run();
         const done = settle.current;
         settle.current = null;
-        done?.(true);
+        // ★ Never swallowed: a failed stop / restart / remove rejects guard() so the page reports it in Chinese; the
+        //   dialog then closes (ConfirmDialog closes after onConfirm resolves) instead of hanging with a spinner.
+        try { await pending.request.run(); }
+        catch (error) { done?.reject(error); return; }
+        done?.resolve(true);
       }}
       onClose={close}
     />

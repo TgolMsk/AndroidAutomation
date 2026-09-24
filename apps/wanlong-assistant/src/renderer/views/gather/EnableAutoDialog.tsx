@@ -7,7 +7,10 @@ import { Spinner } from '../../components/StatusBadge';
 import { collectOutcome, mapLimited, type BatchOutcome } from './batch';
 import { setQueueAuto } from './queue-store';
 
-/** Probes run at most this many at a time (each is a capture plus a vision worker). */
+/**
+ * Probes run at most this many at a time (each is a capture plus a vision worker); enabling uses the same cap (each
+ * enable runs a first panel sample, possibly cold-starting the game).
+ */
 const PROBE_CONCURRENCY = 2;
 /** Below this the OCR of countdowns and levels becomes unreliable (templates are 2560×1440). */
 export const MIN_RELIABLE_WIDTH = 1920;
@@ -35,8 +38,10 @@ export function probeVerdict(report: AutomationProbeReport, packageName: string)
 /**
  * Confirm enabling auto gathering (original batch 「全部开启自动采集」 confirm + the old per-instance 「我已核对探针结果」
  * checkbox): every target gets a FRESH read-only probe first and its verdict is shown; instances that pass are
- * ticked. The main process enforces the probe gate again on the first enable, so ticking a blocked instance is only
- * useful when this window already confirmed it earlier (the game may then be cold-started).
+ * ticked. Enabling hands the confirmed probe back (`probeCapturedAt`): main accepts that recent pass as its
+ * first-enable gate (same AVD and template set, no edit since, ≤ 5 min), so the verdict shown is the one enforced and
+ * nothing is probed twice. A ticked blocked instance has no pass to hand back: main probes again (or uses a pass it
+ * confirmed earlier in this session, and may then cold-start the game).
  */
 export function EnableAutoDialog({ gameId, packageName, targets, skipped, onClose, onDone }: {
   gameId: string;
@@ -77,7 +82,11 @@ export function EnableAutoDialog({ gameId, packageName, targets, skipped, onClos
     if (busy || selected.length === 0) return;
     setBusy(true);
     try {
-      const results = await Promise.all(selected.map(async (index) => ({ index, reason: await setQueueAuto(gameId, index, true) })));
+      const results = await mapLimited(selected, PROBE_CONCURRENCY, async (index) => {
+        const verdict = verdicts[index];
+        const opts = verdict?.kind === 'ready' ? { probeCapturedAt: verdict.report.capturedAt } : undefined;
+        return { index, reason: await setQueueAuto(gameId, index, true, opts) };
+      });
       onDone(collectOutcome(results));
     } finally {
       setBusy(false);
@@ -117,7 +126,7 @@ export function EnableAutoDialog({ gameId, packageName, targets, skipped, onClos
         })}
       </ul>
       {Object.values(verdicts).some((verdict) => verdict.kind === 'blocked') && (
-        <p className="hint block">没通过的实例默认不勾：先把游戏停在城内或世界地图再重试。若本窗口此前已为它确认过探针，勾上后主进程会直接开启（必要时冷启动游戏），否则会拒绝并说明原因。</p>
+        <p className="hint block">没通过的实例默认不勾：先把游戏停在城内或世界地图再重试。若本窗口此前已为它确认过探针，勾上后会直接开启（必要时冷启动游戏）；否则开启时会再做一次只读探测，不通过就拒绝并说明原因。</p>
       )}
     </Modal>
   );

@@ -36,6 +36,8 @@ const TEMPLATE_JOB_TIMEOUT_MESSAGES: Record<TemplateJob['kind'], string> = {
 const NOT_READY = '该实例暂不能运行自动任务，请在账号管理中检查账号登录状态';
 /** DECISIONS B: a tripped circuit breaker is not a failure; the scheduler looks again after this (probes continue). */
 const CIRCUIT_BREAKER_COOLDOWN_MS = 10 * 60_000;
+/** How long a read-only probe pass the user confirmed in the enable dialog stands in for the first-enable probe. */
+const PROBE_PASS_TTL_MS = 5 * 60_000;
 const MAX_RUN_HISTORY = 100;
 const RUN_HISTORY_VERSION = 1;
 const MAX_RUN_HISTORY_BYTES = 256 * 1024;
@@ -196,6 +198,13 @@ export class AutomationHost {
   private readonly scheduleRequests = new Map<number, number>();
   /** Instances whose first enable passed the read-only probe (this AVD, this template set) since the last edit. */
   private readonly probeConfirmed = new Map<number, { createdAt: string; templateDir: string }>();
+  /**
+   * The latest passing read-only probe of each instance (identified by its frame's `capturedAt`): the enable dialog
+   * passes that id back, so the verdict the user confirmed is the one enforced instead of a second probe.
+   */
+  private readonly probePasses = new Map<number, { createdAt: string; templateDir: string; capturedAt: number; at: number }>();
+  /** Bumped by every template or policy edit: a probe that started before the edit never counts as a pass. */
+  private readonly probeGenerations = new Map<number, number>();
   private readonly historyFile: string;
   private readonly historyReady: Promise<void>;
   private historyWrite: Promise<void> = Promise.resolve();
@@ -350,6 +359,7 @@ export class AutomationHost {
   async clearInstanceGatherConfig(gameId: string, index: number): Promise<void> {
     gamePlugin(gameId);
     await this.store.save(gameId, asIndex(index), { config: {} });
+    this.emitSettingsChanged(gameId, asIndex(index));
   }
 
   templateSets(gameId: string): Promise<TemplateSet[]> {
@@ -362,12 +372,13 @@ export class AutomationHost {
     const i = asIndex(index);
     return this.withControlLock(i, async () => {
       this.assertTemplateEditable(i);
-      this.probeConfirmed.delete(i);
+      this.forgetProbe(i);
       if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
       return this.withDeviceLease(i, async () => {
       const size = plugin.referenceSize ?? { width: 2560, height: 1440 };
       const set = await this.templates.createSet(gameId, name, plugin.packageName, size.width, size.height);
       await this.store.save(gameId, i, { templateDir: set.directory });
+      this.emitSettingsChanged(gameId, i);
       return set;
       });
     });
@@ -436,7 +447,7 @@ export class AutomationHost {
       this.assertTemplateEditable(i);
       const set = await this.templateSet(gameId, i);
       if (!set) throw new Error('请先选择或创建模板集');
-      this.probeConfirmed.delete(i);
+      this.forgetProbe(i);
       if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
       return this.withDeviceLease(i, () => this.templates.save(set.directory, ready));
     });
@@ -463,7 +474,7 @@ export class AutomationHost {
       this.assertTemplateEditable(i);
       const set = await this.templateSet(gameId, i);
       if (!set) throw new Error('请先选择或创建模板集');
-      this.probeConfirmed.delete(i);
+      this.forgetProbe(i);
       if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
       await this.withDeviceLease(i, () => this.templates.delete(set.directory, id));
       return set.directory;
@@ -535,7 +546,7 @@ export class AutomationHost {
     // A set that changed between the dry run and the merge (another writer in between): switch those schedules off too.
     for (const i of (await this.instancesBoundTo(gameId, added)).filter((index) => !bound.includes(index))) {
       await this.withControlLock(i, async () => {
-        this.probeConfirmed.delete(i);
+        this.forgetProbe(i);
         if ((await this.scheduler.get(gameId, i)).enabled) { await this.scheduler.disable(gameId, i); paused.push(i); }
       });
     }
@@ -568,7 +579,7 @@ export class AutomationHost {
     if (first === undefined) return action();
     return this.withControlLock(first, async () => {
       this.assertTemplateEditable(first);
-      this.probeConfirmed.delete(first);
+      this.forgetProbe(first);
       if ((await this.scheduler.get(gameId, first)).enabled) {
         await this.scheduler.disable(gameId, first);
         paused.push(first);
@@ -600,6 +611,18 @@ export class AutomationHost {
     this.templateChanges.emit({ gameId, directory, reason, templateIds, at: Date.now() });
   }
 
+  /** A changed template or policy needs a fresh scene probe before the next automatic write. */
+  private forgetProbe(index: number): void {
+    this.probeConfirmed.delete(index);
+    this.probePasses.delete(index);
+    this.probeGenerations.set(index, (this.probeGenerations.get(index) ?? 0) + 1);
+  }
+
+  /** Tell every page that an instance's settings changed (another page's badges and drawers reload). */
+  private emitSettingsChanged(gameId: string, index: number): void {
+    broadcast('automation-settings-changed', { gameId, index, at: Date.now() });
+  }
+
   private assertTemplateEditable(index: number): void {
     if (this.disposed) throw new Error('应用正在退出');
     if (this.activeByIndex.has(index) || this.gatherRunner.isRunning(index)) {
@@ -628,7 +651,7 @@ export class AutomationHost {
       }
       // A changed template or policy needs a fresh scene probe before the next automatic write.
       if (patch.templateDir !== undefined || patch.config !== undefined) {
-        this.probeConfirmed.delete(i);
+        this.forgetProbe(i);
         if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
       }
       this.assertTemplateEditable(i);
@@ -650,6 +673,7 @@ export class AutomationHost {
           await this.store.save(gameId, i, patch, { configFor });
         }
       });
+      this.emitSettingsChanged(gameId, i);
       return this.settings(gameId, i);
     });
   }
@@ -667,8 +691,9 @@ export class AutomationHost {
    * ETA scheduler's readiness gate and one read-only sample. ★ Disabling never queues behind an enable that is still
    * probing or cold-starting the game (conventions §6.6): it supersedes it and aborts its sample right away.
    * Resume paths (alerts, bot) call `eta.setAuto(i, true)` directly and skip the probe gate.
+   * `probeCapturedAt`: the probe the user just confirmed (enable dialog); a recent pass with that id counts as the gate.
    */
-  async setSchedule(gameId: string, index: number, enabled: boolean): Promise<AutomationSchedule> {
+  async setSchedule(gameId: string, index: number, enabled: boolean, opts: { probeCapturedAt?: number } = {}): Promise<AutomationSchedule> {
     if (enabled && this.disposed) throw new Error('应用正在退出');
     gamePlugin(gameId);
     if (gameId !== 'wanlong') throw new Error('该游戏尚未接入自动续跑');
@@ -685,7 +710,7 @@ export class AutomationHost {
       // The accounts gate (base instance, login in progress, pending account) refuses before any device read.
       await this.assertReady(gameId, i);
       if (superseded()) return this.scheduler.get(gameId, i);
-      await this.confirmProbe(gameId, i);
+      await this.confirmProbe(gameId, i, opts?.probeCapturedAt);
       if (superseded()) return this.scheduler.get(gameId, i);
       // Readiness (instance running, template set, config enabled, account) is the ETA scheduler's gate
       // (ensureAutomationReady). The game need not stay in front afterwards (DECISIONS C): samples and cycles
@@ -698,13 +723,21 @@ export class AutomationHost {
    * DECISIONS C「首次启用自动调度仍需只读探针 + 用户确认」, enforced fail-closed here (the renderer adds the
    * confirmation): a pass is remembered for this AVD and template set until a template or policy edit, so re-enabling
    * later may cold-start a game that is not running. The memory is per process: after a restart the probe is due again.
+   * A pass the user just confirmed (`probeCapturedAt`, same AVD, same template set, no edit since, ≤ 5 min old) counts
+   * as the gate, so enabling does not probe twice and never refuses what the dialog said could be enabled.
    */
-  private async confirmProbe(gameId: string, index: number): Promise<void> {
+  private async confirmProbe(gameId: string, index: number, probeCapturedAt?: number): Promise<void> {
     const [instance, settings] = await Promise.all([this.instanceIdentity(index), this.store.get(gameId, index)]);
     if (!instance) throw new Error(`实例 #${index} 不存在`);
     if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
     const confirmed = this.probeConfirmed.get(index);
     if (confirmed?.createdAt === instance.createdAt && confirmed.templateDir === settings.templateDir) return;
+    const pass = this.probePasses.get(index);
+    if (probeCapturedAt !== undefined && pass && pass.capturedAt === probeCapturedAt && pass.createdAt === instance.createdAt &&
+      pass.templateDir === settings.templateDir && Date.now() - pass.at <= PROBE_PASS_TTL_MS) {
+      this.probeConfirmed.set(index, { createdAt: instance.createdAt, templateDir: settings.templateDir });
+      return;
+    }
     const report = await this.probe(gameId, index);
     if (!report.launchReady) {
       throw new Error(`首次开启自动续跑前需要只读探针通过：${report.launchReason}。请把游戏停在城内或世界地图后重新探测`);
@@ -717,6 +750,7 @@ export class AutomationHost {
     if (this.disposed) throw new Error('应用正在退出');
     const plugin = gamePlugin(gameId);
     const i = asIndex(index);
+    const generation = this.probeGenerations.get(i) ?? 0;
     const manager = await this.host.get();
     const [state, settings] = await Promise.all([manager.getState(i), this.store.get(gameId, i)]);
     if (state.status !== 'running') throw new Error(`实例 #${i} 尚未就绪，请先启动并等待 Android 启动完成`);
@@ -740,6 +774,9 @@ export class AutomationHost {
       frame,
     });
     const decision = gameId === 'wanlong' ? inspectGatherProbe(report) : { ok: false as const, reason: '游戏包尚无安全启动条件' };
+    if (decision.ok && (this.probeGenerations.get(i) ?? 0) === generation) {
+      this.probePasses.set(i, { createdAt: state.record.createdAt, templateDir: settings.templateDir, capturedAt: report.frame.capturedAt, at: Date.now() });
+    }
     return {
       gameId: report.gameId,
       packageName: report.packageName,

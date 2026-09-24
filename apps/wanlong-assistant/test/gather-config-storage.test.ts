@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountManager } from '../src/main/automation/accounts';
+import { AccountStore } from '../src/main/automation/accounts/store';
 import { AutomationHost } from '../src/main/automation/host';
 import { AutomationSettingsStore } from '../src/main/automation/store';
 import type { ManagerHost } from '../src/main/manager-host';
@@ -161,7 +162,7 @@ describe('a broken settings file can be repaired from the gather config page', (
     await host.saveSettings('wanlong', 1, { templateDir: home });
     await accounts.bind(account.id, 1);
     await host.saveSettings('wanlong', 1, { config: { version: 2, enabled: true } });
-    await accounts.setScriptParams(account.id, 'gather', { configJson: '{ broken' });
+    await new AccountStore(home).setScriptParams(account.id, 'gather', { configJson: '{ broken' });
 
     const view = await host.settings('wanlong', 1);
     expect(view.accountConfigError).toContain('账号「主号」里保存的采集配置已损坏');

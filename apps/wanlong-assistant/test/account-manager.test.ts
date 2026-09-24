@@ -10,6 +10,7 @@ import { AvdmError, withFileLock } from '@avdm/core';
 import type { ManagerHost } from '../src/main/manager-host';
 import type { AutomationHost } from '../src/main/automation/host';
 import { AccountManager, toDevicePoint, validateLoginInput, type AccountManagerPorts } from '../src/main/automation/accounts';
+import { AccountStore } from '../src/main/automation/accounts/store';
 import type { AccountLoginSession, AccountsChangedEvent, GameAccount, HomeVerdict } from '../src/main/automation/accounts/types';
 
 const PKG = 'com.lilithgames.samo.android.cn';
@@ -481,7 +482,7 @@ describe('accounts: binding, takeover and the automation readiness gate', () => 
     const bound = await h.accounts.bind(a.id, 2);
     expect(bound.notice).toContain('已搬到账号');
     expect(bound.account.scriptParams?.gather?.configJson).toBe('{"version":2,"enabled":true}');
-    await h.accounts.setScriptParams(a.id, 'gather', { configJson: '{"version":2,"enabled":false}' });
+    await h.accounts.saveGatherConfig(a.id, { version: 2, enabled: false });
     await h.accounts.bind(a.id, null);
     const again = await h.accounts.bind(a.id, 2);
     expect(again.notice).toContain('没有用实例上的那份覆盖');
@@ -501,7 +502,9 @@ describe('accounts: binding, takeover and the automation readiness gate', () => 
     expect((await h.accounts.bind(a.id, null)).notice).toBeUndefined();
     expect(await h.accounts.gatherConfigFor('wanlong', 2)).toBeNull();
     await h.accounts.bind(a.id, 2);
-    await h.accounts.setScriptParams(a.id, 'gather', { configJson: '[1]' });
+    // ★ The generic script-params path refuses the gather namespace (its only writer is the gather config page).
+    await expect(h.accounts.setScriptParams(a.id, 'gather', { configJson: '[1]' })).rejects.toThrow('采集配置不能在这里修改');
+    await new AccountStore(home).setScriptParams(a.id, 'gather', { configJson: '[1]' });
     await expect(h.accounts.gatherConfigFor('wanlong', 2)).rejects.toThrow('采集配置已损坏');
     expect((await h.accounts.saveGatherConfig(a.id, null)).scriptParams).toBeUndefined();
   });

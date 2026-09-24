@@ -17,6 +17,7 @@ import {
 import { InstanceOccupancy } from '../src/main/app/occupancy';
 import { registerServiceOccupancy } from '../src/main/app/service-occupancy';
 import { AccountManager } from '../src/main/automation/accounts';
+import { AccountStore } from '../src/main/automation/accounts/store';
 import { WanlongGatherRunner, type GatherAdbDevice, type GatherManager } from '../src/main/automation/gather-runner';
 import { AutomationHost } from '../src/main/automation/host';
 import { DeviceLanes } from '../src/main/device/lane';
@@ -331,7 +332,7 @@ describe('accounts: readiness gate and gather config', () => {
       // A corrupt account copy: a run refuses with the reason (never silently another config); the page still loads
       // (defaults plus the reason, original loadGatherConfig — never the instance copy posing as the account's) so the
       // user can re-save, which repairs the account's copy.
-      await accounts.setScriptParams(account.id, 'gather', { configJson: '{坏掉的 JSON' });
+      await new AccountStore(home).setScriptParams(account.id, 'gather', { configJson: '{坏掉的 JSON' });
       await expect(host.run('wanlong', 'gather-once', 1)).rejects.toThrow('已损坏');
       expect(runner.runOnce).toHaveBeenCalledTimes(1);
       const broken = await host.settings('wanlong', 1);

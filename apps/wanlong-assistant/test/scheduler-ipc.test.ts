@@ -43,5 +43,11 @@ describe('scheduler IPC handlers', () => {
     expect(automation.setSchedule).toHaveBeenCalledWith('wanlong', 1, true);
     await expect(schedulerHandlers.schedulerSetAuto(ctx, 'wanlong', 1, 'yes' as never)).rejects.toThrow('自动续跑开关无效');
     expect(automation.setSchedule).toHaveBeenCalledTimes(1);
+    // The probe the user just confirmed in the enable dialog is handed through; a malformed id is refused.
+    await schedulerHandlers.schedulerSetAuto(ctx, 'wanlong', 1, true, { probeCapturedAt: 1234 });
+    expect(automation.setSchedule).toHaveBeenLastCalledWith('wanlong', 1, true, { probeCapturedAt: 1234 });
+    await expect(schedulerHandlers.schedulerSetAuto(ctx, 'wanlong', 1, true, { probeCapturedAt: 'x' } as never)).rejects.toThrow('探针编号无效');
+    await expect(schedulerHandlers.schedulerSetAuto(ctx, 'wanlong', 1, true, [] as never)).rejects.toThrow('开启选项无效');
+    expect(automation.setSchedule).toHaveBeenCalledTimes(2);
   });
 });

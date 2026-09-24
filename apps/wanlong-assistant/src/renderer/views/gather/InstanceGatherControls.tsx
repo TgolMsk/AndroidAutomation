@@ -7,6 +7,7 @@ import { SemanticTag, type SemanticTone } from '../../components/SemanticTag';
 import { Spinner } from '../../components/StatusBadge';
 import { InstanceDiagnosticsBadge } from './InstanceDiagnosticsBadge';
 import { resumeMessage } from './InstanceMarchCard';
+import type { ConfigSwitchState } from './config-model';
 import type { GatherPauseInfo } from './pause-port';
 import { formatAgo, formatClock } from './present';
 import { GatherSwitch, QueueBadge } from './widgets';
@@ -42,6 +43,17 @@ export function describeGatherStatus(state: SchedulerQueueState, pause: GatherPa
   return { text: '未采样', tone: null, tip: '还没读过这个实例的「部队管理」面板。' };
 }
 
+/** Why 采样 is disabled, or null when it can run. Pure (the same reason the tooltip shows). */
+export function sampleBlockedReason(status: string, sampling: boolean, operating: boolean): string | null {
+  if (status === 'starting' || status === 'booting') return '实例正在启动，等 Android 启动完成后才能采样。';
+  if (status === 'stopping') return '实例正在关机，无法采样。';
+  if (status === 'error') return '实例处于错误状态，请先重启实例再采样。';
+  if (status !== 'running') return '实例未开机，无法采样。';
+  if (sampling) return '正在读「部队管理」面板，等这次采样完成再点。';
+  if (operating) return '这个实例正在进行设备操作（派兵或收尾），等它结束再采样。';
+  return null;
+}
+
 export interface InstanceGatherControlsProps {
   instance: InstanceState;
   state: SchedulerQueueState;
@@ -51,8 +63,10 @@ export interface InstanceGatherControlsProps {
   sampling: boolean;
   toggling: boolean;
   resuming: boolean;
-  /** The config master switch (「启用自动采集」). */
-  configEnabled: boolean;
+  /** The config master switch (「启用自动采集」): nothing is said while it loads; an unreadable copy says so. */
+  config: ConfigSwitchState;
+  /** The config badge sentence (why it is unreadable), for the 「配置读不出」 tag. */
+  configTip?: string;
   hasAccount: boolean;
   isBase: boolean;
   onToggleAuto(index: number, enabled: boolean): void;
@@ -68,7 +82,7 @@ export interface InstanceGatherControlsProps {
  * 恢复, and the 「配置未启用」 / 「未绑定账号」 hints on the second. Same switch and same calls as the overview cards.
  */
 export function InstanceGatherControls(props: InstanceGatherControlsProps) {
-  const { instance, state, pause, now, sampling, toggling, resuming, configEnabled, hasAccount, isBase } = props;
+  const { instance, state, pause, now, sampling, toggling, resuming, config, configTip, hasAccount, isBase } = props;
   const [confirmResume, setConfirmResume] = useState(false);
   const index = instance.record.index;
   const paused = pause.paused;
@@ -80,12 +94,14 @@ export function InstanceGatherControls(props: InstanceGatherControlsProps) {
   const switchTip = paused
     ? '这个实例被异常暂停了，自动调度已经关掉。请用旁边的「恢复」按钮重新开启 —— 那条路会同时清掉暂停记录，直接扳开关不会。'
     : isBase && !state.auto ? '基础实例只用于克隆，不参与自动采集。请在克隆出来的副本上开启。'
-      : !state.auto && !running ? '实例未开机，先启动实例再开启自动采集。'
+      : !state.auto && !running ? (up ? '实例正在启动，等 Android 启动完成后再开启自动采集。' : '实例未开机，先启动实例再开启自动采集。')
         : state.auto ? '关闭后只保留倒计时展示，不再主动操作这个模拟器（与「采集总览」页的「自动调度」是同一个开关）。'
           : '开启前先做一次只读探测并确认，之后先读一次「部队管理」面板，队列释放时自动唤醒去派下一轮采集队（与「采集总览」页的「自动调度」是同一个开关）。';
-  const sampleTip = !up ? '实例未开机，无法采样。'
-    : paused ? '注意：这个实例已被异常暂停，但「采样」仍然会真的去操作模拟器读一次面板。游戏若还停在异常界面，这次多半也会失败。'
-      : '真的去开一次「部队管理」面板读当前队列状态，不派兵。一次采样十几张截图、几秒钟，请不要连点。';
+  // ★ One predicate for both the disabled state and its reason (a disabled button always says why).
+  const sampleBlocked = sampleBlockedReason(instance.status, busySampling, state.operating === true);
+  const sampleTip = sampleBlocked
+    ?? (paused ? '注意：这个实例已被异常暂停，但「采样」仍然会真的去操作模拟器读一次面板。游戏若还停在异常界面，这次多半也会失败。'
+      : '真的去开一次「部队管理」面板读当前队列状态，不派兵。一次采样十几张截图、几秒钟，请不要连点。');
   const status = describeGatherStatus(state, pause, sampling, now);
 
   return (
@@ -95,7 +111,7 @@ export function InstanceGatherControls(props: InstanceGatherControlsProps) {
           onChange={(next) => props.onToggleAuto(index, next)} />
         <span className="gather-label">{state.auto ? '已开启' : '未开启'}</span>
         <QueueBadge state={state} />
-        <button type="button" className="btn xs" title={sampleTip} disabled={!running || busySampling || state.operating === true}
+        <button type="button" className="btn xs" title={sampleTip} disabled={sampleBlocked !== null}
           onClick={() => props.onSample(index)}>
           {busySampling ? <Spinner size={11} /> : <Icon name="refresh" size={12} />}采样
         </button>
@@ -115,7 +131,13 @@ export function InstanceGatherControls(props: InstanceGatherControlsProps) {
             未绑定账号
           </SemanticTag>
         )}
-        {!paused && !configEnabled && (hasAccount || state.auto) && (
+        {!paused && config === 'unreadable' && (
+          <SemanticTag tone="danger" onClick={() => props.onOpenConfig(index)}
+            title={configTip ?? '这个实例的采集配置读不出来，采集在修好之前不会开跑。点击就地展开采集配置，核对后点「保存」即可修复。'}>
+            配置读不出
+          </SemanticTag>
+        )}
+        {!paused && config === 'off' && (hasAccount || state.auto) && (
           <SemanticTag tone="warning" onClick={() => props.onOpenConfig(index)}
             title="这个实例的采集配置里「启用自动采集」是关的：开了自动采集也只会定时读面板，不会派兵。点击就地展开采集配置，打开总开关并保存。">
             配置未启用

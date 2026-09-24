@@ -16,7 +16,8 @@ export interface GatherConfigBadges {
 
 /**
  * Config-health badges of the given instances (original useGatherConfigBadges): loads each instance's settings once,
- * again after `refresh()` (a save), a template set change or any account change (binding moves configs).
+ * again after `refresh()`, any settings save (`automation-settings-changed`, from whichever page), a template change or
+ * any account change (binding moves configs).
  */
 export function useGatherConfigBadges(
   gameId: string, indices: readonly number[], autoOf: (index: number) => boolean, boundOf: (index: number) => boolean,
@@ -39,6 +40,9 @@ export function useGatherConfigBadges(
 
   useAvdmEvent('account-changed', (event) => { if (event.gameId === gameId) refresh(); });
   useAvdmEvent('templates-changed', () => refresh());
+  // A save from any page (the other page's drawer, a template set choice, a bind moving a config) reaches kept-alive
+  // pages too, so every page shows the same badges.
+  useAvdmEvent('automation-settings-changed', (event) => { if (event.gameId === gameId) refresh(); });
 
   const badges = useMemo(() => {
     const map: Record<number, GatherConfigBadge> = {};

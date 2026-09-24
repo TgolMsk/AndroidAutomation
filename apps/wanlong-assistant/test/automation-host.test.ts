@@ -8,6 +8,8 @@ import type { TemplateJob, TemplateJobOutput } from '../src/main/automation/temp
 import { SchedulerError } from '../src/main/scheduler/errors';
 import { InstanceLocks } from '../src/main/scheduler/instance-lock';
 import type { ManagerHost } from '../src/main/manager-host';
+import type { ProbeReport } from '@avdm/automation';
+import { GATHER_PROBE_TEMPLATE_IDS } from '../src/main/automation/gather-probe-guard';
 import type { AutomationProbeReport } from '../src/shared/ipc';
 
 const { broadcast } = vi.hoisted(() => ({ broadcast: vi.fn() }));
@@ -375,6 +377,58 @@ describe('AutomationHost single-cycle gathering', () => {
     expect((await host.schedules())[0]?.enabled).toBe(false);
     await host.setSchedule('wanlong', 1, true);
     expect(probe).toHaveBeenCalledTimes(3);
+  });
+
+  it('accepts the probe pass the user just confirmed instead of probing twice, but never a stale or edited one', async () => {
+    await enable();
+    let capturedAt = 1_000;
+    let found = true;
+    const worker = vi.spyOn(host as unknown as { runProbeWorker(input: unknown): Promise<ProbeReport> }, 'runProbeWorker')
+      .mockImplementation(async () => ({
+        gameId: 'wanlong', packageName: wanlongPlugin.packageName, foregroundPackage: wanlongPlugin.packageName, foregroundMatches: true,
+        templateSet: { id: 's', name: 's', refWidth: 2560, refHeight: 1440 }, frame: { width: 2560, height: 1440, capturedAt: ++capturedAt },
+        matches: GATHER_PROBE_TEMPLATE_IDS.map((templateId, i) => ({
+          templateId, found: found && i === 0, score: found && i === 0 ? 0.97 : 0.4, threshold: 0.9, x: 0, y: 0, w: 1, h: 1,
+        })),
+        timingMs: { capture: 1, prepare: 1, match: 1, total: 3 },
+      }) as unknown as ProbeReport);
+    // The dialog's probe passes; enabling with its id does not probe again.
+    const shown = await host.probe('wanlong', 1);
+    expect(shown.launchReady).toBe(true);
+    expect((await host.setSchedule('wanlong', 1, true, { probeCapturedAt: shown.capturedAt })).enabled).toBe(true);
+    expect(worker).toHaveBeenCalledTimes(1);
+    await host.setSchedule('wanlong', 1, false);
+
+    // A policy edit after the probe: that pass no longer counts, main probes again (and refuses when it fails).
+    const before = await host.probe('wanlong', 1);
+    await host.saveSettings('wanlong', 1, { config: { version: 2, enabled: true } });
+    found = false;
+    await expect(host.setSchedule('wanlong', 1, true, { probeCapturedAt: before.capturedAt })).rejects.toThrow('只读探针通过');
+    expect(worker).toHaveBeenCalledTimes(3);
+    // An unknown id (or a failed probe's id) never counts either.
+    found = true;
+    const failedId = 99;
+    expect((await host.setSchedule('wanlong', 1, true, { probeCapturedAt: failedId })).enabled).toBe(true);
+    expect(worker).toHaveBeenCalledTimes(4);
+    await host.setSchedule('wanlong', 1, false);
+
+    // Older than five minutes: probed again.
+    await host.saveSettings('wanlong', 1, { config: { version: 2, enabled: true } });
+    const old = await host.probe('wanlong', 1);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 5 * 60_000 + 1);
+    try {
+      expect((await host.setSchedule('wanlong', 1, true, { probeCapturedAt: old.capturedAt })).enabled).toBe(true);
+    } finally { clock.mockRestore(); }
+    expect(worker).toHaveBeenCalledTimes(6);
+  });
+
+  it('tells every page when an instance\'s settings are saved', async () => {
+    await enable();
+    expect(broadcast).toHaveBeenCalledWith('automation-settings-changed', { gameId: 'wanlong', index: 1, at: expect.any(Number) });
+    broadcast.mockClear();
+    await host.clearInstanceGatherConfig('wanlong', 1);
+    expect(broadcast).toHaveBeenCalledWith('automation-settings-changed', expect.objectContaining({ gameId: 'wanlong', index: 1 }));
   });
 
   it('lets a disable supersede an enable still cold-starting in its first sample', async () => {

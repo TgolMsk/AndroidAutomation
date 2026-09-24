@@ -59,3 +59,15 @@ export function frameResolutionHint(width: number, height: number): string | nul
   const warning = resolutionWarning({ width, height });
   return warning ? `${warning.label}：${warning.tip}` : null;
 }
+
+/**
+ * Progress of a script run in the 当前执行 column (original InstancesView: a bar of stepDone / stepTotal, or
+ * 「第 N 轮｜已执行 N 步」 in loop mode where the total is unknown). `percent` is null in loop mode.
+ */
+export function scriptRunProgress(run: { stepDone: number; stepTotal: number | null; iteration: number }): { percent: number | null; text: string } {
+  if (run.stepTotal !== null && run.stepTotal > 0) {
+    const percent = Math.max(0, Math.min(100, Math.round((run.stepDone / run.stepTotal) * 100)));
+    return { percent, text: `已完成 ${Math.min(run.stepDone, run.stepTotal)} / ${run.stepTotal} 步` };
+  }
+  return { percent: null, text: `第 ${run.iteration} 轮｜已执行 ${run.stepDone} 步` };
+}
