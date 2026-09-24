@@ -1,6 +1,6 @@
 {
   "name": "@avdm/wanlong-assistant",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "万龙助手（独立 Electron 应用）",
   "author": "TgolMsk",

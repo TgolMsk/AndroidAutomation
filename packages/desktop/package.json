@@ -1,6 +1,6 @@
 {
   "name": "@avdm/desktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "AVD 多开管理器桌面客户端（Electron）",
   "author": "TgolMsk",
