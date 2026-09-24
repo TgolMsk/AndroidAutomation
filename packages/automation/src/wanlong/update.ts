@@ -24,6 +24,7 @@ import type { PreparedFrame, PreparedTemplate, RawFrame, Rect, TemplateSet } fro
 import type { TemplateLibrary } from '../template-library.js'
 import { loadTemplateSet, readTemplatePng } from '../templates.js'
 import { matchIn, prepareFrame, prepareTemplate } from '../vision.js'
+import { loadTemplateSetOrExplain } from './template-dir.js'
 import { GAME_PACKAGE } from './gather/geometry.js'
 import {
   AI_RISK_BLOCKED,
@@ -470,11 +471,12 @@ export interface ImportGameUpdateTemplatesOptions {
  * 把旧版面板的更新模板（小块裁剪图）导入用户模板集：按原位置贴回一张 2560×1440 的画布，
  * 再走 TemplateLibrary.save（原子写、std 守卫），阈值与搜索范围沿用原版校准值。
  * @returns 已导入与失败（附中文原因）的 id
+ * @throws AppError('TEMPLATE_NOT_FOUND') 目标模板集目录读不出来（中文说明）
  */
 export async function importGameUpdateTemplates(
   opts: ImportGameUpdateTemplatesOptions
 ): Promise<{ saved: string[]; failed: Array<{ id: string; reason: string }> }> {
-  const set = await loadTemplateSet(opts.templateDir)
+  const set = await loadTemplateSetOrExplain(opts.templateDir, '导入不了游戏资源更新模板')
   const saved: string[] = []
   const failed: Array<{ id: string; reason: string }> = []
   const roiOf: Record<UpdateTemplateKey, Rect> = {

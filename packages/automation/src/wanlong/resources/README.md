@@ -30,6 +30,8 @@
 ## 与旧版的差异
 
 - 模板来自调用方给的模板集目录（`templateDir`），不再有全局模板库；单位字缓存按目录 + 定义签名自动失效。
+  目录读不出来时（单位字加载 / 模板入库 / 更新模板导入）统一走 `../template-dir.ts` 的 `loadTemplateSetOrExplain`，
+  抛中文 `TEMPLATE_NOT_FOUND`，不把原始 Node 错误（英文 + 内部路径）甩给界面。
 - `seedResourceTemplates` 不再读仓库里的截图：调用方按「帧角色」（items / stats / back1 / worldMap）提供用户自己的整帧 PNG，
   坐标按帧尺寸换算（16:9 任意分辨率）；一张失败不影响其它张，失败原因逐条返回。
 - 资源中文名只有一份（取自 `config.ts` 的 `RESOURCE_LABEL`）。

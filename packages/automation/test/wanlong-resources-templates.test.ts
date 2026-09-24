@@ -131,6 +131,18 @@ describe('seedResourceTemplates', () => {
     expect((await loadTemplateSet(set.directory)).templates).toEqual([]);
   });
 
+  it('refuses with a Chinese TEMPLATE_NOT_FOUND (no raw ENOENT) when the template set cannot be read', async () => {
+    const library = new TemplateLibrary(await tempDir('avdm-res-seed-'));
+    const gone = join(await tempDir('avdm-res-seed-gone-'), 'no-such-set');
+    const error = await seedResourceTemplates({ library, templateDir: gone, frames: {} }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: 'TEMPLATE_NOT_FOUND' });
+    const message = (error as Error).message;
+    expect(message).toContain('目录不存在或缺少 manifest.json');
+    expect(message).toContain('资源统计模板没法入库');
+    expect(message).toContain('请在「模板」页重新选择模板集');
+    expect(message).not.toMatch(/ENOENT|realpath/);
+  });
+
   it('rejects frames that are not 16:9 screenshots', async () => {
     const dir = await writeTemplateSet([]);
     const library = new TemplateLibrary(await tempDir('avdm-res-seed-'));

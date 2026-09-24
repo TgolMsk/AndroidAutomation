@@ -39,3 +39,4 @@ export {
 export * from './update-ids.js';
 export type { UnknownScreenAdvisor, UnknownScreenContext } from './gather/session.js';
 export * from './resources/index.js';
+export { describeTemplateSetError, loadTemplateSetOrExplain } from './template-dir.js';

@@ -457,6 +457,18 @@ describe('importGameUpdateTemplates', () => {
     expect(result.saved).toEqual([]);
     expect(result.failed[0]!.reason).toContain('与旧版模板不符');
   });
+
+  it('refuses with a Chinese TEMPLATE_NOT_FOUND (no raw ENOENT) when the template set cannot be read', async () => {
+    const library = new TemplateLibrary(await tempDir('avdm-update-import-'));
+    const gone = join(await tempDir('avdm-update-gone-'), 'no-such-set');
+    const error = await importGameUpdateTemplates({ library, templateDir: gone, crops: {} }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: 'TEMPLATE_NOT_FOUND' });
+    const message = (error as Error).message;
+    expect(message).toContain('目录不存在或缺少 manifest.json');
+    expect(message).toContain('导入不了游戏资源更新模板');
+    expect(message).toContain('请在「模板」页重新选择模板集');
+    expect(message).not.toMatch(/ENOENT|realpath/);
+  });
 });
 
 const REAL = process.env.WANLONG_UPDATE_TEMPLATES;

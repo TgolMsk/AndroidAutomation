@@ -11,7 +11,7 @@ import {
 } from '../src/wanlong/index.js';
 import type { AppError } from '../src/wanlong/errors.js';
 import { TRUTH, TRUTH_VALUES, buildScreens, writeResourceTemplateSet, type ResourceScreens } from './helpers/resource-fixture.js';
-import { GAME, blockPatch, removeTempDirs, tempDir, type Screen } from './helpers/synth.js';
+import { GAME, REF_H, REF_W, Screen, blockPatch, criticalTemplates, removeTempDirs, tempDir } from './helpers/synth.js';
 
 afterAll(removeTempDirs);
 
@@ -20,7 +20,9 @@ class ScriptedIo implements GatherIo {
   captures = 0;
   readonly actions: string[] = [];
   private readonly raws = new Map<Screen, RawFrame>();
-  constructor(private readonly script: Screen[], private readonly fg: string | null = GAME) {}
+  constructor(readonly script: Screen[], private readonly fg: string | null = GAME) {}
+  /** True when the last input left the scripted device on its final screen. */
+  get finished(): boolean { return this.cursor === this.script.length - 1; }
   private advance(what: string): void {
     this.actions.push(what);
     if (this.cursor < this.script.length - 1) this.cursor++;
@@ -48,13 +50,34 @@ function inside(action: string | undefined, box: Rect): boolean {
   return x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h;
 }
 
+/**
+ * 「确定要退出游戏吗」: a stray BACK on the world map opens it. The 确定 box deliberately covers the blind 取消 fallback
+ * point of dismissNoticeDialog (1548,970), so a regression that taps the fallback instead of the matched 取消 fails too.
+ */
+const QUIT = {
+  title: { id: 'tpl_dlg_title_notice', image: blockPatch(300, 72, 6101), bounds: { x: 1130, y: 380, w: 300, h: 72 } },
+  cancel: { id: 'tpl_btn_cancel', image: blockPatch(240, 80, 6102), bounds: { x: 880, y: 930, w: 240, h: 80 } },
+  confirm: { id: 'tpl_btn_confirm', image: blockPatch(240, 80, 6103), bounds: { x: 1440, y: 930, w: 240, h: 80 } },
+} as const;
+
+/** The quit dialog on its dimmed mask (default) or pasted over another screen whose anchors stay visible. */
+function quitDialog(over?: Screen): Screen {
+  const screen = over ? over.clone() : new Screen(REF_W, REF_H, 15).fill({ x: 0, y: 0, w: REF_W, h: REF_H }, 40);
+  screen.fill({ x: 700, y: 340, w: 1160, h: 720 }, 230);
+  for (const part of Object.values(QUIT)) screen.paste(part.image, part.bounds.x, part.bounds.y);
+  return screen;
+}
+
 let dir: string;
 let templates: GatherTemplates;
 let screens: ResourceScreens;
 
 beforeAll(async () => {
   dir = await writeResourceTemplateSet({
-    extra: [{ id: 'tpl_btn_close_popup', image: blockPatch(64, 64, 4242), bounds: { x: 1960, y: 300, w: 64, h: 64 }, threshold: 0.8 }],
+    extra: [
+      { id: 'tpl_btn_close_popup', image: blockPatch(64, 64, 4242), bounds: { x: 1960, y: 300, w: 64, h: 64 }, threshold: 0.8 },
+      ...Object.values(QUIT).map((part) => ({ ...part, threshold: 0.85 })),
+    ],
   });
   templates = await loadGatherTemplates({ templateDir: dir });
   screens = buildScreens();
@@ -109,6 +132,29 @@ describe('readResourceStatsPanel', () => {
     expect(r.shots).toEqual(['res-precheck-not-main']);
   });
 
+  it('★ sends zero input when the quit dialog is already open, even with the map anchors visible (当前有弹窗)', async () => {
+    const io = new ScriptedIo([quitDialog(screens.map)]);
+    const r = await run(io);
+    expect(r.error?.code).toBe('STEP_FAILED');
+    expect(r.error?.message).toContain('当前有弹窗');
+    expect(io.actions).toEqual([]);
+  });
+
+  it.each([
+    ['a resource-point card', 'tpl_btn_gather', { x: 1800, y: 1000 }, '资源点卡片'],
+    ['the troop panel', 'tpl_panel_title_troop', null, '部队管理面板'],
+    ['the search panel', 'tpl_btn_search', null, '搜索面板'],
+  ])('★ sends zero input when %s is open over a visible main screen (blockers)', async (_name, id, at, what) => {
+    const t = criticalTemplates().find((c) => c.id === id)!;
+    const blocked = screens.map.clone().paste(t.image, at?.x ?? t.bounds.x, at?.y ?? t.bounds.y);
+    const io = new ScriptedIo([blocked]);
+    const r = await run(io);
+    expect(r.error?.code).toBe('STEP_FAILED');
+    expect(r.error?.message).toContain(`当前开着${what}，不在主界面`);
+    expect(r.error?.detail).toMatchObject({ template: id });
+    expect(io.actions).toEqual([]);
+  });
+
   it('★ sends zero input and takes no capture when the game is not in the foreground', async () => {
     const io = new ScriptedIo([screens.map], 'com.android.launcher3');
     const r = await run(io);
@@ -144,6 +190,31 @@ describe('readResourceStatsPanel', () => {
     expect(io.actions.slice(2, 5).map((a) => a.split(' ')[0])).toEqual(['key', 'tap', 'key']);
     expect(inside(io.actions[3], { x: 2068, y: 142, w: 102, h: 102 })).toBe(true);
     expect(r.snap!.warnings).toEqual(['BACK 没关掉资源统计弹窗，用右上角 X 关的']);
+  });
+
+  it.each([
+    ['the second BACK lands on the world map', 'after-second', [4]],
+    ['both BACKs land on the world map', 'after-both', [3, 5]],
+  ] as const)('★ cancels the quit dialog when %s, never taps 确定, and ends on the main screen', async (_name, when, cancelAt) => {
+    const quit = quitDialog();
+    const script = when === 'after-second'
+      ? [screens.map, screens.items, screens.dialog, screens.map, quit, screens.map]
+      : [screens.map, screens.items, screens.dialog, quit, screens.map, quit, screens.map];
+    const io = new ScriptedIo(script);
+    const r = await run(io);
+    expect(r.error).toBeNull();
+    for (const row of r.snap!.rows) expect(row.total).toBe(TRUTH[row.type].total);
+    expect(io.actions.filter((a) => a === 'key BACK')).toHaveLength(2);
+    expect(io.actions).toHaveLength(4 + cancelAt.length);
+    // Every quit dialog is answered by exactly one tap inside the matched 取消, right after the BACK that opened it.
+    for (const i of cancelAt) {
+      expect(io.actions[i - 1]).toBe('key BACK');
+      expect(inside(io.actions[i], QUIT.cancel.bounds)).toBe(true);
+    }
+    expect(io.actions.some((a) => inside(a, QUIT.confirm.bounds))).toBe(false);
+    expect(io.finished).toBe(true);
+    expect(r.snap!.warnings).toEqual([]);
+    expect(r.logs.filter((l) => l.startsWith('warn:检测到确认框'))).toHaveLength(cancelAt.length);
   });
 
   it('falls back to the G0 ladder when BACK×2 does not reach the main screen', async () => {

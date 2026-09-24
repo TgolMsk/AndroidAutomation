@@ -8,13 +8,12 @@
  * ★ 模板永远来自用户自己的模板集目录（不进仓库、不进安装包）；本模块从不在仓库或安装目录里找图。
  */
 
-import { realpath } from 'node:fs/promises'
 import sharp from 'sharp'
 import type { PreparedTemplate, Rect, TemplateSet } from '../../contracts.js'
-import { AppError } from '../errors.js'
 import type { TemplateLibrary } from '../../template-library.js'
-import { loadTemplateSet, readTemplatePng } from '../../templates.js'
+import { readTemplatePng } from '../../templates.js'
 import { prepareTemplate } from '../../vision.js'
+import { loadTemplateSetOrExplain } from '../template-dir.js'
 import {
   RES_TPL,
   RESOURCE_SEED_FRAME_LABEL,
@@ -60,18 +59,9 @@ export async function loadResourceUnitTemplates(
   templateDir: string,
   onWarn?: (message: string) => void
 ): Promise<ResourceUnitTemplates> {
-  let directory: string
-  let set: TemplateSet
-  try {
-    directory = await realpath(templateDir)
-    set = await loadTemplateSet(directory)
-  } catch (e) {
-    throw new AppError(
-      'TEMPLATE_NOT_FOUND',
-      `读取模板集「${templateDir}」失败（${describeSetError(e)}），加载不了单位字模板（亿/万）。请在「模板」页重新选择模板集。`,
-      { templateDir }
-    )
-  }
+  const set = await loadTemplateSetOrExplain(templateDir, '加载不了单位字模板（亿/万）')
+  // loadTemplateSet 返回的 directory 已是真实路径（缓存键）。
+  const directory = set.directory
   const ids = [RES_TPL.unitYi, RES_TPL.unitWan]
   const defs = ids.map((id) => set.templates.find((t) => t.id === id) ?? null)
   const signature = JSON.stringify([set.id, set.refWidth, set.refHeight, defs])
@@ -134,12 +124,12 @@ export interface SeedResourceTemplatesResult {
 /**
  * 按规格把截图裁成模板，逐张走 TemplateLibrary.save（同 id 覆盖，幂等；std<12 由它拒绝）。
  * 一张失败不影响其它张（记进 failed，不抛）；全部做完后作废单位字缓存。
- * 只有模板集目录本身读不出来时才抛。
  * ★ 采集流程与调度器各自的模板缓存由调用方作废（本包不持有它们）。
+ * @throws AppError('TEMPLATE_NOT_FOUND') 只有模板集目录本身读不出来时才抛（中文说明）
  */
 export async function seedResourceTemplates(opts: SeedResourceTemplatesOptions): Promise<SeedResourceTemplatesResult> {
   const log = opts.log ?? ((): void => undefined)
-  const set: TemplateSet = await loadTemplateSet(opts.templateDir)
+  const set: TemplateSet = await loadTemplateSetOrExplain(opts.templateDir, '资源统计模板没法入库')
   const plan = resourceSeedPlan(opts.catalog ?? RESOURCE_TEMPLATE_CATALOG)
   const saved: string[] = []
   const skipped = [...plan.skipped]
@@ -216,14 +206,4 @@ function scaleRect(r: Rect, sx: number, sy: number, maxW: number, maxH: number):
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
-}
-
-/** 模板集读不出来的原因（常见的 Node 错误码翻成人话，其余原样给 message —— loadTemplateSet 自己的校验本来就是中文）。 */
-function describeSetError(e: unknown): string {
-  const code = (e as { code?: unknown } | null)?.code
-  if (code === 'ENOENT') return '目录不存在或缺少 manifest.json'
-  if (code === 'EACCES' || code === 'EPERM') return '没有读取权限'
-  if (code === 'ENOTDIR') return '路径不是目录'
-  if (e instanceof SyntaxError) return 'manifest.json 不是有效的 JSON'
-  return errMsg(e)
 }
