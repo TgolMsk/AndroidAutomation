@@ -284,8 +284,11 @@ describe('cli file helpers', () => {
       await fsp.writeFile(file, 'old\n'.repeat(10));
       const tail = await readTail(file, 200);
       // `avdm rm 0 && avdm create && avdm start 0`: deleted, recreated, and grown past the old size.
+      // The new file is written before the old one goes away: ext4/tmpfs hand a freed inode number straight
+      // back, which would make the replacement indistinguishable from an append (APFS does not reuse them).
+      await fsp.writeFile(`${file}.new`, '=== launch header ===\n' + 'new\n'.repeat(20));
       await fsp.rm(file);
-      await fsp.writeFile(file, '=== launch header ===\n' + 'new\n'.repeat(20));
+      await fsp.rename(`${file}.new`, file);
       const ac = new AbortController();
       let got = '';
       let truncated = 0;
