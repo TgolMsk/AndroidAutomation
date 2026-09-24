@@ -22,7 +22,7 @@
 | `src/shared/update.ts` | 契约：8 个阶段 + 中文、`UpdateState`、版本比较 / 字节与速度格式化（纯函数） | 主进程与渲染进程共用，不引 Node / Electron |
 | `center.ts` | `UpdateCenter` 状态机、`UpdaterPort` / `UpdateDeps` 接口、`describe()` 错误中文化（网络 / 限流 / 404 / 校验 / 权限 / 磁盘满） | 不引 Electron、不联网，测试塞假端口 |
 | `github.ts` | `UpdaterPort` 的真实实现：Releases API、SHA256SUMS、带进度与续传的下载、复核、打开 | 不引 Electron（fetch / 下载目录 / 访达动作都注入） |
-| `busy.ts` | `updateBusyCheck()`：SDK 安装 + 实例占用（原版 `instanceAccess.anyBusy()`）；`interimInstanceBusy()` 是占用表的替身 | 异步；**不另建登记表** |
+| `busy.ts` | `updateBusyCheck({ occupancy, sdkInstall })`：SDK 安装 + 应用外壳的实例占用表 `occupancy.anyBusy()`（原版 `instanceAccess.anyBusy()`） | 异步；**不另建登记表、不挂探针** |
 | `electron-deps.ts` | 用 `app` / `net.fetch` / `shell` 组装 `UpdateDeps` | **本目录唯一引用 electron 的文件** |
 | `index.ts` | `UpdateService`：初始化状态机 + 启动 30 秒后自动查一次 + 待安装时每 5 秒重问占用；`updateLog()` 日志端口 | — |
 | `src/main/ipc/update.ts` | `update*` 七个方法；都不接收渲染进程参数 | 仅主窗口可调（统一鉴权） |
@@ -37,7 +37,7 @@
 2. **有任务在跑就不许装。** 安装 = 退出助手。`install()` 由主进程 await 占用检查来拦，按钮禁用只是提示；
    复核安装包（算 SHA-256 要一两秒）之后**再问一次**，防止这期间有任务开始。占用检查本身出错按占用处理。
    **仅仅开着自动续跑不算忙**：那只是个定时器，重新打开助手后按磁盘上的状态恢复（`update-busy.test.ts` 用真实的
-   `AutomationHost` + 已开启的自动续跑钉死这一条）。
+   `AutomationHost` + 已开启的自动续跑、按 `main/index.ts` 同样的 `InstanceOccupancy` + `registerServiceOccupancy()` 接法钉死这一条）。
 3. **不能更新的环境给出能照着做的下一步**：`dev`（开发模式）、`platform`（不是 macOS Apple Silicon，没有安装包）。
    任何时候都能「打开 Release 页面」手动下载。
 4. **开发模式不检查**，也不会构造更新器。
@@ -47,15 +47,16 @@
 原版是 `busy: () => instanceAccess.anyBusy()` —— 问**一张**占用表。这里同样不另建登记表：
 
 ```ts
-updateBusyCheck({ instances, sdkInstall })   // SDK 安装（全局，不属于任何实例）排最前，其余问 instances
+updateBusyCheck({ occupancy, sdkInstall })   // SDK 安装（全局，不属于任何实例）排最前，其余问 occupancy.anyBusy()
 ```
 
-- `instances` 应当是应用外壳的实例占用表：`() => occupancy.anyBusy()`（`InstanceOccupancy`，异步）。
-  采集 / 脚本计划 / 登录，以及之后移植的调度器 `exclusive`、卡死恢复、资源统计读取、机器人重新拉起……
-  都登记在那张表里，更新闸门不用挨个模块打听。
-- 那张表还没接进来时，`main/index.ts` 用 `interimInstanceBusy({ automation, plans, accounts, loginActive })` 顶替：
-  读的是占用表同样登记为「阻塞」的几项，措辞一致（「实例 #N 正在运行采集 / 停止采集 / 运行脚本计划 / 进行账号登录。」）。
-  **接上占用表后删掉它，不要两个都挂**（两个汇总器迟早说法打架）。
+- `occupancy` 就是应用外壳的实例占用表（`src/main/app/occupancy.ts` 的 `InstanceOccupancy`，异步）：
+  只看 `blocking` 的占用者，含本进程的占用表（`withLabelledLease` / `withInstanceLease` 登记的活动）与另一个助手进程持有的租约。
+  各服务的来源由 `src/main/app/service-occupancy.ts` 的 `registerServiceOccupancy()` 登记（`main/index.ts` 调一次）：
+  采集运行 / 停止中、排队或运行中的脚本、进行中的登录向导是阻塞的；「自动采集已开启」「已启用脚本计划」登记为不阻塞。
+  之后移植的调度器 `exclusive`、卡死恢复、资源统计读取、机器人重新拉起……都登记在那张表里（或拿带标签的租约），
+  更新闸门自动跟上，**更新模块自己不挂任何探针**。
+- SDK 安装留在闸门这一侧：它不属于任何实例，占用表只收实例序号。
 - 占用检查是异步的，而状态读取是同步的：`UpdateCenter` 记住上一次的答案给 `getState()`；
   `updateState` IPC 走 `refreshBusy()` 现问一次，下载完成那次推送前问一次，处于「待安装」时 `UpdateService`
   每 5 秒再问一次、变了才推给面板；`install()` 每次都现问（复核前后各一次）。
@@ -64,8 +65,8 @@ updateBusyCheck({ instances, sdkInstall })   // SDK 安装（全局，不属于�
 
 更新的每一行都走 `UpdateDeps.log` → `updateLog(writer)`，按原版以 `scope: 'update'` 写进助手的运行日志
 （`~/.avdm/automation/logs/app.ndjson`）—— 打包后从访达打开的应用没有控制台，只打 console 等于没记。
-`writer` 就是应用外壳的 `AppLog`（`record(level, scope, message)` 签名一致）；它还没接进来时用 `consoleLogWriter`，
-行首带 `[update]` 标记，外壳的 console 捕获会把 warn / error 按这个标记落进同一个日志文件。
+`main/index.ts` 传的 `writer` 就是应用外壳的 `AppLog`（`updateLog(appLog)`，`record(level, scope, message)` 签名一致）。
+不传 `log` 时（测试）退回 `consoleLogWriter`，行首带 `[update]` 标记，外壳的 console 捕获仍会把 warn / error 按这个标记落盘。
 
 ## 与原版的差异
 

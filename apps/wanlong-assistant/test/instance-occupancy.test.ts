@@ -9,7 +9,7 @@ import {
 } from '../src/main/app/instance-access';
 import { DeviceLaneCancelledError } from '../src/main/device/lane';
 import { WANLONG_ERROR_CODES, isRetryLaterCode } from '../src/shared/errors';
-import { InstanceOccupancy, perInstanceSource } from '../src/main/app/occupancy';
+import { InstanceOccupancy, OccupancyUnknownError, perInstanceSource } from '../src/main/app/occupancy';
 import { describeOccupancy, lifecycleConfirmation, lifecycleNeedsConfirm } from '../src/shared/occupancy';
 import type { OccupancyHolder } from '../src/shared/ipc';
 
@@ -200,6 +200,24 @@ describe('InstanceOccupancy (who is using an instance)', () => {
     occupancy.register('b', () => [gather, { index: -1, label: '坏数据', source: 'b', blocking: true }]);
     expect(await occupancy.holders(1)).toEqual([gather]);
     expect(onSourceError).toHaveBeenCalledWith('broken', expect.any(Error));
+  });
+
+  it('fails closed for the update gate: an unreadable source throws unless someone is known to block', async () => {
+    const onSourceError = vi.fn();
+    const occupancy = new InstanceOccupancy({ onSourceError, leaseOwners: async () => [] });
+    occupancy.register('schedule', () => [schedule]);
+    const off = occupancy.register('broken', () => { throw new Error('读不到'); });
+    await expect(occupancy.anyBusy()).rejects.toBeInstanceOf(OccupancyUnknownError);
+    await expect(occupancy.anyBusy()).rejects.toMatchObject({ sources: ['broken'] });
+    // The lifecycle guard still answers with what it could read.
+    expect(await occupancy.holders(1)).toEqual([schedule]);
+    occupancy.register('gather', () => [gather]);
+    expect(await occupancy.anyBusy()).toBe('实例 #1 正在运行采集。');
+    off();
+    // An unreadable lease directory counts the same way.
+    const leases = new InstanceOccupancy({ onSourceError, leaseOwners: async () => { throw new Error('目录读不出'); } });
+    await expect(leases.anyBusy()).rejects.toMatchObject({ sources: ['lease'] });
+    expect(onSourceError).toHaveBeenCalledWith('lease', expect.any(Error));
   });
 
   it('passes the index to sources that can answer for one instance only', async () => {

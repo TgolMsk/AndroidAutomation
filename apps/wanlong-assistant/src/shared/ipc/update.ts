@@ -23,7 +23,8 @@ export interface UpdateApi {
   updateCancelDownload(): Promise<UpdateState>;
   /**
    * Open the verified installer and quit the assistant so the new app can be dragged over the old one.
-   * Refused with `CONCURRENCY_LIMIT` while anything is busy (gather, script plan, login, SDK install).
+   * Refused with `CONCURRENCY_LIMIT` while anything is busy: a blocking holder in the instance occupancy table (gather,
+   * script plan, login, a labelled lease, another assistant process) or the SDK install.
    */
   updateInstall(): Promise<void>;
   /** Open the Release page of the newest version (or the Releases list) in the browser. */

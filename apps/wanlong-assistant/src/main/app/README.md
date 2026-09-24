@@ -12,7 +12,8 @@
 | `paths.ts` | 白名单数据位置 + `openAppPath()`（目录用访达打开、文件只「在访达中显示」，绝不运行它）+ `listInstanceTemplateSets()`（各实例选用的模板集，含已删实例留下的配置）+ `copyText()`（主进程剪贴板） | 渲染进程只能传键名，永远不传路径；还没有模块写入的位置标 `pending`（目前只有「采集现场截图」） |
 | `health.ts` / `health-worker.ts` | `runAssistantHealthCheck()`（永不抛）+ `AppHealth`（缓存最近一次、并发合并、推 `app-health`） | 前半是 `@avdm/core` 的 `runDoctorChecks({ audience: 'app' })`（与 `avdm doctor` 同一份检查）+ `adb start-server`（原版 `checkAdbServer`：5037 端口被别的版本的 adb 占着时，adb 本身「正常」但所有设备操作都会失败），后半是助手自己的：实例分辨率、启用采集实例的模板集（每个实例单独限时、并行读取；采集配置读不出也算一条失败）、数据目录可写、OpenCV（在一次性工作线程里初始化，主进程不加载 WASM）、sharp、磁盘余量 |
 | `instance-access.ts` | `InstanceAccess`（原版占用表：同步 `acquire`、只删自己的令牌、`anyBusy()`；进程内单例 `instanceAccess`）+ `withLabelledLease()`（现有写入链路用：采集 `运行采集`、模板 / 采集配置 `修改模板或采集配置`、登录 `进行账号登录`、账号修改 `修改账号绑定`、脚本计划 `运行脚本计划`、临时运行脚本 `运行脚本`、输入法安装 `安装中文输入法`、基础实例克隆的源实例 `复制为新实例`）+ `withInstanceLease()`（新写入链路用：先同步占表再拿租约） | 两者都在租约目录里写 `owner.json`（活动 + pid）并在持有期间登记到占用表。`withLabelledLease` 的错误与 `withFileLock` 完全一致（忙时仍是 `LOCK_TIMEOUT`，各调用方的「跳过 / 改写提示」逻辑不变），IPC 边界的 `explainLeaseTimeout` 再把它翻译成「实例 #N 正在<活动>」（`code: CONCURRENCY_LIMIT`）；`withInstanceLease` 直接抛这个错误 |
-| `occupancy.ts` | `InstanceOccupancy`：汇总「谁在用实例 N」 | 来源由组合根注册（采集运行、自动续跑、正在跑的脚本计划、已启用的脚本计划、登录）+ 占用表；另一个进程持有的租约在 `holders(i)` 与 `anyBusy()`（更新闸门）里都算忙。坏来源跳过不致命 |
+| `occupancy.ts` | `InstanceOccupancy`：汇总「谁在用实例 N」 | 来源由组合根注册（采集运行、自动续跑、正在跑的脚本计划、已启用的脚本计划、登录）+ 占用表；另一个进程持有的租约在 `holders(i)` 与 `anyBusy()`（更新闸门）里都算忙。坏来源跳过不致命；唯独 `anyBusy()` 从严：没有已知的阻塞者、但有来源（或租约目录）读不出时抛 `OccupancyUnknownError`，更新中心按「无法确认是否有任务在运行」拒绝安装 |
+| `service-occupancy.ts` | `registerServiceOccupancy(occupancy, deps)`：助手各服务的占用来源（采集运行 / 停止中、自动续跑、排队或运行中的脚本、已启用的脚本计划、进行中的登录），组合根调一次 | 开着的自动化（自动续跑、已启用脚本计划）登记为 `blocking: false`；更新闸门的测试用同一个函数接真实服务，接法不会与 `main/index.ts` 走样 |
 | `device-tools.ts` | `DeviceTools.installApk`：设置页「设备工具 → 安装 APK…」（原版 `device:installApk`） | 只装用户选的本地文件（`.apk/.apks/.xapk`、绝对路径、确实存在），只对运行中的实例，走设备通道排队（原版也是排在该设备的串行队列里） |
 | `toasts.ts` | `AppToasts`：主进程 → 界面的提示（服务没能启动、自检发现问题…） | 最近 3 分钟的提示可重放：窗口晚于提示加载时由渲染进程读一次 `appRecentToasts()` |
 | `../device/lane.ts` | 设备通道（见 `src/main/device/README.md`） | |
@@ -37,7 +38,7 @@
 - **占用**：`occupancy.register('名字', (index?) => holders)` 登记新的占用来源（只能逐个实例回答的服务用
   `perInstanceSource(indices, test, { label, source, blocking })`）；「开着的自动化」一律登记成 `blocking: false`
   （现有：「自动采集已开启」「已启用脚本计划」）——停止 / 重启 / 删除前照样要确认，但不挡更新；
-  `await occupancy.anyBusy()` 给更新闸门用（「实例 #N 正在<活动>。」或 null，只看 `blocking` 的；另一个助手进程的租约也算忙）；`occupancy.holders(i)` 给实例生命周期确认用（IPC `instanceOccupancy`）。
+  `await occupancy.anyBusy()` 就是更新闸门（`src/main/update/busy.ts` 的 `updateBusyCheck({ occupancy, sdkInstall })`，「实例 #N 正在<活动>。」或 null，只看 `blocking` 的；另一个助手进程的租约也算忙；更新模块自己不另挂探针）；`occupancy.holders(i)` 给实例生命周期确认用（IPC `instanceOccupancy`）。
   **所有设备写入者都要带标签拿租约**：改造现有链路时把 `withFileLock(run/automation-instance-<i>.lock, fn, { timeoutMs })` 换成
   `withLabelledLease(home, i, '活动', fn, { timeoutMs })`（错误不变）；新链路（调度器采样、资源统计、卡死恢复、基础实例克隆……）用
   `withInstanceLease(home, i, '活动', fn, { timeoutMs })`，冲突时直接得到「实例 #N 正在<活动>」。两者都不可重入。

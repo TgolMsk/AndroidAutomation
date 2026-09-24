@@ -39,7 +39,8 @@ export interface OccupancyOptions {
 
 /**
  * Aggregates "who is using instance N" for the lifecycle guard (ask before stop / restart / remove) and the update
- * gate (`anyBusy`). A failing source is skipped, never fatal: the guard must still answer.
+ * gate (`anyBusy`). For the guard a failing source is skipped, never fatal: it must still answer. The update gate
+ * fails closed instead: `anyBusy()` throws when nothing is known to block but a source could not be read.
  */
 export class InstanceOccupancy {
   private readonly sources = new Map<string, OccupancySource>();
@@ -54,19 +55,30 @@ export class InstanceOccupancy {
 
   /** Every holder of every instance (or of `index` only), de-duplicated by (index, label). */
   async all(index?: number): Promise<OccupancyHolder[]> {
+    return (await this.collect(index)).holders;
+  }
+
+  /** `all()` plus the names of the sources that failed (reported through `onSourceError`, otherwise skipped). */
+  private async collect(index?: number): Promise<{ holders: OccupancyHolder[]; failed: string[] }> {
     const holders: OccupancyHolder[] = [];
+    const failed: string[] = [];
     for (const item of this.options.access?.holders() ?? []) {
       holders.push({ index: item.index, label: item.label, source: 'access', blocking: true });
     }
     const results = await Promise.all([...this.sources.entries()].map(async ([name, source]) => {
       try { return (await source(index)).filter(validHolder); }
       catch (error) {
-        try { this.options.onSourceError?.(name, error); } catch { /* Reporting is best effort. */ }
+        failed.push(name);
+        this.reportError(name, error);
         return [];
       }
     }));
     for (const list of results) holders.push(...list);
-    return dedupe(holders);
+    return { holders: dedupe(holders), failed: failed.sort() };
+  }
+
+  private reportError(name: string, error: unknown): void {
+    try { this.options.onSourceError?.(name, error); } catch { /* Reporting is best effort. */ }
   }
 
   /** Holders of one instance, blocking ones first. Includes a foreign lease holder the services do not know about. */
@@ -75,7 +87,7 @@ export class InstanceOccupancy {
     if (!own.some((holder) => holder.blocking) && this.options.leaseOwner) {
       let owner: LeaseOwner | null = null;
       try { owner = await this.options.leaseOwner(index); }
-      catch (error) { try { this.options.onSourceError?.('lease', error); } catch { /* best effort */ } }
+      catch (error) { this.reportError('lease', error); }
       if (owner) own.push({ index, label: leaseLabel(owner, this.options.pid ?? process.pid), source: 'lease', blocking: true });
     }
     return sortHolders(own);
@@ -83,17 +95,31 @@ export class InstanceOccupancy {
 
   /**
    * 「实例 #N 正在<label>。」 for the first blocking holder anywhere — this process's services and table, then any
-   * live lease (another assistant process, the CLI) — or null. The update gate asks this.
+   * live lease (another assistant process, the CLI) — or null. The update gate asks this (installing quits the app).
+   *
+   * ★ Fails closed: when no blocking holder is known but a source (or the lease directory) could not be read, it
+   *   throws instead of answering null, so a broken source can never let an install cut running work (the update
+   *   center shows 「无法确认是否有任务在运行」 and refuses).
    */
   async anyBusy(): Promise<string | null> {
-    const blocking = sortHolders((await this.all()).filter((holder) => holder.blocking));
-    const first = blocking[0];
+    const { holders, failed } = await this.collect();
+    const first = sortHolders(holders.filter((holder) => holder.blocking))[0];
     if (first) return `实例 #${first.index} 正在${first.label}。`;
     let leases: Array<{ index: number; owner: LeaseOwner }> = [];
     try { leases = await this.options.leaseOwners?.() ?? []; }
-    catch (error) { try { this.options.onSourceError?.('lease', error); } catch { /* best effort */ } }
+    catch (error) { failed.push('lease'); this.reportError('lease', error); }
     const lease = [...leases].sort((a, b) => a.index - b.index)[0];
-    return lease ? `实例 #${lease.index} 正在${leaseLabel(lease.owner, this.options.pid ?? process.pid)}。` : null;
+    if (lease) return `实例 #${lease.index} 正在${leaseLabel(lease.owner, this.options.pid ?? process.pid)}。`;
+    if (failed.length) throw new OccupancyUnknownError(failed);
+    return null;
+  }
+}
+
+/** Thrown by `anyBusy()` when a source could not be read and nothing else is known to block. */
+export class OccupancyUnknownError extends Error {
+  constructor(readonly sources: readonly string[]) {
+    super(`无法确认实例占用：占用来源 ${sources.join('、')} 读取失败`);
+    this.name = 'OccupancyUnknownError';
   }
 }
 

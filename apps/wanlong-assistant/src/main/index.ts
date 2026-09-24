@@ -15,8 +15,9 @@ import { DeviceTools } from './app/device-tools';
 import { AppHealth, runAssistantHealthCheck, type HealthTemplateTarget } from './app/health';
 import { instanceAccess, readLeaseOwner, readLeaseOwners } from './app/instance-access';
 import { rememberingCodec, SecretMemory } from './app/log-secrets';
-import { InstanceOccupancy, perInstanceSource } from './app/occupancy';
+import { InstanceOccupancy } from './app/occupancy';
 import { configuredSettingsIndices, listInstanceTemplateSets } from './app/paths';
+import { registerServiceOccupancy } from './app/service-occupancy';
 import { AppSettingsStore } from './app/settings-store';
 import { announceHealth, announceServiceFailures } from './app/startup';
 import { AppToasts } from './app/toasts';
@@ -27,7 +28,7 @@ import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
 import { MonitoringService, ReadOnlyTelegramBot } from './monitoring';
 import { PlanService, ScriptRunner } from './plans';
-import { consoleLogWriter, interimInstanceBusy, updateBusyCheck, updateLog, UpdateService } from './update';
+import { updateBusyCheck, updateLog, UpdateService } from './update';
 import { electronUpdateDeps } from './update/electron-deps';
 
 /**
@@ -209,22 +210,12 @@ bootstrapApp({
     });
 
     // ── app (occupancy sources, self-check) ──
-    const knownIndices = async (index?: number): Promise<number[]> =>
-      index !== undefined ? [index] : (await (await services.host.get()).list()).map((state) => state.record.index);
-    occupancy.register('gather', async () => (await automation.runs())
-      .filter((run) => run.status === 'running' || run.status === 'stopping')
-      .map((run) => ({ index: run.index, label: run.status === 'stopping' ? '停止采集' : '运行采集', source: 'gather', blocking: true })));
-    occupancy.register('schedule', async () => (await automation.schedules()).filter((item) => item.enabled)
-      .map((item) => ({ index: item.index, label: '自动采集已开启', source: 'schedule', blocking: false })));
-    occupancy.register('plans', perInstanceSource(knownIndices, (i) => plans.isActiveForInstance(i),
-      { label: '运行脚本计划', source: 'plans', blocking: true }));
-    // Standing automation, like an enabled gather schedule: stopping the instance only needs a confirmation.
-    occupancy.register('planSchedule', perInstanceSource(knownIndices, (i) => plans.hasEnabledPlanForInstance('wanlong', i),
-      { label: '已启用脚本计划', source: 'plans', blocking: false }));
-    occupancy.register('login', async (index) => (await knownIndices(index)).flatMap((i) => {
-      const session = accounts.loginSession(i);
-      return session && loginActive(session.phase) ? [{ index: i, label: '进行账号登录', source: 'login', blocking: true }] : [];
-    }));
+    // Gather runs, enabled schedules, script plans (running / enabled) and login wizards; the update gate asks this
+    // same table (`occupancy.anyBusy()`), so every later source registered here also holds the update back.
+    registerServiceOccupancy(occupancy, {
+      instanceIndices: async () => (await (await services.host.get()).list()).map((state) => state.record.index),
+      automation, plans, accounts, gameId: 'wanlong',
+    });
     const appHealth = new AppHealth(() => runAssistantHealthCheck({
       home,
       environment: async () => runDoctorChecks(await services.host.get(), { audience: 'app', skip: ['scrcpy', 'licenses'] }),
@@ -261,13 +252,11 @@ bootstrapApp({
     }), (report) => broadcast('app-health', report));
 
     // ── update (in-app update from GitHub Releases) ──
-    // One occupancy source for the install gate: with the shell's occupancy table, `instances` is
-    // `() => occupancy.anyBusy()` and the log writer is the app log (scope 'update'); see update/README.md.
-    const updateLogLine = updateLog(consoleLogWriter);
-    const updateBusy = updateBusyCheck({
-      instances: interimInstanceBusy({ automation, plans, accounts, loginActive }),
-      sdkInstall: services.sdkInstall,
-    });
+    // One occupancy source for the install gate: the instance occupancy table above (blocking holders only; an
+    // enabled schedule alone is not busy) plus the shell's SDK install, which belongs to no instance. Update lines go
+    // to the app log with scope 'update' (a packaged app has no console); see update/README.md.
+    const updateLogLine = updateLog(appLog);
+    const updateBusy = updateBusyCheck({ occupancy, sdkInstall: services.sdkInstall });
     const updates = new UpdateService(() => electronUpdateDeps({
       busy: updateBusy,
       publish: (state) => broadcast('update-changed', state),

@@ -4,8 +4,8 @@
  */
 import { UpdateCenter, type UpdateDeps, type UpdateLogLevel } from './center';
 
-export { INSTANCE_SLOTS, SDK_INSTALL_BUSY, instanceHolders, interimInstanceBusy, updateBusyCheck } from './busy';
-export type { BusyCheck, InstanceBusyServices, InstanceHolder, UpdateBusySources } from './busy';
+export { SDK_INSTALL_BUSY, updateBusyCheck } from './busy';
+export type { BusyCheck, UpdateBusySources } from './busy';
 export { BUSY_UNKNOWN, UpdateCenter, UpdateError, describe } from './center';
 export type { UpdateDeps, UpdateLogLevel, UpdateRelease, UpdaterPort } from './center';
 
@@ -23,8 +23,8 @@ export interface AppLogWriter {
 }
 
 /**
- * Console writer for a build without the app log. Lines carry a `[scope]` tag, which the app log's console capture
- * turns back into the entry's scope, so warnings and errors still reach the log file.
+ * Fallback writer when no `log` is given (`main/index.ts` passes `updateLog(appLog)`). Lines carry a `[scope]` tag,
+ * which the app log's console capture turns back into the entry's scope, so warnings and errors still reach the file.
  */
 export const consoleLogWriter: AppLogWriter = {
   record(level, scope, message) {
