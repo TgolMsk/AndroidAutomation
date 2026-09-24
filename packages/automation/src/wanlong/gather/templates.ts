@@ -171,6 +171,25 @@ export interface LoadGatherTemplatesOptions {
   templateDir: string;
   shrink?: number;
   onWarn?: (message: string, detail?: Record<string, unknown>) => void;
+  /**
+   * Default true. The long-lived vision worker compiles one set for the troop-panel sampler and the gather flow;
+   * it loads with `false` and checks `missingCriticalTemplates()` only before a gather cycle, so a set that can
+   * read the panel still samples while the dispatch path reports exactly which templates are missing.
+   */
+  requireCritical?: boolean;
+}
+
+/** Critical gather templates missing from a compiled set (empty when a cycle may start). */
+export function missingCriticalTemplates(templates: Pick<GatherTemplates, 'has'>): string[] {
+  return CRITICAL_TEMPLATES.filter((id) => !templates.has(id));
+}
+
+/** Throw the loader's Chinese error when a compiled set cannot run a gather cycle. */
+export function assertGatherTemplatesComplete(templates: Pick<GatherTemplates, 'has'>): void {
+  const critical = missingCriticalTemplates(templates);
+  if (critical.length) {
+    throw new AppError('TEMPLATE_NOT_FOUND', `缺少采集关键模板：${critical.join('、')}`, { missing: critical });
+  }
 }
 
 /** Compile UI anchors at shrink=2 and OCR glyphs at shrink=1. */
@@ -202,7 +221,7 @@ export async function loadGatherTemplates(options: LoadGatherTemplatesOptions): 
     }
   }
   const critical = CRITICAL_TEMPLATES.filter((id) => !ui.has(id));
-  if (critical.length) {
+  if (critical.length && options.requireCritical !== false) {
     throw new AppError('TEMPLATE_NOT_FOUND', `缺少采集关键模板：${critical.join('、')}`, { missing: critical });
   }
   const optional = OPTIONAL_TEMPLATES.filter((id) => !ui.has(id));
@@ -219,7 +238,7 @@ export async function loadGatherTemplates(options: LoadGatherTemplatesOptions): 
     refHeight: set.refHeight,
     ui,
     glyphSets,
-    missing: [...new Set([...missing, ...optional])],
+    missing: [...new Set([...missing, ...critical, ...optional])],
     require(id) {
       const value = ui.get(id);
       if (!value) throw new AppError('TEMPLATE_NOT_FOUND', `缺少模板 ${id}`);

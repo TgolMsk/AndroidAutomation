@@ -1,5 +1,5 @@
 /**
- * 「把游戏拉到前台」的冷启动恢复。
+ * 「把游戏拉到前台」的冷启动恢复。移植自原版 src/main/game/launch.ts（离线自检见 test/wanlong-launch.test.ts）。
  *
  * 解决的场景：**模拟器刚开机、游戏还没跑**（也包括游戏被系统杀掉、用户手动退到了 Android 桌面）。
  * 这时画面是桌面，任何界面模板都匹配不上；采样器与采集流程如果只会「等一等 / 点弹窗 × / 按 BACK」，
@@ -91,6 +91,7 @@ export async function ensureGameForeground(
   try {
     await io.launch()
   } catch (e) {
+    alive()
     io.log?.('warn', `拉起游戏失败：${errText(e)}`)
     return 'failed'
   }

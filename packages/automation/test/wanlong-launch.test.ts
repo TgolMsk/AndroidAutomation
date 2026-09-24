@@ -5,8 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import type { DevicePort, RawFrame } from '../src/index.js';
 import {
-  DEFAULT_FOREGROUND_POLL_MS, DEFAULT_FOREGROUND_TIMEOUT_MS, createGatherIo, ensureGameForeground,
-  type GameLaunchIo, type GamePresence,
+  DEFAULT_FOREGROUND_POLL_MS, DEFAULT_FOREGROUND_TIMEOUT_MS, GatherHalt, createGatherIo, createRuntimeState,
+  ensureGameForeground, runGatherCycle, type GameLaunchIo, type GamePresence, type GatherTemplates,
 } from '../src/wanlong/index.js';
 
 const PKG = 'com.lilithgames.samo.android.cn';
@@ -198,8 +198,63 @@ describe('createGatherIo.ensureGameForeground wiring', () => {
     const pending = io.ensureGameForeground!(PKG);
     setTimeout(() => controller.abort(new Error('采集已取消')), 50);
     const started = Date.now();
-    await expect(pending).rejects.toThrow('采集已取消');
+    // A stop is a GatherHalt('cancelled') so the flow ends as outcome `cancelled`, never as a failure.
+    const error = await pending.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GatherHalt);
+    expect((error as GatherHalt).outcome).toBe('cancelled');
     expect(Date.now() - started).toBeLessThan(DEFAULT_FOREGROUND_POLL_MS + 1_000);
     expect(calls).toEqual([`launch:${PKG}:false`]);
   }, 10_000);
+});
+
+describe('createGatherIo: batching and cancellation', () => {
+  function device(actions: string[], overrides: Partial<DevicePort> = {}): DevicePort {
+    const raw: RawFrame = { width: 960, height: 540, capturedAt: 1, data: new Uint8Array(960 * 540 * 4) };
+    return {
+      async capture() { actions.push('capture'); return raw; },
+      async foregroundPackage() { return PKG; },
+      async tap(x, y) { actions.push(`tap:${x},${y}`); },
+      async swipe() { actions.push('swipe'); },
+      async key(key) { actions.push(`key:${key}`); },
+      async launchApp(pkg) { actions.push(`launch:${pkg}`); },
+      async stopApp(pkg) { actions.push(`stop:${pkg}`); },
+      ...overrides,
+    };
+  }
+
+  it('batches tapMany into one device call when the port supports it', async () => {
+    const actions: string[] = [];
+    const batches: Array<{ points: [number, number][]; gap: number | undefined }> = [];
+    const io = createGatherIo(device(actions, { tapMany: async (points, gap) => { batches.push({ points, gap }); } }), { refWidth: 2560, refHeight: 1440 });
+    await io.tapMany([[2560, 1440], [1280, 720]], 120);
+    expect(batches).toEqual([{ points: [[960, 540], [480, 270]], gap: 120 }]);
+    expect(actions.filter((a) => a.startsWith('tap:'))).toEqual([]);
+  });
+
+  it('maps an abort during a pending device call to outcome “cancelled”, not an error', async () => {
+    const controller = new AbortController();
+    const actions: string[] = [];
+    const pending = device(actions, {
+      async foregroundPackage() {
+        return new Promise<string>((_, reject) => {
+          controller.signal.addEventListener('abort', () => reject(new Error('工作线程已中止请求')), { once: true });
+        });
+      },
+    });
+    const io = createGatherIo(pending, { refWidth: 2560, refHeight: 1440, signal: controller.signal });
+    const templates = {
+      setId: 'test', refWidth: 2560, refHeight: 1440, ui: new Map(), glyphSets: new Map(), missing: [],
+      require() { throw new Error('unexpected'); }, get() { return undefined; }, has() { return false; },
+      requireGlyphs() { throw new Error('unexpected'); }, hasGlyphs() { return false; },
+    } as unknown as GatherTemplates;
+    const state = { ...createRuntimeState(), backoffIndex: 1 };
+    const running = runGatherCycle({ io, templates, config: { enabled: true }, state, signal: controller.signal });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort(new Error('调度已停止'));
+    const result = await running;
+    expect(result.outcome).toBe('cancelled');
+    expect(result.error).toBeUndefined();
+    expect(result.state.backoffIndex).toBe(1);
+    expect(result.nextWakeAt).toBeNull();
+  });
 });

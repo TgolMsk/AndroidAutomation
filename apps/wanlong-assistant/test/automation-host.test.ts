@@ -2,9 +2,10 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createRuntimeState, wanlongPlugin, type GatherCycleResult } from '@avdm/automation/wanlong';
-import { AutomationHost } from '../src/main/automation/host';
+import { createRuntimeState, wanlongPlugin, type GatherCycleResult, type PanelSample } from '@avdm/automation/wanlong';
+import { AutomationHost, type AutomationHostHooks } from '../src/main/automation/host';
 import type { TemplateJob, TemplateJobOutput } from '../src/main/automation/template-jobs';
+import { InstanceLocks } from '../src/main/scheduler/instance-lock';
 import type { ManagerHost } from '../src/main/manager-host';
 
 const { broadcast } = vi.hoisted(() => ({ broadcast: vi.fn() }));
@@ -17,12 +18,17 @@ function result(outcome: GatherCycleResult['outcome'], message: string): GatherC
   };
 }
 
+function panel(used: number, total: number): PanelSample {
+  return { sampledAt: Date.now(), queueUsed: used, queueTotal: total, rows: [], warnings: [] };
+}
+
 function controlledRunner() {
   let resolve!: (value: GatherCycleResult) => void;
   let reject!: (error: Error) => void;
   const pending = new Promise<GatherCycleResult>((yes, no) => { resolve = yes; reject = no; });
   return {
-    runOnce: vi.fn(() => pending),
+    runOnce: vi.fn((_index: number, _options: Record<string, unknown>) => pending),
+    sample: vi.fn(async () => panel(2, 5)),
     stop: vi.fn(async () => { resolve(result('cancelled', '采集已取消')); }),
     dispose: vi.fn(async () => { resolve(result('cancelled', '采集已取消')); }),
     isRunning: vi.fn(() => false),
@@ -93,14 +99,16 @@ describe('AutomationHost single-cycle gathering', () => {
 
   it('rejects an unready target and duplicate task before a second runner call', async () => {
     await enable();
-    foreground = 'another.app';
-    await expect(host.run('wanlong', 'gather-once', 1)).rejects.toThrow('未处于前台');
+    getState.mockResolvedValueOnce({ status: 'stopped', record: { createdAt: '2026-09-23T00:00:00Z' } });
+    await expect(host.run('wanlong', 'gather-once', 1)).rejects.toThrow('尚未就绪');
     expect(await host.runs()).toEqual([]);
-    foreground = wanlongPlugin.packageName;
+    // ★ The game need not be in front: the cycle cold-starts it (DECISIONS C).
+    foreground = 'com.android.launcher3';
     const started = await host.run('wanlong', 'gather-once', 1);
     await expect(host.run('wanlong', 'gather-once', 1)).rejects.toThrow('已有自动化任务');
     await expect(host.run('wanlong', 'unknown', 1)).rejects.toThrow('未知自动化任务');
     expect(runner.runOnce).toHaveBeenCalledTimes(1);
+    expect(runner.runOnce.mock.calls[0]?.[1]).toMatchObject({ templateDir: home, allowColdStart: true, saveShot: expect.any(Function) });
     await host.stop(started.runId);
   });
 
@@ -150,40 +158,123 @@ describe('AutomationHost single-cycle gathering', () => {
     expect(JSON.parse(await readFile(file, 'utf8')).runs[0]).toMatchObject({ runId: 'previous', status: 'failed', endedAt: expect.any(Number) });
   });
 
-  it('persists an explicitly enabled schedule and uses one finished cycle to set the next wake', async () => {
-    await enable();
-    vi.spyOn(host, 'probe').mockResolvedValue({
-      gameId: 'wanlong', packageName: wanlongPlugin.packageName, foregroundPackage: wanlongPlugin.packageName,
-      deviceWidth: 960, deviceHeight: 540, capturedAt: Date.now(), matches: [],
-      launchReady: true, launchReason: 'known scene', timingsMs: {},
-    });
-    expect((await host.setSchedule('wanlong', 1, true)).enabled).toBe(true);
-    await vi.waitFor(() => expect(runner.runOnce).toHaveBeenCalledTimes(1));
-    runner.resolve(result('queueFull', '队列已满'));
-    await vi.waitFor(async () => {
-      expect((await host.schedules())[0]).toMatchObject({ enabled: true, nextWakeAt: expect.any(Number) });
-      expect((await host.runs())[0]).toMatchObject({ status: 'succeeded', message: '队列已满' });
-    });
-    await expect(host.run('wanlong', 'gather-once', 1)).rejects.toThrow('已启用自动续跑');
-    expect((await host.setSchedule('wanlong', 1, false)).enabled).toBe(false);
-    const scheduleFile = path.join(home, 'automation', 'scheduler', 'wanlong', '1.json');
-    expect(JSON.parse(await readFile(scheduleFile, 'utf8'))).toMatchObject({ enabled: false, nextWakeAt: null });
+  it('enables the ETA schedule with one read-only sample and runs the cycle when a wake finds a free slot', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await host.dispose();
+      const facts: unknown[] = [];
+      const hooks: AutomationHostHooks = { onCycleResult: async (index, fact, source) => { facts.push({ index, fact, source }); } };
+      runner = controlledRunner();
+      host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner, undefined, hooks, {
+        locks: new InstanceLocks(home, { fileLock: async (_path, fn) => fn() }),
+        scheduler: { ownerLease: false, random: () => 0 },
+      });
+      await enable();
+      foreground = 'com.android.launcher3';
+      const enabled = await host.setSchedule('wanlong', 1, true);
+      expect(enabled).toMatchObject({ enabled: true, nextWakeAt: Date.now() + 30_000 });
+      expect(runner.sample).toHaveBeenCalledTimes(1);
+      expect(runner.sample.mock.calls[0]?.[1]).toMatchObject({ templateDir: home, allowColdStart: true });
+      expect(runner.runOnce).not.toHaveBeenCalled();
+      expect(broadcast).toHaveBeenCalledWith('scheduler-changed', expect.objectContaining({ instanceIndex: 1, auto: true, queueUsed: 2 }));
+      expect(broadcast).toHaveBeenCalledWith('automation-schedule', expect.objectContaining({ index: 1, enabled: true }));
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(runner.runOnce).toHaveBeenCalledTimes(1));
+      runner.resolve(result('queueFull', '队列已满'));
+      await vi.waitFor(async () => {
+        expect((await host.runs())[0]).toMatchObject({ status: 'succeeded', message: '队列已满' });
+        expect((await host.schedules())[0]).toMatchObject({ enabled: true, nextWakeAt: expect.any(Number) });
+        expect(host.eta.getState(1).operating).toBe(false);
+      });
+      expect(facts).toEqual([{ index: 1, source: 'scheduled', fact: expect.objectContaining({ outcome: 'queueFull' }) }]);
+      await expect(host.run('wanlong', 'gather-once', 1)).rejects.toThrow('已启用自动续跑');
+      expect((await host.setSchedule('wanlong', 1, false)).enabled).toBe(false);
+      const file = path.join(home, 'automation', 'games', 'wanlong', 'scheduler', 'instances', '1.json');
+      expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ auto: false, instanceCreatedAt: '2026-09-23T00:00:00Z' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('serializes a slow schedule probe with a following configuration edit', async () => {
+  it('reports a failed scheduled cycle with its step before the scheduler counts it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await host.dispose();
+      const order: string[] = [];
+      const hooks: AutomationHostHooks = {
+        onCycleResult: async (_index, fact) => { order.push(`fact:${fact.step}`); },
+      };
+      runner = controlledRunner();
+      host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner, undefined, hooks, {
+        locks: new InstanceLocks(home, { fileLock: async (_path, fn) => fn() }),
+        scheduler: { ownerLease: false, random: () => 0 },
+      });
+      host.eta.setHooks({ log: (_level, message) => { if (message.includes('派遣流程报错')) order.push('scheduler'); } });
+      await enable();
+      await host.setSchedule('wanlong', 1, true);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(runner.runOnce).toHaveBeenCalledTimes(1));
+      runner.resolve({ ...result('error', '回不到世界地图'), error: { code: 'STEP_FAILED', message: '回不到世界地图', detail: { step: 'G0' } } } as GatherCycleResult);
+      await vi.waitFor(() => expect(host.eta.getState(1).failureCount).toBe(1));
+      expect(order).toEqual(['fact:G0', 'scheduler']);
+      expect(host.eta.getState(1).nextWakeReason).toContain('退避重试');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts a scheduled cycle that its own timeout cancelled as a failure, not a stop', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await host.dispose();
+      runner = controlledRunner();
+      host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner, undefined, {}, {
+        locks: new InstanceLocks(home, { fileLock: async (_path, fn) => fn() }),
+        scheduler: { ownerLease: false, random: () => 0 },
+      });
+      await enable();
+      await host.setSchedule('wanlong', 1, true);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(runner.runOnce).toHaveBeenCalledTimes(1));
+      runner.resolve(result('cancelled', '视觉任务超时'));
+      await vi.waitFor(() => expect(host.eta.getState(1).failureCount).toBe(1));
+      expect(host.eta.getState(1)).toMatchObject({ auto: true, nextWakeAt: expect.any(Number) });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports facts and dispatches of a manual cycle and teaches the queue its travel times', async () => {
+    await host.dispose();
+    const facts: string[] = [];
+    const dispatched: number[] = [];
+    runner = controlledRunner();
+    host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner, undefined, {
+      onCycleResult: async (_index, fact, source) => { facts.push(`${source}:${fact.outcome}:${fact.dispatched}`); },
+      onDispatched: async (_index, records) => { dispatched.push(records.length); },
+    }, { scheduler: { ownerLease: false } });
+    const noteDispatches = vi.spyOn(host.eta, 'noteDispatches');
     await enable();
-    runner.runOnce.mockResolvedValue(result('noResourceWanted', '没有启用的资源'));
-    let releaseProbe!: (report: Awaited<ReturnType<typeof host.probe>>) => void;
-    const probeGate = new Promise<Awaited<ReturnType<typeof host.probe>>>((resolve) => { releaseProbe = resolve; });
-    const probe = vi.spyOn(host, 'probe').mockReturnValue(probeGate);
-    const enabling = host.setSchedule('wanlong', 1, true);
-    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1));
-    const editing = host.saveSettings('wanlong', 1, { config: { version: 2, enabled: false } });
-    releaseProbe({
-      gameId: 'wanlong', packageName: wanlongPlugin.packageName, foregroundPackage: wanlongPlugin.packageName,
-      deviceWidth: 960, deviceHeight: 540, capturedAt: Date.now(), matches: [],
-      launchReady: true, launchReason: 'known scene', timingsMs: {},
+    await host.run('wanlong', 'gather-once', 1);
+    runner.resolve({
+      ...result('dispatched', '派出 1 支'),
+      dispatched: [{ at: Date.now(), resource: 'wood', coord: '100,200', level: 8, searchFloor: 7, storage: 1_200_000, travelTimeSec: 42, troops: 1000 }],
     });
+    await vi.waitFor(async () => expect((await host.runs())[0]?.status).toBe('succeeded'));
+    expect(facts).toEqual(['manual:dispatched:1']);
+    expect(dispatched).toEqual([1]);
+    expect(noteDispatches).toHaveBeenCalledWith(1, [{ travelTimeMs: 42_000, coord: '100,200', resourceType: 'wood' }], { resample: false });
+  });
+
+  it('serializes a slow first sample with a following configuration edit', async () => {
+    await enable();
+    let releaseSample!: (sample: PanelSample) => void;
+    runner.sample.mockReturnValueOnce(new Promise<PanelSample>((resolve) => { releaseSample = resolve; }));
+    const enabling = host.setSchedule('wanlong', 1, true);
+    await vi.waitFor(() => expect(runner.sample).toHaveBeenCalledTimes(1));
+    const editing = host.saveSettings('wanlong', 1, { config: { version: 2, enabled: false } });
+    releaseSample(panel(5, 5));
     await enabling;
     await editing;
     expect((await host.schedules())[0]?.enabled).toBe(false);
@@ -192,25 +283,17 @@ describe('AutomationHost single-cycle gathering', () => {
 
   it('does not enable automatic scheduling while a manual start is in preflight', async () => {
     await enable();
-    let releaseForeground!: (value: string) => void;
-    const firstForeground = new Promise<string>((resolve) => { releaseForeground = resolve; });
-    let reads = 0;
-    manager.device = async () => ({
-      foregroundPackage: async () => ++reads === 1 ? firstForeground : wanlongPlugin.packageName,
-      screencapRaw,
-    });
-    vi.spyOn(host, 'probe').mockResolvedValue({
-      gameId: 'wanlong', packageName: wanlongPlugin.packageName, foregroundPackage: wanlongPlugin.packageName,
-      deviceWidth: 960, deviceHeight: 540, capturedAt: Date.now(), matches: [],
-      launchReady: true, launchReason: 'known scene', timingsMs: {},
-    });
+    let releaseState!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseState = resolve; });
+    getState.mockImplementationOnce(async () => { await gate; return { status: 'running', record: { createdAt: '2026-09-23T00:00:00Z' } }; });
     const manual = host.run('wanlong', 'gather-once', 1);
-    await vi.waitFor(() => expect(reads).toBe(1));
+    await vi.waitFor(() => expect(getState).toHaveBeenCalledTimes(1));
     const enabling = host.setSchedule('wanlong', 1, true);
-    releaseForeground(wanlongPlugin.packageName);
+    releaseState();
     const started = await manual;
     await expect(enabling).rejects.toThrow('已有自动化任务');
     expect((await host.schedules()).some((schedule) => schedule.enabled)).toBe(false);
+    expect(runner.sample).not.toHaveBeenCalled();
     await host.stop(started.runId);
   });
 

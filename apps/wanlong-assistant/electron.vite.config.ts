@@ -44,7 +44,7 @@ export default defineConfig({
           index: resolve(__dirname, 'src/main/index.ts'),
           'probe-worker': resolve(__dirname, 'src/main/automation/probe-worker.ts'),
           'template-test-worker': resolve(__dirname, 'src/main/automation/template-test-worker.ts'),
-          'gather-worker': resolve(__dirname, 'src/main/automation/gather-worker.ts'),
+          'vision-worker': resolve(__dirname, 'src/main/scheduler/vision-worker.ts'),
           'home-verify-worker': resolve(__dirname, 'src/main/automation/accounts/home-verify-worker.ts'),
           'login-preview-worker': resolve(__dirname, 'src/main/automation/accounts/login-preview-worker.ts'),
           'script-worker': resolve(__dirname, 'src/main/plans/script-worker.ts'),

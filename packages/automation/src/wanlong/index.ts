@@ -40,9 +40,27 @@ export * from './update-ids.js';
 export type { UnknownScreenAdvisor, UnknownScreenContext } from './gather/session.js';
 export * from './resources/index.js';
 export { describeTemplateSetError, loadTemplateSetOrExplain } from './template-dir.js';
-export { GATHER_CRITICAL_TEMPLATES, GATHER_OPTIONAL_TEMPLATES, GLYPH, TPL, glyphCharOf } from './gather/templates.js';
+export {
+  GATHER_CRITICAL_TEMPLATES, GATHER_OPTIONAL_TEMPLATES, GLYPH, TPL, assertGatherTemplatesComplete, glyphCharOf,
+  missingCriticalTemplates,
+} from './gather/templates.js';
 export type { GatherTemplateCoverage, GlyphCoverage, MissingTemplate } from './gather/templateCoverage.js';
 export { GATHER_TEMPLATE_LABELS, GLYPH_SET_LABELS, gatherTemplateCoverage } from './gather/templateCoverage.js';
 export * as tplkit from './tools/tplkit.js';
 // The login wizard's home check reuses gather's multi-template city / world-map criterion (never the magnifier alone).
-export { CITY_TEMPLATES, WORLD_MAP_TEMPLATES } from './gather/navigation.js';
+export {
+  CITY_TEMPLATES, KNOWN_SCREEN_TEMPLATES, WORLD_MAP_TEMPLATES, closePopupTemplateIds, closePopupTemplates,
+  dismissNoticeDialog, dismissPopupByClose, isRecognizableScreen,
+} from './gather/navigation.js';
+
+// ── ETA scheduler (troop-panel sampler, digit OCR, fatigue, wake planning) and gather wiring ──
+export * from './scheduler/index.js';
+export * from './gather/facts.js';
+export { AppError, serializeError, type SerializedError } from './errors.js';
+export { GatherHalt, GatherSession } from './gather/session.js';
+export { GAME_PACKAGE, POPUP_CLOSE_ROI } from './gather/geometry.js';
+export { GATHER_RESOURCE_TYPES, cloneLevelMemory, sanitizeLevelMemory } from './gather/levelMemory.js';
+export { TROOP_STATUS_LABEL } from './gather/types.js';
+export type {
+  DispatchRecord, GatherOutcome, LevelMemoryMap, MarchRecord, ResourceLevelMemory, TroopPanelReading,
+} from './gather/types.js';

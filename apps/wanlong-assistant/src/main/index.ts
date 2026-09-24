@@ -152,8 +152,8 @@ bootstrapApp({
       instance: async (index) => (await services.host.get()).getState(index),
       device: async (index) => (await deviceHost.get()).device(index),
       templateDir: async (gameId, index) => (await automation.settings(gameId, index)).templateDir,
-      gatherScheduleEnabled: async (gameId, index) =>
-        (await automation.schedules()).some((item) => item.gameId === gameId && item.index === index && item.enabled),
+      // Preemption replaces the old mutual exclusion: plans call `automation.eta.suspendForScript()` before a run.
+      gatherScheduleEnabled: async () => false,
       onRun: (run) => broadcast('plan-run', { kind: 'plan', run }),
       // App settings (DECISIONS C, one source of defaults): the default trace-shot policy of runs that chose none,
       // and the matching defaults (threshold of templates without their own, downsampling factor) handed to the
@@ -161,6 +161,16 @@ bootstrapApp({
       shotPolicy: async () => { await appSettings.ready; return appSettings.get().shotPolicy; },
       matchDefaults: async () => { await appSettings.ready; return matchDefaults(); },
     }, scriptRunner);
+
+    // ── scheduler (ETA queue scheduler: ports and hooks; see src/main/scheduler/README.md) ──
+    automation.setPorts({
+      accountIdOf: async (index) => (await accounts.list('wanlong')).find((account) => account.binding?.index === index)?.id ?? null,
+      externalBusy: (index) => {
+        if (plans.isActiveForInstance(index)) return '脚本计划';
+        const login = accounts.loginSession(index);
+        return login && loginActive(login.phase) ? '账号登录' : null;
+      },
+    });
 
     // ── monitoring (failure / freeze / kicked detection) ──
     monitoring = new MonitoringService(home, {

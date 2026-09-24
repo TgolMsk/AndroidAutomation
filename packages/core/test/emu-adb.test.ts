@@ -271,6 +271,17 @@ describe('Adb against the fake adb', () => {
     );
   });
 
+  it('reports whether an app process is alive with pidof', async () => {
+    const dev = adb.device(emu.serial);
+    expect(await dev.isAppRunning('com.example.game')).toBe(true);
+    expect(await dev.isAppRunning('com.example.other')).toBe(false);
+    await expect(dev.isAppRunning('com.x; reboot')).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+    const cmds = (await adbLogLines())
+      .filter((c) => c.serial === emu.serial && c.args[0] === 'shell')
+      .map((c) => c.args[1]);
+    expect(cmds).toEqual(expect.arrayContaining(['pidof com.example.game || true', 'pidof com.example.other || true']));
+  });
+
   it('checks the optional text guard before every adb subcommand', async () => {
     const dev = adb.device(emu.serial);
     const before = (await adbLogLines()).length;

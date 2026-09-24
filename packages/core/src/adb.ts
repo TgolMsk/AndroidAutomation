@@ -398,6 +398,16 @@ export class AdbDevice {
     await this.shell(`am force-stop ${pkg}`, { timeoutMs: 15_000 });
   }
 
+  /**
+   * Whether a process of `pkg` is alive (`pidof`). `|| true` keeps a "not running" answer from surfacing as a
+   * failed command (adb shell v2 propagates the exit status); anything but a list of pids counts as not running.
+   */
+  async isAppRunning(pkg: string): Promise<boolean> {
+    assertPackage(pkg);
+    const out = (await this.shell(`pidof ${pkg} || true`, { timeoutMs: 10_000 })).trim();
+    return /^\d+(\s+\d+)*$/.test(out);
+  }
+
   /** Installed packages (`pm list packages [-3]`), sorted. */
   async listPackages(opts: { thirdPartyOnly?: boolean } = {}): Promise<string[]> {
     const out = await this.shell(`pm list packages${opts.thirdPartyOnly ? ' -3' : ''}`, { timeoutMs: 30_000 });

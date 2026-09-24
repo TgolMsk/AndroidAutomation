@@ -1,0 +1,51 @@
+{
+  "title": "部队管理（派遣队列）面板 —— 批量调度的核心数据源",
+  "entry": {
+    "from": "世界地图",
+    "icon": "右侧边缘的列表图标",
+    "tapAt": [2522, 592],
+    "note": "务必点 x=2522；实测点 x=2468 会落到地图上导致地图平移。图标下方 (2524, 682) 是双箭头(收起右侧栏)，勿混。"
+  },
+  "header": {
+    "titleText": "部队管理",
+    "settingsGear": [1264, 64],
+    "queueCapacity": {
+      "text": "4/5",
+      "anchor": [2230, 57],
+      "digitRegion": { "x": 2200, "y": 40, "w": 60, "h": 35 },
+      "meaning": "已用行军队列 / 上限。派兵前的硬前置条件。",
+      "readMethod": "0-9 数字模板匹配"
+    },
+    "infoButton": [2356, 62]
+  },
+  "rows": {
+    "count": "动态，最多 = 队列上限",
+    "firstRowCenterY": 248,
+    "rowPitchY": 243,
+    "panelLeftX": 914,
+    "fields": {
+      "recallButton":   { "at": [1055, "rowY"], "desc": "橙色回旋箭头 = 召回该队" },
+      "troopCount":     { "at": [1267, "rowY-77"], "desc": "兵力数字，如 36,995" },
+      "targetThumb":    { "at": [1243, "rowY-9"],  "desc": "目标缩略图，可据此判定资源类型" },
+      "targetCoord":    { "at": [1276, "rowY+69"], "desc": "坐标:607,560 —— 可反查目标点" },
+      "statusBar":      { "x1": 1461, "x2": 1938, "y": "rowY+44",
+                          "desc": "状态条，文案形如「采集中 09:06:17」。状态词 + 倒计时都在这里" },
+      "marchIcon":      { "at": [1436, "rowY+40"] },
+      "commander1Name": { "at": [2119, "rowY-73"] },
+      "commander1Stam": { "at": [2148, "rowY-34"], "desc": "耐力条 105/105" },
+      "commander2Name": { "at": [2115, "rowY+19"] },
+      "commander2Stam": { "at": [2148, "rowY+56"] },
+      "portrait":       { "at": [2477, "rowY"], "desc": "指挥官头像 + 等级角标" }
+    }
+  },
+  "observedStates": ["采集中"],
+  "statesToCapture": ["行军中", "返回中", "驻扎中", "集结中", "战斗中"],
+  "schedulerUsage": [
+    "队列空位 = 上限 - 已用；无空位则不派兵",
+    "每行倒计时 = 该队 ETA，用于排下一轮任务的唤醒时间，避免高频轮询",
+    "指挥官耐力耗尽则不可再派，必须在选将前校验",
+    "坐标字段可用于识别重复目标点，避免两队派往同一个点",
+    "召回按钮可在需要腾队列时主动回收"
+  ],
+  "todo": "当前 4 支队全为「采集中」，其余状态文案需在出现时补采模板"
+}

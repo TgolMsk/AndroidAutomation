@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "自动清体力（打野）配置",
+  "description": "面板可配置项。每一项都必须与游戏内实际状态对账后再执行，禁止盲点。",
+  "type": "object",
+  "properties": {
+    "enabled":            { "type": "boolean", "default": false, "title": "启用自动清体力" },
+    "targetType":         { "type": "string",  "default": "所有", "title": "目标类型", "x-control": { "kind": "dropdown", "at": [1056, 296] } },
+    "levelMin":           { "type": "integer", "default": 1,  "minimum": 1, "title": "等级下限", "x-control": { "kind": "dropdown", "at": [1730, 296] } },
+    "levelMax":           { "type": "integer", "default": 40, "title": "等级上限",           "x-control": { "kind": "dropdown", "at": [1990, 296] } },
+    "minRemainingTroops": { "type": "string",  "default": "70%", "title": "最低剩余兵力",     "x-control": { "kind": "dropdown", "at": [1990, 412] } },
+    "autoCastTreasure":   { "type": "boolean", "default": true,  "title": "宝物技能自动施放", "x-control": { "kind": "toggle",   "at": [2022, 528], "probe": [1993, 526] } },
+    "useCommandPointItem":{ "type": "boolean", "default": false, "title": "使用命令点道具",
+                            "description": "开启会消耗命令点道具。默认关闭；面板可开，但必须与游戏内实际状态对账。",
+                            "x-control": { "kind": "toggle", "at": [2022, 878], "probe": [1993, 876] } },
+    "dispatchCount": {
+      "type": "object", "title": "派遣次数",
+      "properties": {
+        "mode":  { "enum": ["auto-by-stamina", "fixed"], "default": "auto-by-stamina",
+                   "description": "auto-by-stamina = floor(当前体力 / staminaPerDispatch)" },
+        "fixed": { "type": "integer", "minimum": 1, "default": 100 }
+      }
+    },
+    "staminaPerDispatch": { "type": "integer", "default": 50,
+                            "description": "实测值：派遣次数100 → 预计消耗5000。若游戏改版需重新标定。" }
+  },
+  "x-toggleDetection": {
+    "method": "像素取色（非模板匹配）",
+    "probeRule": "取 probe 坐标 5x5 邻域均值 (r,g,b)；g>150 && g>r+80 && g>b+80 → 开，否则关",
+    "measured": { "on": [58, 187, 50], "off": [241, 234, 234], "offRightTrack": [89, 93, 114] },
+    "reconcile": "读实际态 → 与配置比对 → 仅在不一致时点击 → 点击后必须复验；复验仍不符则报错中止，不得继续点击"
+  }
+}

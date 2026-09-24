@@ -27,6 +27,8 @@ export interface DevicePort extends ReadOnlyDevicePort {
   /** Wanlong must launch through monkey (AdbDevice.startApp without an activity), never `am start -n`. */
   launchApp(packageName: string, cold?: boolean): Promise<void>;
   stopApp(packageName: string): Promise<void>;
+  /** Optional: several taps in one device shell (device pixels), with a pause between them. */
+  tapMany?(points: [number, number][], gapMs?: number): Promise<void>;
   /** Optional read-only process check (`pidof`); used only for launch diagnostics and health probes. */
   isAppRunning?(packageName: string): Promise<boolean>;
 }

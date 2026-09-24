@@ -182,6 +182,10 @@ function shell(dev, line) {
     return;
   }
   if (c0 === 'input') return;
+  if (c0 === 'pidof') {
+    if (c1 === 'com.example.game') out('4242\n');
+    return;
+  }
   if (c0 === 'echo') {
     out(`${words.slice(1).join(' ')}\n`);
     return;

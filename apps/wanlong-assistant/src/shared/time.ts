@@ -156,13 +156,11 @@ export function nextWindowStart(at: number, window: ClockWindow): number {
   return today >= at ? today : today + DAY_MS;
 }
 
-/** The next time strictly after `now` at which the Beijing clock reads `hourCst:00`. */
-export function nextCstBoundary(now: number, hourCst: number): number {
-  const cstNow = now + CST_OFFSET_MS;
-  let due = Math.floor(cstNow / DAY_MS) * DAY_MS + hourCst * HOUR_MS;
-  if (due <= cstNow) due += DAY_MS;
-  return due - CST_OFFSET_MS;
-}
+/**
+ * The next time strictly after `now` at which the Beijing clock reads `hourCst:00`. One implementation: the ETA
+ * scheduler's fatigue planning (`@avdm/automation/wanlong/pure`) owns it and this module re-exports it.
+ */
+export { nextCstBoundary } from '@avdm/automation/wanlong/pure';
 
 // ── Clock triggers ──────────────────────────────────────────────────────────
 

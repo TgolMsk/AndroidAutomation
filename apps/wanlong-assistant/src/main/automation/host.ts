@@ -5,19 +5,27 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { AppError, canonicalDirectory, TemplateLibrary, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
-import { normalizeGatherConfig, type GatherCycleResult } from '@avdm/automation/wanlong';
+import {
+  cycleFactOf, normalizeGatherConfig, startupFailureFact, type DispatchRecord, type GatherCycleFact,
+  type GatherCycleResult, type KickedProbeResult, type PanelSample,
+} from '@avdm/automation/wanlong';
 import type { AutomationGameSummary, AutomationProbeReport, AutomationRun, AutomationSchedule, AutomationSettings, TemplateAlphaPreview, TemplateCapture, TemplateCoverage, TemplateImportResult, TemplatesChange, TemplateTestOptions, TemplateTestResult } from '../../shared/ipc';
 import { withLabelledLease } from '../app/instance-access';
 import { broadcast } from '../events';
 import type { ManagerHost } from '../manager-host';
 import { asIndex, errorMessage } from '../util';
-import { WanlongGatherRunner, type GatherManager } from './gather-runner';
+import { ScheduleCompat, toAutomationSchedule } from '../scheduler/compat';
+import { SchedulerError, abortError, codeOf, isAttentionCode, messageOf } from '../scheduler/errors';
+import { InstanceLocks } from '../scheduler/instance-lock';
+import { EtaScheduler, type EtaSchedulerOptions } from '../scheduler/service';
+import { ShotStore } from '../scheduler/shots';
+import type { HealthFrame, LogLevel, QueueFreeResult, SampleRequest } from '../scheduler/types';
+import { WanlongGatherRunner, type GatherManager, type GatherRunResult } from './gather-runner';
 import { inspectGatherProbe } from './gather-probe-guard';
 import { gamePlugin, gameSummaries, gameTask } from './games';
 import type { ProbeWorkerInput, ProbeWorkerOutput } from './probe-worker';
 import { transferableJob, type TemplateJob, type TemplateJobOutput } from './template-jobs';
 import { buildTemplateCoverage, rawFrameToPng, TemplateChangeFeed, workerError, type TemplatesChangeListener } from './template-tools';
-import { AutomationScheduler, SchedulePauseError, type ScheduledRunContext } from './scheduler';
 import { AutomationSettingsStore } from './store';
 
 const PROBE_TIMEOUT_MS = 120_000;
@@ -47,7 +55,8 @@ function isRun(value: unknown): value is AutomationRun {
       (typeof value['nextWakeAt'] === 'number' && Number.isFinite(value['nextWakeAt'])));
 }
 
-type GatherRunnerPort = Pick<WanlongGatherRunner, 'runOnce' | 'stop' | 'dispose' | 'isRunning'>;
+type GatherRunnerPort = Pick<WanlongGatherRunner, 'runOnce' | 'stop' | 'dispose' | 'isRunning'> &
+  Partial<Pick<WanlongGatherRunner, 'sample' | 'healthFrame' | 'invalidateTemplates' | 'recognize'>>;
 
 /** A future durable scheduler may consume a completed cycle and return only a wake it actually stored. */
 export type CycleCompletionSink = (run: AutomationRun, result: GatherCycleResult) => Promise<number | null>;
@@ -68,6 +77,39 @@ export interface AutomationHostHooks {
    * 「测试模板」 uses the same values so a test hits or misses exactly as a script run would (original matchOnce).
    */
   matchDefaults?: () => { threshold: number; shrink: number };
+  /**
+   * Facts of one gather cycle for alerts (outcome, step 'G0' = recovery ladder exhausted, error code, failure shot,
+   * kicked probe). Reported before a failed scheduled cycle throws, and also for cycles that never started.
+   * Not called for cancelled cycles.
+   */
+  onCycleResult?: (index: number, fact: GatherCycleFact, source: 'manual' | 'scheduled') => Promise<void>;
+  /** Every dispatch of a cycle (statistics: storage ≈ amount gathered), even when the cycle ended in an error. */
+  onDispatched?: (index: number, records: DispatchRecord[], at: number) => Promise<void> | void;
+}
+
+/**
+ * Ports later modules plug in (accounts, alerts, AI). All optional; see src/main/scheduler/README.md.
+ * Set them with `AutomationHost.setPorts()` from main/index.ts.
+ */
+export interface AutomationHostPorts {
+  /** Account bound to the instance (queue view). */
+  accountIdOf?(index: number): Promise<string | null>;
+  /** Refuse enabling auto for an unready account / base instance (throws a Chinese reason). */
+  ensureAccountReady?(index: number): Promise<void>;
+  /** Another writer owns the instance (plan script, login): a Chinese label, or null. */
+  externalBusy?(index: number): string | null;
+  /** The gather config of the account bound to the instance, when it has one (else the per-instance settings). */
+  accountGatherConfig?(index: number): Promise<Record<string, unknown> | null>;
+  /** Second-layer kicked probe on a failure frame already captured. Must return null when templates are missing. */
+  probeKicked?(index: number, raw: RawFrame): Promise<KickedProbeResult | null>;
+  /** G0 unknown-screen advisor (AI / game update) inside a gather cycle. true = the screen changed. */
+  adviseUnknownScreen?(index: number, raw: RawFrame, attempt: number, signal: AbortSignal): Promise<boolean>;
+}
+
+export interface AutomationHostOptions {
+  locks?: InstanceLocks;
+  scheduler?: Omit<EtaSchedulerOptions, 'locks' | 'publish' | 'publishConfig' | 'log' | 'onSafetyPause'>;
+  shots?: ShotStore;
 }
 
 interface ActiveAutomationRun {
@@ -78,13 +120,27 @@ interface ActiveAutomationRun {
   done: Promise<void>;
 }
 
+const GATHER_GAME_ID = 'wanlong';
+
+/** Whether a failed scheduled start is a fact for alerts: not a stop, a hand-over to another writer or a human-needed pause. */
+function reportable(error: unknown, signal: AbortSignal): boolean {
+  const code = codeOf(error);
+  return !signal.aborted && code !== 'CONCURRENCY_LIMIT' && code !== 'RUN_ABORTED' && code !== 'CANCELLED' && !isAttentionCode(code);
+}
+
 /** Host-owned bridge from AVD instances to isolated game-vision workers. */
 export class AutomationHost {
   private readonly store: AutomationSettingsStore;
   private readonly home: string;
   private readonly templates: TemplateLibrary;
   private readonly gatherRunner: GatherRunnerPort;
-  private readonly scheduler: AutomationScheduler;
+  private readonly scheduler: ScheduleCompat;
+  /** The ETA scheduler: queue states, exclusive(), suspendForScript(), hooks. Other modules use it from here. */
+  readonly eta: EtaScheduler;
+  /** The per-instance device lock shared by samples, cycles and `eta.exclusive()`. */
+  readonly locks: InstanceLocks;
+  private readonly shots: ShotStore;
+  private ports: AutomationHostPorts = {};
   private readonly workers = new Set<Worker>();
   private readonly runHistory = new Map<string, AutomationRun>();
   private readonly activeRuns = new Map<string, ActiveAutomationRun>();
@@ -93,15 +149,13 @@ export class AutomationHost {
   private readonly templateChanges = new TemplateChangeFeed();
   /** Replaces the one-shot template worker (tests run `runTemplateJob` in-process); unset in the app. */
   templateJobRunner?: (job: TemplateJob) => Promise<TemplateJobOutput>;
-  /** Gate refusals of scheduled wakes, reported once the scheduler has persisted the pause. */
-  private readonly pauseReasons = new Map<string, string>();
   private readonly historyFile: string;
   private readonly historyReady: Promise<void>;
   private historyWrite: Promise<void> = Promise.resolve();
   private disposed = false;
 
   constructor(private readonly host: ManagerHost, home: string, gatherRunner?: GatherRunnerPort, private readonly cycleSink?: CycleCompletionSink,
-    private readonly hooks: AutomationHostHooks = {}) {
+    private readonly hooks: AutomationHostHooks = {}, options: AutomationHostOptions = {}) {
     this.home = home;
     this.store = new AutomationSettingsStore(home);
     this.templates = new TemplateLibrary(home);
@@ -113,25 +167,37 @@ export class AutomationHost {
       getState: async (index) => (await this.host.get()).getState(index),
       device: async (index) => (await this.host.get()).device(index),
     };
-    this.gatherRunner = gatherRunner ?? new WanlongGatherRunner(manager, home);
-    this.scheduler = new AutomationScheduler(home, (context) => this.runScheduledCycle(context), {
-      onStateChange: (state) => {
-        broadcast('automation-schedule', state);
-        const pauseKey = `${state.gameId}:${state.index}`;
-        const pauseReason = this.pauseReasons.get(pauseKey);
-        this.pauseReasons.delete(pauseKey);
-        if (!state.enabled && pauseReason !== undefined && state.failureCount === 0) {
-          void this.hooks.onSchedulePause?.(state.gameId, state.index, pauseReason).catch((error: unknown) =>
-            console.error('[avdm] 调度暂停提醒无法保存', error));
-        } else if (!state.enabled && state.failureCount > 0) {
-          void this.hooks.onScheduleStop?.(state.gameId, state.index, state.failureCount).catch((error: unknown) =>
-            console.error('[avdm] 调度暂停告警无法保存', error));
-        }
+    this.locks = options.locks ?? new InstanceLocks(home);
+    this.shots = options.shots ?? new ShotStore(home);
+    this.gatherRunner = gatherRunner ?? new WanlongGatherRunner(manager, home, { locks: this.locks });
+    this.eta = new EtaScheduler(home, {
+      sample: (index, request) => this.sampleTroopPanel(index, request),
+      healthFrame: (index, signal) => this.healthFrame(index, signal),
+      instance: (index) => this.instanceIdentity(index),
+      ensureReady: (index) => this.ensureAutomationReady(index),
+      accountIdOf: async (index) => (await this.ports.accountIdOf?.(index)) ?? null,
+      externalBusy: (index) => this.ports.externalBusy?.(index) ?? null,
+    }, {
+      ...options.scheduler,
+      locks: this.locks,
+      publish: (state) => {
+        broadcast('scheduler-changed', state);
+        broadcast('automation-schedule', toAutomationSchedule(state));
       },
-      onError: ({ gameId, index }, error) => broadcast('log', {
-        level: 'warn', message: `自动化调度 ${gameId} #${index}：${errorMessage(error)}`, at: new Date().toISOString(),
-      }),
+      publishConfig: (config) => broadcast('scheduler-config-changed', config),
+      log: (level, message) => this.logLine(level, message),
+      onSafetyPause: (index, failureCount) => {
+        void this.hooks.onScheduleStop?.(GATHER_GAME_ID, index, failureCount).catch((error: unknown) =>
+          console.error('[avdm] 调度暂停告警无法保存', error));
+      },
     });
+    this.eta.setQueueFreeHook((state, ctx) => this.gatherForScheduler(state.instanceIndex, ctx.signal));
+    this.scheduler = new ScheduleCompat(this.eta);
+  }
+
+  /** Plug in the ports of later modules (accounts, alerts, AI). Merges; `undefined` removes one. */
+  setPorts(ports: Partial<AutomationHostPorts>): void {
+    this.ports = { ...this.ports, ...ports };
   }
 
   games(): AutomationGameSummary[] {
@@ -424,26 +490,15 @@ export class AutomationHost {
 
   async setSchedule(gameId: string, index: number, enabled: boolean): Promise<AutomationSchedule> {
     if (this.disposed) throw new Error('应用正在退出');
-    const plugin = gamePlugin(gameId);
+    gamePlugin(gameId);
     if (gameId !== 'wanlong') throw new Error('该游戏尚未接入自动续跑');
     const i = asIndex(index);
     return this.withControlLock(i, async () => {
       if (!enabled) return this.scheduler.disable(gameId, i);
       if (this.activeByIndex.has(i) || this.gatherRunner.isRunning(i)) throw new Error(`实例 #${i} 已有自动化任务在运行`);
-      const readiness = await this.hooks.automationReadiness?.(gameId, i);
-      if (readiness && !readiness.ready) throw new Error(readiness.reason || NOT_READY);
-      const manager = await this.host.get();
-      const [instance, settings] = await Promise.all([manager.getState(i), this.store.get(gameId, i)]);
-      if (instance.status !== 'running') throw new Error(`实例 #${i} 尚未就绪`);
-      if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
-      const config = normalizeGatherConfig(settings.config as Parameters<typeof normalizeGatherConfig>[0]);
-      if (!config.enabled) throw new Error('请先启用并保存自动采集配置');
-      const foreground = await (await manager.device(i)).foregroundPackage();
-      if (foreground !== plugin.packageName) throw new Error(`${plugin.name}未处于前台`);
-      const probe = await this.probe(gameId, i);
-      if (!probe.launchReady) throw new Error(`画面未通过采集校准：${probe.launchReason}`);
-      if (this.disposed) throw new Error('应用正在退出');
-      if (this.activeByIndex.has(i) || this.gatherRunner.isRunning(i)) throw new Error(`实例 #${i} 已有自动化任务在运行`);
+      // Readiness (instance running, template set, config enabled, account) is the ETA scheduler's gate
+      // (ensureAutomationReady). ★ The game need not be in front (DECISIONS C): the first read-only sample cold-starts
+      // it and every write still passes the probe gate inside the vision worker.
       return this.scheduler.enable(gameId, i);
     });
   }
@@ -518,22 +573,148 @@ export class AutomationHost {
     }
   }
 
-  private async runScheduledCycle({ gameId, index, signal }: ScheduledRunContext): Promise<{ nextWakeAt: number | null }> {
-    const { run, active } = await this.startRun(gameId, 'gather-once', index, 'scheduled', signal);
+  /**
+   * The ETA scheduler's QueueFreeHook: one gather cycle, run inside the scheduler's instance lock. Reports the
+   * cycle's facts (and a start-up failure) before throwing, records every dispatch with the scheduler (travel time,
+   * coordinate, resource — then one re-sample), and only a failed cycle throws; queueFull / noResourceWanted / giveUp
+   * / staminaLow / circuitBroken return normally (not failures; circuitBroken and giveUp set the earliest next wake).
+   */
+  private async gatherForScheduler(index: number, signal: AbortSignal): Promise<QueueFreeResult> {
+    let started: { run: AutomationRun; active: ActiveAutomationRun };
     try {
-      const result = await active.result;
-      await active.done;
-      if (result.outcome === 'circuitBroken') throw new SchedulePauseError(result.message);
-      if (result.outcome === 'error' || result.outcome === 'cancelled') throw new Error(result.message);
-      // A wake must not be armed when the corresponding run record was not durably written.
-      await this.historyWrite;
-      const recorded = this.runHistory.get(run.runId);
-      if (recorded?.status !== 'succeeded') throw new Error(recorded?.message ?? '采集运行记录未保存');
-      return { nextWakeAt: result.nextWakeAt };
+      started = await this.startRun(GATHER_GAME_ID, 'gather-once', index, 'scheduled', signal);
     } catch (error) {
-      await active.done;
+      if (reportable(error, signal)) await this.reportFact(index, startupFailureFact(messageOf(error), codeOf(error)), 'scheduled');
       throw error;
     }
+    let result: GatherRunResult;
+    try {
+      result = await started.active.result as GatherRunResult;
+    } catch (error) {
+      await started.active.done;
+      if (reportable(error, signal)) await this.reportFact(index, startupFailureFact(messageOf(error), codeOf(error)), 'scheduled');
+      throw error;
+    }
+    // completeCycle has stored the run record and reported the facts and dispatches.
+    await started.active.done;
+    for (const warning of result.warnings) this.logLine('warn', `[实例 #${index}] ${warning}`);
+    for (const record of result.dispatched) {
+      if (record.travelTimeSec === null) this.logLine('warn', `[实例 #${index}] 这一趟没读出单程行军耗时，调度器只能用兜底值估 freeAt（会偏保守）。`);
+    }
+    if (result.dispatched.length > 0) {
+      // ★ Record even without a travel time (coordinate + resource are the only way marching rows learn what they
+      //   gather) and even when stopped meanwhile: the troops are out either way. The re-sample is skipped on abort.
+      await this.eta.noteDispatches(index, result.dispatched.map((record) => ({
+        travelTimeMs: record.travelTimeSec === null ? null : record.travelTimeSec * 1000,
+        coord: record.coord,
+        resourceType: record.resource,
+      })), { signal });
+    }
+    if (result.outcome === 'cancelled') {
+      if (signal.aborted) throw abortError(signal, '自动采集已被中止。');
+      // Not stopped by the scheduler: the vision job's own timeout ended the cycle. A failure, so it backs off.
+      throw new SchedulerError('TIMEOUT', `采集一轮没有在限定时间内完成，已中止：${result.message}`);
+    }
+    if (result.outcome === 'error') {
+      const code = result.error?.code;
+      if (code && isAttentionCode(code)) throw new SchedulerError(code, result.message);
+      throw new SchedulerError('STEP_FAILED', result.message, { step: result.fact?.step ?? null });
+    }
+    this.logLine(result.dispatched.length > 0 ? 'info' : 'debug', `[实例 #${index}] 自动采集本轮结束：${result.message}`);
+    const cooldown = result.outcome === 'circuitBroken' || result.outcome === 'giveUp';
+    return {
+      dispatched: result.dispatched.length,
+      notBefore: cooldown ? result.nextWakeAt : null,
+      ...(cooldown ? { reason: result.nextWakeReason } : {}),
+    };
+  }
+
+  private async reportFact(index: number, fact: GatherCycleFact, source: 'manual' | 'scheduled'): Promise<void> {
+    if (fact.outcome === 'cancelled') return;
+    try { await this.hooks.onCycleResult?.(index, fact, source); }
+    catch (error) { this.logLine('warn', `[实例 #${index}] 异常检测模块处理本轮结果时出错：${messageOf(error)}`); }
+  }
+
+  private async instanceIdentity(index: number): Promise<{ status: string; createdAt: string } | null> {
+    try {
+      const state = await (await this.host.get()).getState(index);
+      return { status: state.status, createdAt: state.record.createdAt };
+    } catch (error) {
+      if (codeOf(error) === 'INSTANCE_NOT_FOUND') return null;
+      throw error;
+    }
+  }
+
+  /** Readiness before auto scheduling is enabled (also used by resume paths): instance, templates, config, account. */
+  private async ensureAutomationReady(index: number): Promise<void> {
+    const instance = await this.instanceIdentity(index);
+    if (!instance) throw new Error(`实例 #${index} 不存在`);
+    if (instance.status !== 'running') throw new Error(`实例 #${index} 尚未就绪，请先启动并等待 Android 启动完成`);
+    const settings = await this.store.get(GATHER_GAME_ID, index);
+    if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
+    const config = normalizeGatherConfig((await this.gatherConfig(index, settings.config)) as Parameters<typeof normalizeGatherConfig>[0]);
+    if (!config.enabled) throw new Error('请先启用并保存自动采集配置');
+    await this.ports.ensureAccountReady?.(index);
+    await this.assertAccountsReady(GATHER_GAME_ID, index);
+  }
+
+  /**
+   * Accounts gate (base instance, active login, pending / stale bound account): a refusal carries the Chinese
+   * reason. Checked when auto is enabled or resumed and before every cycle, never when switching off.
+   */
+  private async assertAccountsReady(gameId: string, index: number): Promise<void> {
+    const readiness = await this.hooks.automationReadiness?.(gameId, index);
+    if (readiness && !readiness.ready) throw new Error(readiness.reason || NOT_READY);
+  }
+
+  /** The account's gather config when one is bound (original Account.scriptParams.gather), else the instance's. */
+  private async gatherConfig(index: number, fallback: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const fromAccount = await this.ports.accountGatherConfig?.(index).catch(() => null);
+    return fromAccount ?? fallback;
+  }
+
+  private async sampleTroopPanel(index: number, request: SampleRequest): Promise<PanelSample> {
+    if (!this.gatherRunner.sample) throw new SchedulerError('UNKNOWN', '采集运行器不支持读取部队管理面板');
+    const settings = await this.store.get(GATHER_GAME_ID, index);
+    if (!settings.templateDir) throw new SchedulerError('TEMPLATE_NOT_FOUND', '请先选择本地模板集目录');
+    return this.gatherRunner.sample(index, {
+      templateDir: settings.templateDir,
+      config: request.config,
+      deadlineAt: request.deadlineAt,
+      signal: request.signal,
+      allowColdStart: request.allowColdStart,
+      onFrame: request.onFrame,
+      onCaptureFailed: request.onCaptureFailed,
+      onUnrecognized: request.onUnrecognized,
+      log: request.log,
+    });
+  }
+
+  private async healthFrame(index: number, signal: AbortSignal): Promise<HealthFrame> {
+    if (!this.gatherRunner.healthFrame) throw new SchedulerError('UNKNOWN', '采集运行器不支持健康探针');
+    return this.gatherRunner.healthFrame(index, signal);
+  }
+
+  /**
+   * Whether a frame shows a known screen (world map, city, panels…) with the instance's cached templates. For later
+   * modules (freeze recovery waiting for the main screen, AI verification). Runs in the vision worker.
+   */
+  async recognizeScreen(index: number, raw: RawFrame, signal: AbortSignal): Promise<boolean> {
+    const settings = await this.store.get(GATHER_GAME_ID, asIndex(index));
+    if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
+    if (this.gatherRunner.recognize) return this.gatherRunner.recognize(index, settings.templateDir, raw, signal);
+    return false;
+  }
+
+  /** Compiled templates are dropped in every vision worker (e.g. after an AI template harvest). */
+  invalidateTemplates(): void {
+    this.gatherRunner.invalidateTemplates?.();
+  }
+
+  private logLine(level: LogLevel, message: string): void {
+    if (level === 'error' || level === 'warn') console.warn(`[wanlong] ${message}`);
+    else if (level === 'info') console.log(`[wanlong] ${message}`);
+    if (level !== 'debug') broadcast('log', { level, message: `[万龙] ${message}`, at: new Date().toISOString() });
   }
 
   private async startRun(
@@ -542,29 +723,21 @@ export class AutomationHost {
     if (this.disposed) throw new Error('应用正在退出');
     if (externalSignal?.aborted) throw externalSignal.reason ?? new Error('调度已停止');
     await this.historyReady;
-    const plugin = gamePlugin(gameId);
+    gamePlugin(gameId);
     const task = gameTask(gameId, taskId);
     if (gameId !== 'wanlong' || task.id !== 'gather-once') throw new Error('该自动化任务尚未接入');
     const i = asIndex(index);
     if (this.activeByIndex.has(i) || this.gatherRunner.isRunning(i)) throw new Error(`实例 #${i} 已有自动化任务在运行`);
-    const readiness = await this.hooks.automationReadiness?.(gameId, i);
-    if (readiness && !readiness.ready) {
-      const reason = readiness.reason || NOT_READY;
-      if (source !== 'scheduled') throw new Error(reason);
-      // Not a device failure (original alert rule 1): a scheduled wake pauses at once instead of backing off
-      // eight times into a 「连续失败」 alert.
-      this.pauseReasons.set(`${gameId}:${i}`, reason);
-      throw new SchedulePauseError(reason, { countsAsFailure: false });
-    }
+    await this.assertAccountsReady(gameId, i);
 
     const manager = await this.host.get();
     const [instance, settings] = await Promise.all([manager.getState(i), this.store.get(gameId, i)]);
     if (instance.status !== 'running') throw new Error(`实例 #${i} 尚未就绪，请先启动并等待 Android 启动完成`);
     if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
-    const config = normalizeGatherConfig(settings.config as Parameters<typeof normalizeGatherConfig>[0]);
+    const templateDir = settings.templateDir;
+    const config = normalizeGatherConfig((await this.gatherConfig(i, settings.config)) as Parameters<typeof normalizeGatherConfig>[0]);
     if (!config.enabled) throw new Error('请先启用并保存自动采集配置');
-    const foreground = await (await manager.device(i)).foregroundPackage();
-    if (foreground !== plugin.packageName) throw new Error(`${plugin.name}未处于前台（当前：${foreground ?? '未知'}）`);
+    // ★ No foreground requirement: a game that is not running is cold-started (monkey + look-only wait) by the cycle.
     if (this.disposed) throw new Error('应用正在退出');
     if (externalSignal?.aborted) throw externalSignal.reason ?? new Error('调度已停止');
     // The check and reservation are synchronous after the last await, so two IPC calls cannot claim one device.
@@ -587,7 +760,19 @@ export class AutomationHost {
       this.runHistory.delete(runId);
       throw error;
     }
-    const result = Promise.resolve().then(() => this.gatherRunner.runOnce(i, { templateDir: settings.templateDir, config, signal: controller.signal }));
+    const ports = this.ports;
+    const result = Promise.resolve().then(() => this.gatherRunner.runOnce(i, {
+      templateDir,
+      config,
+      signal: controller.signal,
+      allowColdStart: true,
+      log: (level, message) => this.logLine(level, `[实例 #${i}] ${message}`),
+      saveShot: (label, raw) => this.shots.save(i, label, raw),
+      ...(ports.probeKicked ? { probeKicked: (raw: RawFrame) => ports.probeKicked!(i, raw) } : {}),
+      ...(ports.adviseUnknownScreen
+        ? { advise: (raw: RawFrame, attempt: number) => ports.adviseUnknownScreen!(i, raw, attempt, controller.signal) }
+        : {}),
+    }));
     const done = result
       .then((result) => this.completeCycle(runId, result))
       .catch(async (error: unknown) => {
@@ -659,11 +844,27 @@ export class AutomationHost {
     }
     await this.finishRun(runId, status, result.message, scheduledWakeAt);
     const terminal = this.runHistory.get(runId);
-    const source = this.activeRuns.get(runId)?.source;
-    if (terminal && source) {
-      try { await this.hooks.onCycle?.({ ...terminal }, result, source); }
-      catch (error) { console.error('[avdm] 采集统计无法保存', error); }
+    const active = this.activeRuns.get(runId);
+    if (!terminal || !active) return;
+    const { source, index } = active;
+    const fact = (result as Partial<GatherRunResult>).fact ?? cycleFactOf(result, { shotPath: null, kicked: null });
+    // ★ Facts go out before a failed scheduled cycle throws (gatherForScheduler awaits this `done`).
+    await this.reportFact(index, fact, source);
+    if (result.dispatched.length > 0) {
+      try { await this.hooks.onDispatched?.(index, result.dispatched, Date.now()); }
+      catch (error) { this.logLine('warn', `[实例 #${index}] 派兵统计无法保存：${messageOf(error)}`); }
+      if (source === 'manual') {
+        // A manual cycle still teaches the queue view what the new marches gather; the next sample reads the timers.
+        await this.eta.noteDispatches(index, result.dispatched.map((record) => ({
+          travelTimeMs: record.travelTimeSec === null ? null : record.travelTimeSec * 1000,
+          coord: record.coord,
+          resourceType: record.resource,
+        })), { resample: false }).catch((error: unknown) =>
+          this.logLine('warn', `[实例 #${index}] 派兵记账失败：${messageOf(error)}`));
+      }
     }
+    try { await this.hooks.onCycle?.({ ...terminal }, result, source); }
+    catch (error) { console.error('[avdm] 采集统计无法保存', error); }
   }
 
   private async finishRun(runId: string, status: AutomationRun['status'], message: string, nextWakeAt: number | null = null): Promise<void> {

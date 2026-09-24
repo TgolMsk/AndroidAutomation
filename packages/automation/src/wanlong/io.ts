@@ -1,29 +1,45 @@
 import type { DevicePort, RawFrame } from '../contracts.js';
-import { ensureGameForeground } from './launch.js';
-import type { GatherIo } from './gather/session.js';
+import { ensureGameForeground, type GameLaunchIo } from './launch.js';
+import { GatherHalt, type GatherIo, type GatherLogger } from './gather/session.js';
 
 export interface GatherIoOptions {
   refWidth: number;
   refHeight: number;
   signal?: AbortSignal;
-  /** Receives cold-start diagnostics from ensureGameForeground (Chinese messages). */
-  log?: (level: 'debug' | 'info' | 'warn', message: string) => void;
+  /** Receives the cold-start recovery log lines (Chinese). */
+  log?: GatherLogger;
 }
 
-/** Map reference coordinates to actual frame pixels at the AVD boundary. */
+const CANCELLED_MESSAGE = '自动采集已被中止。';
+
+/**
+ * Map reference coordinates to actual frame pixels at the AVD boundary.
+ *
+ * Cancellation is a `GatherHalt('cancelled')`: checked before every call and also when a pending device call
+ * rejects because the run was aborted, so the flow reports outcome `cancelled` (no backoff, no error shot)
+ * instead of a failure.
+ */
 export function createGatherIo(device: DevicePort, options: GatherIoOptions): GatherIo {
   let width = 0;
   let height = 0;
   const check = (): void => {
-    if (options.signal?.aborted) throw options.signal.reason instanceof Error ? options.signal.reason : new Error('采集已取消');
+    if (options.signal?.aborted) throw new GatherHalt('cancelled', CANCELLED_MESSAGE);
   };
-  const capture = async (): Promise<RawFrame> => {
+  const guarded = async <T>(call: () => Promise<T>): Promise<T> => {
     check();
+    try {
+      return await call();
+    } catch (error) {
+      if (options.signal?.aborted && !(error instanceof GatherHalt)) throw new GatherHalt('cancelled', CANCELLED_MESSAGE);
+      throw error;
+    }
+  };
+  const capture = (): Promise<RawFrame> => guarded(async () => {
     const frame = await device.capture(options.signal);
     width = frame.width;
     height = frame.height;
     return frame;
-  };
+  });
   const point = async (x: number, y: number): Promise<{ x: number; y: number }> => {
     if (!width || !height) await capture();
     check();
@@ -36,37 +52,47 @@ export function createGatherIo(device: DevicePort, options: GatherIoOptions): Ga
     capture,
     async tap(x, y) {
       const value = await point(x, y);
-      check();
-      await device.tap(value.x, value.y);
+      await guarded(() => device.tap(value.x, value.y));
     },
     async tapMany(points, gapMs = 0) {
+      const mapped: [number, number][] = [];
       for (const [x, y] of points) {
         const value = await point(x, y);
-        check();
-        await device.tap(value.x, value.y);
-        if (gapMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, gapMs));
+        mapped.push([value.x, value.y]);
+      }
+      // One shell for the whole burst (measured: 5 separate taps 103 ms, merged 34 ms) when the host offers it.
+      if (device.tapMany) {
+        const tapMany = device.tapMany.bind(device);
+        await guarded(() => tapMany(mapped, gapMs));
+        return;
+      }
+      for (const [x, y] of mapped) {
+        await guarded(() => device.tap(x, y));
+        if (gapMs > 0) await guarded(() => new Promise<void>((resolve) => setTimeout(resolve, gapMs)));
       }
     },
     async swipe(x1, y1, x2, y2, durationMs) {
       const a = await point(x1, y1);
       const b = await point(x2, y2);
-      check();
-      await device.swipe(a.x, a.y, b.x, b.y, durationMs);
+      await guarded(() => device.swipe(a.x, a.y, b.x, b.y, durationMs));
     },
-    async key(key) { check(); await device.key(key); },
-    async launchApp(packageName, cold) { check(); await device.launchApp(packageName, cold); },
-    async foregroundPackage() { check(); return device.foregroundPackage(); },
+    key: (key) => guarded(() => device.key(key)),
+    launchApp: (packageName, cold) => guarded(() => device.launchApp(packageName, cold)),
+    foregroundPackage: () => guarded(() => device.foregroundPackage()),
     async ensureGameForeground(packageName) {
       check();
-      return ensureGameForeground({
-        foreground: () => device.foregroundPackage(),
+      const io: GameLaunchIo = {
+        // Every query re-checks cancellation so a stop is seen within one poll, not at the 60 s deadline.
+        foreground: () => guarded(() => device.foregroundPackage()),
         // The host's Wanlong launch adapter must use monkey, which works on a cold game process.
-        launch: () => device.launchApp(packageName, false),
-        isRunning: device.isAppRunning ? () => device.isAppRunning!(packageName) : undefined,
-        // Cancellation must stop the 60 s foreground wait promptly; query errors stay swallowed.
+        launch: () => guarded(() => device.launchApp(packageName, false)),
+        ...(device.isAppRunning ? { isRunning: () => guarded(() => device.isAppRunning!(packageName)) } : {}),
+        log: (level, message) => options.log?.(level, message),
         checkAlive: check,
-        log: options.log,
-      }, { packageName });
+      };
+      const presence = await ensureGameForeground(io, { packageName });
+      check();
+      return presence;
     },
   };
 }
