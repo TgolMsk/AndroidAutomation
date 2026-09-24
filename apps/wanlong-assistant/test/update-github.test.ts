@@ -1,6 +1,7 @@
 /**
  * The GitHub Releases port with a fake fetch and a temp Downloads folder: release parsing, SHA256SUMS parsing,
- * download with progress, resume, checksum verification, cancellation and timeouts. No network.
+ * download with progress, resume, checksum verification, cancellation, timeouts and the fallback folder when
+ * Downloads cannot be written. No network.
  */
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
@@ -9,9 +10,28 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { describe as describeError, type UpdateRelease } from '../src/main/update/center';
 import {
-  GitHubUpdater, RELEASES_API_URL, isReleasePageUrl, normalizeNotes, parseAssetVersion, parseChecksums, pickRelease,
-  releasePageUrl, type FetchLike,
+  GitHubUpdater, RELEASES_API_URL, isNoWriteAccess, isReleasePageUrl, normalizeNotes, parseAssetVersion, parseChecksums,
+  pickRelease, releasePageUrl, type FetchLike,
 } from '../src/main/update/github';
+
+/**
+ * Folders whose files cannot be opened, with the errno to fail with. Tests run as root in CI, where chmod denies
+ * nothing, so the refusal macOS gives for a Downloads folder the user did not allow is simulated at `open()`.
+ */
+const refused = vi.hoisted(() => new Map<string, string>());
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const { sep } = await import('node:path');
+  const open: typeof actual.open = async (file, ...rest) => {
+    for (const [dir, code] of refused) {
+      if (typeof file === 'string' && file.startsWith(dir + sep)) {
+        throw Object.assign(new Error(`${code}: operation not permitted, open '${file}'`), { code, syscall: 'open', path: file });
+      }
+    }
+    return actual.open(file, ...rest);
+  };
+  return { ...actual, open, default: { ...actual, open } };
+});
 
 const PAGE = 'https://github.com/TgolMsk/AndroidAutomation/releases';
 const DOWNLOAD = `${PAGE}/download`;
@@ -209,13 +229,19 @@ describe('GitHubUpdater', () => {
     openResult = '';
   });
 
-  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+  afterEach(async () => {
+    refused.clear();
+    await rm(dir, { recursive: true, force: true });
+  });
 
-  function updater(server: Server, extra: { idleTimeoutMs?: number } = {}) {
+  function updater(
+    server: Server, extra: { idleTimeoutMs?: number; downloadsDir?: () => string; fallbackDir?: () => string } = {},
+  ) {
     const net = makeFetch(server);
     const port = new GitHubUpdater({
       fetch: net.fetch,
       downloadsDir: () => dir,
+      fallbackDir: () => path.join(dir, 'fallback'),
       userAgent: 'WanlongAssistant/0.3.0',
       openPath: async (file) => { opened.push(file); return openResult; },
       showItemInFolder: (file) => { revealed.push(file); },
@@ -370,6 +396,49 @@ describe('GitHubUpdater', () => {
     await expect(port.verify(file, RELEASE)).rejects.toThrow('sha256 mismatch');
     await expect(stat(file)).rejects.toThrow();
     await expect(port.verify(file, RELEASE)).rejects.toThrow('已被移走或删除');
+  });
+
+  it('★ 「下载」文件夹不让写（macOS 拒绝了访问）：改存到临时文件夹，照样校验通过、不在「下载」里留文件', async () => {
+    const payload = bytes(1000);
+    const downloads = path.join(dir, 'Downloads');
+    const fallback = path.join(dir, 'tmp');
+    refused.set(downloads, 'EPERM');
+    const { port } = updater({ payload }, { downloadsDir: () => downloads, fallbackDir: () => fallback });
+    const file = await port.download(RELEASE, options().options);
+    expect(file).toBe(path.join(fallback, NAME));
+    expect(sha(await readFile(file))).toBe(sha(payload));
+    expect(await readdir(downloads)).toEqual([]);
+    await expect(port.verify(file, RELEASE)).resolves.toBeUndefined();
+  });
+
+  it('拿不到「下载」文件夹的路径时直接用临时文件夹', async () => {
+    const payload = bytes(1000);
+    const fallback = path.join(dir, 'tmp');
+    const { port } = updater({ payload }, { downloadsDir: () => { throw new Error('no downloads'); }, fallbackDir: () => fallback });
+    expect(await port.download(RELEASE, options().options)).toBe(path.join(fallback, NAME));
+  });
+
+  it('两处都不让写：错误翻成能照着做的中文（去「隐私与安全性」里允许，或手动下载）', async () => {
+    const downloads = path.join(dir, 'Downloads');
+    const fallback = path.join(dir, 'tmp');
+    refused.set(downloads, 'EACCES');
+    refused.set(fallback, 'EPERM');
+    const { port } = updater({ payload: bytes(1000) }, { downloadsDir: () => downloads, fallbackDir: () => fallback });
+    const error = await port.download(RELEASE, options().options).catch((e: unknown) => e);
+    expect(isNoWriteAccess(error)).toBe(true);
+    expect(describeError(error)).toContain('隐私与安全性');
+    expect(describeError(error)).toContain('Release 页手动下载');
+    expect(describeError(error)).not.toMatch(/operation not permitted/);
+  });
+
+  it('不是权限问题（如磁盘满）就不换地方，原因翻成中文', async () => {
+    const downloads = path.join(dir, 'Downloads');
+    const fallback = path.join(dir, 'tmp');
+    refused.set(downloads, 'ENOSPC');
+    const { port } = updater({ payload: bytes(1000) }, { downloadsDir: () => downloads, fallbackDir: () => fallback });
+    const error = await port.download(RELEASE, options().options).catch((e: unknown) => e);
+    expect(describeError(error)).toContain('磁盘空间不足');
+    await expect(stat(fallback)).rejects.toThrow();
   });
 
   it('打开与在访达中显示走注入的外壳接口；打不开给出原因', async () => {

@@ -4,7 +4,9 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { UpdateProgress, UpdateState } from '../src/shared/update';
-import { UpdateCenter, UpdateError, describe as describeError, type UpdateRelease, type UpdaterPort } from '../src/main/update/center';
+import {
+  BUSY_UNKNOWN, UpdateCenter, UpdateError, describe as describeError, type UpdateRelease, type UpdaterPort,
+} from '../src/main/update/center';
 import { UpdateService } from '../src/main/update';
 
 function release(version: string, extra: Partial<UpdateRelease> = {}): UpdateRelease {
@@ -58,6 +60,8 @@ interface Env {
   packaged?: boolean;
   supported?: boolean;
   busy?: string | null;
+  /** Answer the busy hook asynchronously, like the occupancy table does. */
+  asyncBusy?: boolean;
   version?: string;
   publish?: (state: UpdateState) => void;
 }
@@ -68,12 +72,16 @@ function makeCenter(world: ReturnType<typeof makeWorld>, env: Env = {}) {
   let quits = 0;
   const updater = vi.fn(() => world.port);
   const center = new UpdateCenter();
-  const state = { busy: env.busy ?? null };
+  const state: { busy: string | null; fail: Error | null } = { busy: env.busy ?? null, fail: null };
+  const readBusy = () => {
+    if (state.fail) throw state.fail;
+    return state.busy;
+  };
   center.init({
     currentVersion: () => env.version ?? '0.3.0',
     packaged: () => env.packaged ?? true,
     supportedPlatform: () => env.supported ?? true,
-    busy: () => state.busy,
+    busy: env.asyncBusy ? async () => { await Promise.resolve(); return readBusy(); } : readBusy,
     releasePageUrl: () => 'https://github.com/TgolMsk/AndroidAutomation/releases/latest',
     openExternal: async (url) => { opened.push(url); },
     updater,
@@ -173,6 +181,22 @@ describe('三、检查更新', () => {
     const { center } = makeCenter(world);
     world.setCheck(async () => { throw new Error('HTTP 403 rate limit exceeded'); });
     expect((await center.check()).error).toContain('限流');
+  });
+
+  it('★ 查不到发布信息时清掉上一次的发布字段（不留旧的「发布于」，Release 页退回发布列表）', async () => {
+    const world = makeWorld();
+    const { center, opened } = makeCenter(world);
+    world.setCheck(async () => release('0.4.0', {
+      releaseNotes: '旧说明', releaseUrl: 'https://github.com/TgolMsk/AndroidAutomation/releases/tag/v0.4.0', prerelease: true, publishedAt: 42,
+    }));
+    await center.check();
+    world.setCheck(async () => null);
+    expect(await center.check()).toMatchObject({
+      phase: 'latest', latestVersion: null, publishedAt: null, prerelease: false, assetName: null, assetSize: null,
+      releaseNotes: null, releaseUrl: null, downloadedFile: null, error: null,
+    });
+    await center.openReleasePage();
+    expect(opened).toEqual(['https://github.com/TgolMsk/AndroidAutomation/releases/latest']);
   });
 
   it('查不到发布信息按「已是最新」处理，不报错', async () => {
@@ -349,13 +373,57 @@ describe('五、安装闸门（最要紧的一节）', () => {
     expect(quits()).toBe(0);
   });
 
-  it('busyReason 每次读取都现算（任务状态随时在变）', async () => {
-    const { center, state } = await ready();
+  it('busyReason：状态读取给上一次的答案，refreshBusy() 现问一次，变了才推给面板', async () => {
+    const { center, state, published } = await ready();
     expect(center.getState().installable).toBe(true);
     state.busy = '正在安装 SDK 组件。';
+    const before = published.length;
+    expect(await center.refreshBusy()).toMatchObject({ installable: false, busyReason: '正在安装 SDK 组件。' });
     expect(center.getState()).toMatchObject({ installable: false, busyReason: '正在安装 SDK 组件。' });
+    expect(published).toHaveLength(before + 1);
+    expect(published.at(-1)).toMatchObject({ phase: 'downloaded', installable: false });
+    await center.refreshBusy();
+    expect(published).toHaveLength(before + 1);
     state.busy = null;
-    expect(center.getState().installable).toBe(true);
+    expect((await center.refreshBusy()).installable).toBe(true);
+  });
+
+  it('★ 下载完成的那次推送就带着最新的占用答案（安装按钮从这一刻起可点）', async () => {
+    const { center, published } = await ready({ busy: '实例 #3 正在运行脚本计划。' });
+    const downloaded = published.find((item) => item.phase === 'downloaded');
+    expect(downloaded).toMatchObject({ installable: false, busyReason: '实例 #3 正在运行脚本计划。' });
+    expect(center.getState().installable).toBe(false);
+  });
+
+  it('★ 占用检查是异步的（实例占用表）：安装前等它答完，忙就拒绝，闲了才打开', async () => {
+    const { world, center, state, quits } = await ready({ asyncBusy: true, busy: '实例 #1 正在运行采集。' });
+    expect(center.getState()).toMatchObject({ installable: false, busyReason: '实例 #1 正在运行采集。' });
+    await expect(center.install()).rejects.toMatchObject({ code: 'CONCURRENCY_LIMIT', message: expect.stringContaining('实例 #1') });
+    expect(world.opens).toBe(0);
+    state.busy = null;
+    await center.install();
+    expect(world.opens).toBe(1);
+    expect(quits()).toBe(1);
+  });
+
+  it('★ 占用检查本身出错：按占用处理（无法确认就不装）', async () => {
+    const { world, center, state, quits } = await ready({ asyncBusy: true });
+    state.fail = new Error('占用表读不出来');
+    await expect(center.install()).rejects.toMatchObject({ code: 'CONCURRENCY_LIMIT', message: expect.stringContaining(BUSY_UNKNOWN) });
+    expect(center.getState()).toMatchObject({ installable: false, busyReason: BUSY_UNKNOWN });
+    expect(world.opens).toBe(0);
+    expect(quits()).toBe(0);
+  });
+
+  it('等闸门回答期间又点了检查（下载状态被重置）：不打开安装包', async () => {
+    const { world, center, quits } = await ready({ asyncBusy: true });
+    world.setCheck(async () => release('0.4.0'));
+    const installing = center.install();
+    const checking = center.check();
+    await expect(installing).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+    await checking;
+    expect(world.opens).toBe(0);
+    expect(quits()).toBe(0);
   });
 
   it('还没下载就点安装会被拒绝并指路', async () => {
@@ -408,8 +476,17 @@ describe('describe()：错误中文化', () => {
     ['HTTP 429 rate limit exceeded', '限流'],
     ['GitHub 请求失败（HTTP 404）', '没找到发布信息'],
     ['下载的文件大小与发布信息不符（checksum 无法通过），请稍后重试。', '校验没通过'],
+    ["EPERM: operation not permitted, open '/Users/a/Downloads/Wanlong-Assistant-0.4.0-mac-arm64.dmg.part'", '隐私与安全性'],
+    ["EACCES: permission denied, mkdir '/Users/a/Downloads'", '隐私与安全性'],
+    ["EPERM: operation not permitted, open '/Volumes/network timeout/a.dmg.part'", '隐私与安全性'],
+    ['ENOSPC: no space left on device, write', '磁盘空间不足'],
   ])('%s', (raw, expected) => {
     expect(describeError(new Error(raw))).toContain(expected);
+  });
+
+  it('只带 code 的文件系统错误也认得', () => {
+    expect(describeError(Object.assign(new Error('operation not permitted'), { code: 'EPERM' }))).toContain('「下载」文件夹');
+    expect(describeError(Object.assign(new Error('write failed'), { code: 'ENOSPC' }))).toContain('续传');
   });
 
   it('已经是中文的原因原样保留（缺 SHA256SUMS 不是「校验没通过」）', () => {
@@ -432,7 +509,7 @@ describe('UpdateService：启动后只自动查一次', () => {
   }
 
   it('30 秒后静默检查一次，只查不下', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const world = makeWorld();
     world.setCheck(async () => release('0.4.0'));
     const service = new UpdateService(deps(world));
@@ -450,7 +527,7 @@ describe('UpdateService：启动后只自动查一次', () => {
   });
 
   it('开发模式、截图验证模式、以及退出后都不自动检查', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const world = makeWorld();
     const dev = new UpdateService(deps(world, false));
     dev.start();
@@ -461,6 +538,37 @@ describe('UpdateService：启动后只自动查一次', () => {
     await disposed.dispose();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(world.checks).toBe(0);
+    await Promise.all([dev.dispose(), screenshot.dispose()]);
+  });
+
+  it('下载好等安装时每 5 秒重问一次占用，变了就推给面板；其余阶段不问，退出后停止', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    const world = makeWorld();
+    world.setCheck(async () => release('0.4.0'));
+    let busy: string | null = null;
+    let asked = 0;
+    const published: UpdateState[] = [];
+    const service = new UpdateService(() => ({
+      ...deps(world)(),
+      busy: async () => { asked += 1; return busy; },
+      publish: (state: UpdateState) => { published.push(state); },
+    }), { autoCheck: false });
+    service.start();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(asked).toBe(0);
+    await service.center.check();
+    await service.center.download();
+    busy = '实例 #0 正在运行采集。';
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(service.center.getState()).toMatchObject({ installable: false, busyReason: '实例 #0 正在运行采集。' });
+    expect(published.at(-1)).toMatchObject({ phase: 'downloaded', installable: false });
+    busy = null;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(published.at(-1)).toMatchObject({ installable: true, busyReason: null });
+    await service.dispose();
+    const after = asked;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(asked).toBe(after);
   });
 
   it('初始化失败不抛，界面仍能读到状态', () => {

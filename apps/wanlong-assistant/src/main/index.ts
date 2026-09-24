@@ -27,7 +27,7 @@ import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
 import { MonitoringService, ReadOnlyTelegramBot } from './monitoring';
 import { PlanService, ScriptRunner } from './plans';
-import { BusyGate, gatherRunProbe, loginProbe, planRunProbe, sdkInstallProbe, UpdateService } from './update';
+import { consoleLogWriter, interimInstanceBusy, updateBusyCheck, updateLog, UpdateService } from './update';
 import { electronUpdateDeps } from './update/electron-deps';
 
 /**
@@ -261,21 +261,18 @@ bootstrapApp({
     }), (report) => broadcast('app-health', report));
 
     // ── update (in-app update from GitHub Releases) ──
-    // The install gate asks every service holding a device (or the SDK) right now. Later modules that hold devices
-    // (scheduler operations, freeze recovery, resource reading, …) register one probe each here.
-    const busyGate = new BusyGate();
-    busyGate.register('采集运行', gatherRunProbe(automation));
-    busyGate.register('脚本计划', planRunProbe(plans));
-    busyGate.register('账号登录', loginProbe(accounts, loginActive));
-    busyGate.register('SDK 安装', sdkInstallProbe(services.sdkInstall));
+    // One occupancy source for the install gate: with the shell's occupancy table, `instances` is
+    // `() => occupancy.anyBusy()` and the log writer is the app log (scope 'update'); see update/README.md.
+    const updateLogLine = updateLog(consoleLogWriter);
+    const updateBusy = updateBusyCheck({
+      instances: interimInstanceBusy({ automation, plans, accounts, loginActive }),
+      sdkInstall: services.sdkInstall,
+    });
     const updates = new UpdateService(() => electronUpdateDeps({
-      busy: () => busyGate.reason(),
+      busy: updateBusy,
       publish: (state) => broadcast('update-changed', state),
-      log: (level, message) => {
-        if (level === 'warn' || level === 'error') console.warn(`[wanlong/update] ${message}`);
-        else console.log(`[wanlong/update] ${message}`);
-      },
-    }), { autoCheck: !process.env['AVDM_SCREENSHOT_PATH'] });
+      log: updateLogLine,
+    }), { autoCheck: !process.env['AVDM_SCREENSHOT_PATH'], log: updateLogLine });
 
     // ── ipc ── (one service per line: a ported module appends its own line)
     registerWanlongIpcHandlers({

@@ -10,7 +10,10 @@ import type { Assert, ListsExactly } from './contract';
  * the main process, so a renderer can never point the updater at another URL or file.
  */
 export interface UpdateApi {
-  /** Current state (the settings card and the sidebar entry read it once, then follow `update-changed`). */
+  /**
+   * Current state, with the busy answer asked again (the settings card and the sidebar entry read it once, then
+   * follow `update-changed`).
+   */
   updateState(): Promise<UpdateState>;
   /** Check GitHub once. Never fails: problems land in `phase: 'error'` with a Chinese `error`. */
   updateCheck(): Promise<UpdateState>;

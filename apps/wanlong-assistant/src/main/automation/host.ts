@@ -635,11 +635,6 @@ export class AutomationHost {
     return [...this.runHistory.values()].sort((a, b) => b.startedAt - a.startedAt).map((run) => ({ ...run }));
   }
 
-  /** Instances whose gather run still holds the device (starting, running or stopping). Synchronous for the update gate. */
-  activeRunIndices(): number[] {
-    return [...new Set([...this.activeByIndex.keys(), ...[...this.activeRuns.values()].map((run) => run.index)])].sort((a, b) => a - b);
-  }
-
   async dispose(): Promise<void> {
     this.disposed = true;
     await this.scheduler.dispose();

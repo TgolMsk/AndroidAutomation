@@ -1,118 +1,77 @@
 /**
- * The install gate's view of "is anything running right now" (the original `instanceAccess.anyBusy()`).
+ * The install gate's question "is anything running right now" (the original `busy: () => instanceAccess.anyBusy()`).
  *
- * The original had one occupancy table every device chain registered in. Here the holders live in their own
- * services (gather runs, script plans, login sessions, the shell's SDK install, and later the scheduler, freeze
- * recovery, resource reading …), so each registers a synchronous probe and the gate asks all of them.
- *
- * ★ An enabled auto-gather schedule on its own is NOT busy: it is only a timer, and the scheduler restores itself
- *   when the assistant is opened again. Only work that is holding a device (or the SDK) right now counts.
- * ★ Fail closed: a probe that throws counts as busy, so a broken probe can never let an install cut work.
+ * ★ One occupancy source. Who holds an instance is answered by the assistant's occupancy table (the app shell's
+ *   `InstanceOccupancy`, whose async `anyBusy()` is exactly this question); the update module keeps no registry of its
+ *   own. `updateBusyCheck()` only puts the one holder that table cannot express in front of it: the shell's SDK
+ *   install, which is app-wide, not an instance.
+ * ★ An enabled auto-gather schedule on its own is NOT busy: it is only a timer, and the scheduler restores itself when
+ *   the assistant is opened again. Only work that is holding a device (or the SDK) right now counts.
+ * ★ Fail closed: a check that throws counts as busy (`UpdateCenter` shows 「无法确认是否有任务在运行」 and refuses).
  */
 
-/** Something holding the assistant right now. */
-export interface BusyHolder {
-  /** Instance index, or null for app-wide work (e.g. an SDK install). */
-  index: number | null;
-  /** What it is doing, as a Chinese verb phrase: 「运行采集」「登录账号」「安装 SDK 组件」. */
-  activity: string;
+/** Resolves with one Chinese sentence naming who is busy, or null when nothing is. */
+export type BusyCheck = () => Promise<string | null>;
+
+export interface UpdateBusySources {
+  /** Who holds an instance: `() => occupancy.anyBusy()`; `interimInstanceBusy()` while there is no occupancy table. */
+  instances: BusyCheck;
+  /** The shell's SDK installer (quitting would cancel it). */
+  sdkInstall: { readonly active: boolean };
 }
 
-/** Returns the current holders of one kind; must be synchronous and cheap (it runs on every state read). */
-export type BusyProbe = () => Iterable<BusyHolder> | null | undefined;
+export const SDK_INSTALL_BUSY = '正在安装 SDK 组件。';
 
-const MAX_LISTED = 3;
-
-/** `实例 #0 正在运行采集` / `正在安装 SDK 组件`. */
-export function describeHolder(holder: BusyHolder): string {
-  return holder.index === null ? `正在${holder.activity}` : `实例 #${holder.index} 正在${holder.activity}`;
+/** The `busy` hook of `UpdateDeps` (wired in `main/index.ts`). */
+export function updateBusyCheck(sources: UpdateBusySources): BusyCheck {
+  return async () => (sources.sdkInstall.active ? SDK_INSTALL_BUSY : (await sources.instances()) || null);
 }
 
-/** One Chinese sentence naming the holders (at most three, then a count), or null when nothing is busy. */
-export function formatBusyReason(holders: readonly BusyHolder[]): string | null {
-  if (holders.length === 0) return null;
-  const listed = holders.slice(0, MAX_LISTED).map(describeHolder).join('；');
-  return holders.length > MAX_LISTED ? `${listed}等 ${holders.length} 项任务。` : `${listed}。`;
-}
-
-/** Aggregates the busy probes of every service. Register probes from the composition root (`main/index.ts`). */
-export class BusyGate {
-  private readonly probes = new Map<string, BusyProbe>();
-
-  /** Add a probe under a Chinese name (used when the probe fails). Returns a function that removes it. */
-  register(name: string, probe: BusyProbe): () => void {
-    if (this.probes.has(name)) throw new Error(`占用检查「${name}」重复登记`);
-    this.probes.set(name, probe);
-    return () => {
-      if (this.probes.get(name) === probe) this.probes.delete(name);
-    };
-  }
-
-  /** Every holder right now, de-duplicated; a probe that throws yields one "cannot confirm" holder. */
-  holders(): BusyHolder[] {
-    const seen = new Set<string>();
-    const result: BusyHolder[] = [];
-    for (const [name, probe] of this.probes) {
-      let found: BusyHolder[];
-      try { found = [...(probe() ?? [])]; }
-      catch { found = [{ index: null, activity: `核对「${name}」（状态读取失败，按占用处理）` }]; }
-      for (const holder of found) {
-        const key = `${holder.index ?? '-'}:${holder.activity}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        result.push({ index: holder.index, activity: holder.activity });
-      }
-    }
-    return result.sort((a, b) => (a.index ?? -1) - (b.index ?? -1));
-  }
-
-  /** The holders of one instance (for per-instance checks such as stop / restart confirmations). */
-  holdersOf(index: number): BusyHolder[] {
-    return this.holders().filter((holder) => holder.index === index);
-  }
-
-  /** Chinese reason for the install gate, or null when nothing is busy. */
-  reason(): string | null {
-    return formatBusyReason(this.holders());
-  }
-}
-
-// ── Probes for the services that exist today (registered in main/index.ts) ────────────────────────────────
+// ── Stand-in for the occupancy table ─────────────────────────────────────────────────────────────────────────
 
 /** Instance indices the assistant can address (`asIndex` accepts 0–63). */
 export const INSTANCE_SLOTS = 64;
 
-/** Gather runs that hold a device: manual and scheduled cycles, including ones still stopping. */
-export function gatherRunProbe(automation: { activeRunIndices(): readonly number[] }): BusyProbe {
-  return () => automation.activeRunIndices().map((index) => ({ index, activity: '运行采集' }));
+/** The services the stand-in reads: the same ones the occupancy table registers as blocking sources. */
+export interface InstanceBusyServices<Phase> {
+  /** Gather runs, manual and scheduled; a running or stopping one holds its device. */
+  automation: { runs(): Promise<readonly { index: number; status: string }[]> };
+  /** Script plan executions, including queued ones waiting for the device (quitting would drop them). */
+  plans: { isActiveForInstance(index: number): boolean };
+  /** Login wizards; `loginActive` is true between 「准备」 and 「验证」 (a finished or failed wizard holds nothing). */
+  accounts: { loginSession(index: number): { phase: Phase } | null };
+  loginActive(phase: Phase): boolean;
 }
 
-/** Script plan executions, including queued ones waiting for the device (quitting would drop them). */
-export function planRunProbe(plans: { isActiveForInstance(index: number): boolean }): BusyProbe {
-  return () => {
-    const holders: BusyHolder[] = [];
-    for (let index = 0; index < INSTANCE_SLOTS; index++) {
-      if (plans.isActiveForInstance(index)) holders.push({ index, activity: '运行脚本计划' });
-    }
-    return holders;
+export interface InstanceHolder {
+  index: number;
+  /** What it is doing, as the occupancy table words it: 「运行采集」「运行脚本计划」「进行账号登录」. */
+  label: string;
+}
+
+/** Every instance holder right now, by index. Schedules are not read at all: enabled or not, a timer holds nothing. */
+export async function instanceHolders<Phase>(services: InstanceBusyServices<Phase>): Promise<InstanceHolder[]> {
+  const holders: InstanceHolder[] = [];
+  for (const run of await services.automation.runs()) {
+    if (run.status === 'running') holders.push({ index: run.index, label: '运行采集' });
+    else if (run.status === 'stopping') holders.push({ index: run.index, label: '停止采集' });
+  }
+  for (let index = 0; index < INSTANCE_SLOTS; index++) {
+    if (services.plans.isActiveForInstance(index)) holders.push({ index, label: '运行脚本计划' });
+    const session = services.accounts.loginSession(index);
+    if (session && services.loginActive(session.phase)) holders.push({ index, label: '进行账号登录' });
+  }
+  return holders.sort((a, b) => a.index - b.index);
+}
+
+/**
+ * `instances` for `updateBusyCheck()` while the assistant has no occupancy table: 「实例 #N 正在<label>。」 for the
+ * first holder, the same sentence `InstanceOccupancy.anyBusy()` gives. Once the table exists, pass
+ * `() => occupancy.anyBusy()` instead and delete this (never run both: that is two aggregators).
+ */
+export function interimInstanceBusy<Phase>(services: InstanceBusyServices<Phase>): BusyCheck {
+  return async () => {
+    const first = (await instanceHolders(services))[0];
+    return first ? `实例 #${first.index} 正在${first.label}。` : null;
   };
-}
-
-/** Login wizards between 「准备」 and 「验证」 (a finished or failed wizard holds nothing). */
-export function loginProbe<Phase>(
-  accounts: { loginSession(index: number): { phase: Phase } | null }, active: (phase: Phase) => boolean,
-): BusyProbe {
-  return () => {
-    const holders: BusyHolder[] = [];
-    for (let index = 0; index < INSTANCE_SLOTS; index++) {
-      const session = accounts.loginSession(index);
-      if (session && active(session.phase)) holders.push({ index, activity: '登录账号' });
-    }
-    return holders;
-  };
-}
-
-/** The shell's SDK installer (quitting would cancel it). */
-export function sdkInstallProbe(sdk: { readonly active: boolean }): BusyProbe {
-  return () => (sdk.active ? [{ index: null, activity: '安装 SDK 组件' }] : []);
 }

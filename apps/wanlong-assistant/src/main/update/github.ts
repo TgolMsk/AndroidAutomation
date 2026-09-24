@@ -10,12 +10,14 @@
  *  · only URLs of this repository are ever fetched or opened (asset URLs from the API are checked, not trusted);
  *  · the download goes to `<name>.part` next to the target and is renamed only after the SHA-256 matched, so an
  *    interrupted or tampered download never looks like an installer; a kept `.part` is resumed with `Range`;
- *  · every request has a timeout, every response a size cap.
+ *  · every request has a timeout, every response a size cap;
+ *  · when the Downloads folder cannot be written (macOS folder access denied), the installer goes to a temp folder.
  * Nothing here imports Electron: fetch, the downloads folder and the Finder actions are injected.
  */
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, open, rename, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { UpdateProgress } from '../../shared/update';
 import { compareVersions } from '../../shared/update';
@@ -141,8 +143,13 @@ export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 export interface GitHubUpdaterOptions {
   /** Electron's `net.fetch` in the app (system proxy); global fetch in tests. */
   fetch?: FetchLike;
-  /** Folder for the installer (the user's Downloads). Read on every download. */
+  /** Folder for the installer (the user's Downloads). Read on every download; a throw means "use the fallback". */
   downloadsDir(): string;
+  /**
+   * Used when the Downloads folder cannot be written: macOS asks before an app may use ~/Downloads and the user may
+   * say no (the question can come back for every ad-hoc-signed version). Default `<tmpdir>/wanlong-assistant-update`.
+   */
+  fallbackDir?(): string;
   /** Sent as User-Agent (GitHub's API requires one). */
   userAgent: string;
   /** `shell.openPath`: resolves with an error text, empty on success. */
@@ -185,19 +192,16 @@ export class GitHubUpdater implements UpdaterPort {
       throw new Error('发布信息里的安装包地址不可信，已拒绝下载；请到 Release 页手动下载。');
     }
     const expected = await this.expectedDigest(release, signal);
-    const dir = this.options.downloadsDir();
-    await mkdir(dir, { recursive: true });
-    const target = path.join(dir, release.asset.name);
-    const part = `${target}.part`;
     const total = release.asset.size;
-
+    const { target, reusable } = await this.prepareTarget(release.asset.name, total, expected, signal);
     // A verified copy from an earlier download (or a re-check after downloading) is reused without the network.
-    if (await sizeOf(target) === total && await sha256File(target, signal) === expected) {
+    if (reusable) {
       this.verified.set(target, expected);
       onProgress({ percent: 100, transferred: total, total, bytesPerSecond: 0 });
       return target;
     }
 
+    const part = `${target}.part`;
     let offset = await sizeOf(part) ?? 0;
     if (offset > total) { await rm(part, { force: true }); offset = 0; }
     if (offset < total) await this.fetchToPart(release, part, offset, signal, onProgress);
@@ -237,6 +241,48 @@ export class GitHubUpdater implements UpdaterPort {
   }
 
   // ── internals ─────────────────────────────────────────────────────────────
+
+  /**
+   * Where the installer goes: the Downloads folder, or the fallback folder when Downloads cannot be written.
+   * `reusable` means a verified copy is already there. Only "no write access" moves on to the next folder.
+   */
+  private async prepareTarget(
+    name: string, total: number, expected: string, signal: AbortSignal,
+  ): Promise<{ target: string; reusable: boolean }> {
+    const fallback = this.options.fallbackDir?.() ?? path.join(tmpdir(), 'wanlong-assistant-update');
+    let primary: string | null = null;
+    try { primary = this.options.downloadsDir(); }
+    catch { /* No Downloads folder known: the fallback alone. */ }
+    const dirs = primary && path.resolve(primary) !== path.resolve(fallback) ? [primary, fallback] : [fallback];
+    let lastError: unknown = null;
+    for (const dir of dirs) {
+      const target = path.join(dir, name);
+      try {
+        await mkdir(dir, { recursive: true });
+        if (await this.isVerifiedCopy(target, total, expected, signal)) return { target, reusable: true };
+        // macOS enforces folder access when a file is opened for writing (stat / access() can pass and the write
+        // still fail), so the check is creating the part file itself; the download appends to or truncates it.
+        const handle = await open(`${target}.part`, 'a');
+        await handle.close();
+        return { target, reusable: false };
+      } catch (error) {
+        if (signal.aborted) throw signal.reason ?? error;
+        if (!isNoWriteAccess(error)) throw error;
+        lastError = error;
+      }
+    }
+    throw lastError;
+  }
+
+  private async isVerifiedCopy(target: string, total: number, expected: string, signal: AbortSignal): Promise<boolean> {
+    if (await sizeOf(target) !== total) return false;
+    try { return await sha256File(target, signal) === expected; }
+    catch (error) {
+      if (signal.aborted) throw signal.reason ?? error;
+      // An unreadable copy is not reused; whether the folder can be written is decided by the part file next.
+      return false;
+    }
+  }
 
   private async expectedDigest(release: UpdateRelease, signal?: AbortSignal): Promise<string> {
     if (!release.checksumsUrl || !downloadUrl(release.checksumsUrl)) {
@@ -367,6 +413,12 @@ export class GitHubUpdater implements UpdaterPort {
   private now(): number {
     return this.options.now?.() ?? Date.now();
   }
+}
+
+/** The folder refuses writes (permission, macOS privacy, read-only volume). */
+export function isNoWriteAccess(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null ? (error as NodeJS.ErrnoException).code : undefined;
+  return code === 'EPERM' || code === 'EACCES' || code === 'EROFS';
 }
 
 async function sizeOf(file: string): Promise<number | null> {

@@ -20,7 +20,7 @@ const liveSender = { id: 2 };
 
 const state = { ...initialUpdateState('0.3.0'), phase: 'downloaded' as const, installable: false, busyReason: '实例 #0 正在运行采集。' };
 const updateCenter = {
-  getState: vi.fn(() => state),
+  refreshBusy: vi.fn(async () => state),
   check: vi.fn(async () => state),
   download: vi.fn(async () => state),
   cancelDownload: vi.fn(async () => state),
@@ -57,6 +57,8 @@ describe('update IPC', () => {
 
   it('状态读取与检查返回数据', async () => {
     await expect(invoke('updateState', mainSender)).resolves.toEqual({ ok: true, value: state });
+    // Reading the state asks the (async) busy check again, so the install button follows the running work.
+    expect(updateCenter.refreshBusy).toHaveBeenCalledTimes(1);
     await expect(invoke('updateCheck', mainSender)).resolves.toEqual({ ok: true, value: state });
     await expect(invoke('updateOpenReleasePage', mainSender, 'https://evil.example/')).resolves.toEqual({ ok: true, value: undefined });
     // The renderer cannot choose a URL: extra arguments never reach the center.

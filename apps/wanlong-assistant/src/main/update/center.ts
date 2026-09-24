@@ -4,7 +4,7 @@
  *
  * This module only orchestrates and imports neither Electron nor the network: the updater sits behind
  * `UpdaterPort` (real implementation in `./github.ts`), so tests drive the whole state machine with a fake.
- *   · when installing is allowed — the `busy()` hook (gather, script plan, login, SDK install)
+ *   · when installing is allowed — the `busy()` hook (the assistant's occupancy table plus the SDK install)
  *   · whether updating is supported — development builds and unsupported platforms short-circuit
  *   · where state goes — one `UpdateState`, published after every change
  *
@@ -26,6 +26,9 @@ export class UpdateError extends Error {
     this.code = code;
   }
 }
+
+/** Shown when the busy hook itself fails: never let an install cut work because a probe broke. */
+export const BUSY_UNKNOWN = '无法确认是否有任务在运行。';
 
 /** What a check found: the newest release that carries an assistant installer. */
 export interface UpdateRelease {
@@ -68,8 +71,11 @@ export interface UpdateDeps {
   packaged(): boolean;
   /** Whether an installer is published for this OS and CPU (macOS on Apple Silicon). */
   supportedPlatform(): boolean;
-  /** A Chinese reason when something is busy, otherwise null. Installing is refused while it returns a reason. */
-  busy(): string | null;
+  /**
+   * A Chinese reason when something is busy, otherwise null. Installing is refused while it returns a reason.
+   * May be async (the occupancy table is); `install()` awaits it, state reads show the last answer.
+   */
+  busy(): string | null | Promise<string | null>;
   /** Release list page, the fallback when a check gave no page. */
   releasePageUrl(): string;
   /** Open a URL in the system browser. */
@@ -100,6 +106,8 @@ export class UpdateCenter {
   /** The installer was opened and the quit is on its way: a second click must not open it again. */
   private quitRequested = false;
   private disposed = false;
+  /** Last answer of the busy hook (it may be async, state reads are not); refreshed by `refreshBusy()` and `install()`. */
+  private busyReason: string | null = null;
 
   constructor(currentVersion = '0.0.0') {
     this.state = initialUpdateState(currentVersion);
@@ -109,6 +117,7 @@ export class UpdateCenter {
     this.deps = deps;
     this.state = initialUpdateState(deps.currentVersion());
     this.release = null;
+    this.busyReason = null;
     const unsupported = this.unsupportedReason();
     if (unsupported) {
       this.patch({ phase: 'unsupported', unsupportedReason: unsupported });
@@ -122,7 +131,16 @@ export class UpdateCenter {
   }
 
   getState(): UpdateState {
-    return { ...this.state, ...this.busyFields() };
+    return { ...this.state, installable: this.busyReason === null, busyReason: this.busyReason };
+  }
+
+  /**
+   * Ask the busy hook again and return the state with the fresh answer; publishes when the answer changed.
+   * The renderer's state read goes through here, and the service re-asks while an installer waits (see `index.ts`).
+   */
+  async refreshBusy(): Promise<UpdateState> {
+    if (this.deps) await this.readBusy();
+    return this.getState();
   }
 
   /** Check once. Every failure ends in phase 'error' with a Chinese reason; never throws to the caller. */
@@ -141,7 +159,12 @@ export class UpdateCenter {
       const now = this.now();
       if (!info) {
         this.release = null;
-        this.patch({ phase: 'latest', checkedAt: now, latestVersion: null, downloadedFile: null });
+        // Nothing of an earlier check may linger: the panel would show an old 「发布于」 next to 「已是最新版」, and
+        // 「打开 Release 页面」 must fall back to the release list rather than a (possibly deleted) tag page.
+        this.patch({
+          phase: 'latest', checkedAt: now, latestVersion: null, downloadedFile: null, error: null,
+          publishedAt: null, prerelease: false, assetName: null, assetSize: null, releaseNotes: null, releaseUrl: null,
+        });
         this.log('info', `没有找到带安装包的发布，按已是最新版 ${this.state.currentVersion} 处理。`);
         return this.getState();
       }
@@ -193,6 +216,8 @@ export class UpdateCenter {
         },
       });
       if (active.cancelled) throw controller.signal.reason ?? new Error('已取消下载');
+      // The install button is enabled from this state: carry a fresh busy answer in the same push.
+      await this.readBusy(false);
       this.patch({ phase: 'downloaded', progress: null, downloadedFile: file });
       this.log('info', `新版本 ${release.version} 已下载并校验通过：${file}，等待用户安装。`);
     } catch (error) {
@@ -235,10 +260,14 @@ export class UpdateCenter {
       throw new UpdateError('INVALID_ARGUMENT', '安装包还没下载完，先点「下载更新」。');
     }
     if (this.quitRequested) return;
-    this.assertIdle(deps);
     if (this.installing) throw new UpdateError('CONCURRENCY_LIMIT', '正在打开安装包，请稍候。');
     this.installing = true;
     try {
+      await this.assertIdle();
+      // A check may have started while the gate was asked (it resets the downloaded state).
+      if (this.state.phase !== 'downloaded' || this.state.downloadedFile !== file) {
+        throw new UpdateError('INVALID_ARGUMENT', '安装包还没下载完，先点「下载更新」。');
+      }
       try {
         await deps.updater().verify(file, release);
       } catch (error) {
@@ -247,7 +276,7 @@ export class UpdateCenter {
         throw new UpdateError('UNKNOWN', describe(error));
       }
       // Something may have started while the file was being hashed: ask again right before quitting.
-      this.assertIdle(deps);
+      await this.assertIdle();
       try {
         await deps.updater().open(file);
       } catch (error) {
@@ -288,8 +317,8 @@ export class UpdateCenter {
 
   // ── internals ─────────────────────────────────────────────────────────────
 
-  private assertIdle(deps: UpdateDeps): void {
-    const reason = deps.busy();
+  private async assertIdle(): Promise<void> {
+    const reason = await this.readBusy();
     if (reason) {
       throw new UpdateError(
         'CONCURRENCY_LIMIT',
@@ -305,16 +334,33 @@ export class UpdateCenter {
     return null;
   }
 
-  /** installable / busyReason are recomputed on every read: task state changes all the time. */
-  private busyFields(): Pick<UpdateState, 'installable' | 'busyReason'> {
+  /**
+   * Ask the busy hook (sync or async). ★ Fail closed: a hook that throws counts as busy. The answer is kept for state
+   * reads and pushed to the renderer when it changed (unless the caller publishes a patch right after).
+   */
+  private async readBusy(publishChange = true): Promise<string | null> {
+    const deps = this.deps;
+    if (!deps) return null;
     let reason: string | null;
-    try { reason = this.deps?.busy() ?? null; }
-    catch { reason = '无法确认是否有任务在运行。'; }
-    return { installable: reason === null, busyReason: reason };
+    try { reason = (await deps.busy()) || null; }
+    catch (error) {
+      reason = BUSY_UNKNOWN;
+      // Logged once per failure streak: the service re-asks every few seconds while an installer waits.
+      if (this.busyReason !== BUSY_UNKNOWN) this.log('warn', `读取任务占用失败，按占用处理：${describe(error)}`);
+    }
+    if (reason !== this.busyReason) {
+      this.busyReason = reason;
+      if (publishChange) this.publish();
+    }
+    return reason;
   }
 
   private patch(patch: Partial<UpdateState>): void {
     this.state = { ...this.state, ...patch };
+    this.publish();
+  }
+
+  private publish(): void {
     try {
       this.deps?.publish(this.getState());
     } catch (error) {
@@ -332,8 +378,8 @@ export class UpdateCenter {
       try { fn(level, message); return; }
       catch { /* Logging must never break the update flow. */ }
     }
-    if (level === 'warn' || level === 'error') console.warn(`[wanlong/update] ${message}`);
-    else console.log(`[wanlong/update] ${message}`);
+    if (level === 'warn' || level === 'error') console.warn(`[update] ${message}`);
+    else console.log(`[update] ${message}`);
   }
 
   private requireDeps(): UpdateDeps {
@@ -345,6 +391,16 @@ export class UpdateCenter {
 /** The raw errors mean nothing to users; translate the common ones (check, download and install failures). */
 export function describe(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  // File system first: their messages carry paths, which must not be mistaken for network words below.
+  const code = typeof error === 'object' && error !== null ? (error as NodeJS.ErrnoException).code : undefined;
+  const fsError = (name: string) => code === name || new RegExp(`\\b${name}\\b`).test(message);
+  if (fsError('EPERM') || fsError('EACCES') || fsError('EROFS')) {
+    return '没有权限读写保存安装包的文件夹（「下载」文件夹或临时文件夹）：请在「系统设置 → 隐私与安全性 → 文件和文件夹」里'
+      + '允许万龙助手访问「下载」文件夹后重试，或到 Release 页手动下载。';
+  }
+  if (fsError('ENOSPC') || fsError('EDQUOT')) {
+    return '磁盘空间不足，安装包没能保存完：清理出几百 MB 空间后再点「下载更新」，已下载的部分会接着续传。';
+  }
   // Node fetch says `fetch failed`, Electron's net.fetch `net::ERR_…`, our own timeouts carry ETIMEDOUT.
   if (/ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNREFUSED|network|fetch failed|socket hang up|net::ERR_|timeout|timed out/i.test(message)) {
     return '连不上 GitHub（网络不通或被墙），稍后再试，或到 Release 页手动下载。';

@@ -2,7 +2,6 @@
  * `UpdateDeps` backed by Electron. The only update file that imports `electron`; the center, the GitHub port and
  * the busy gate stay importable in plain Node tests.
  */
-import { tmpdir } from 'node:os';
 import { app, net, shell } from 'electron';
 import type { UpdateState } from '../../shared/update';
 import type { UpdateDeps, UpdateLogLevel } from './center';
@@ -12,8 +11,8 @@ import { GitHubUpdater, isReleasePageUrl, releasePageUrl } from './github';
 const QUIT_DELAY_MS = 800;
 
 export interface UpdateHostPorts {
-  /** Chinese reason when something is busy (the `BusyGate`), otherwise null. */
-  busy(): string | null;
+  /** Chinese reason when something is busy, otherwise null (`updateBusyCheck()` in `./busy.ts`). */
+  busy: UpdateDeps['busy'];
   publish(state: UpdateState): void;
   log(level: UpdateLogLevel, message: string): void;
 }
@@ -36,10 +35,8 @@ export function electronUpdateDeps(ports: UpdateHostPorts): UpdateDeps {
     updater: () => (updater ??= new GitHubUpdater({
       // net.fetch uses Chromium's network stack, so the system proxy applies (GitHub is often unreachable without one).
       fetch: (url, init) => net.fetch(url, init),
-      downloadsDir: () => {
-        try { return app.getPath('downloads'); }
-        catch { return tmpdir(); }
-      },
+      // A throw here, or a Downloads folder macOS will not let us write, makes the updater use its temp folder.
+      downloadsDir: () => app.getPath('downloads'),
       userAgent: `WanlongAssistant/${app.getVersion()} (${process.platform}; ${process.arch})`,
       openPath: (file) => shell.openPath(file),
       showItemInFolder: (file) => shell.showItemInFolder(file),

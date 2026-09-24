@@ -96,7 +96,8 @@ export interface UpdateState {
   unsupportedReason: UnsupportedReason | null;
   /**
    * Whether installing is allowed right now. False while a gather run, script plan, login or SDK install is in
-   * flight; `busyReason` names who holds it. Recomputed on every read because it goes stale immediately.
+   * flight; `busyReason` names who holds it. It goes stale quickly, so main asks again on every `updateState()`,
+   * before the "downloaded" push, every few seconds while an installer waits, and always before installing.
    */
   installable: boolean;
   busyReason: string | null;

@@ -5,12 +5,13 @@ import type { DomainHandlers } from './types';
 /** Services the update handlers need. */
 export interface UpdateServices {
   updateCenter: Pick<UpdateCenter,
-    'getState' | 'check' | 'download' | 'cancelDownload' | 'install' | 'openReleasePage' | 'revealDownload'>;
+    'refreshBusy' | 'check' | 'download' | 'cancelDownload' | 'install' | 'openReleasePage' | 'revealDownload'>;
 }
 
 /** No handler takes renderer arguments: the main process alone decides what to fetch, save and open. */
 export const updateHandlers: DomainHandlers<UpdateApi, UpdateServices> = {
-  async updateState({ updateCenter }) { return updateCenter.getState(); },
+  /** Asks the busy hook again, so the install button the renderer shows reflects the work running right now. */
+  async updateState({ updateCenter }) { return updateCenter.refreshBusy(); },
   async updateCheck({ updateCenter }) { return updateCenter.check(); },
   async updateDownload({ updateCenter }) { return updateCenter.download(); },
   async updateCancelDownload({ updateCenter }) { return updateCenter.cancelDownload(); },

@@ -8,7 +8,8 @@
 ```
 查 GitHub Release（TgolMsk/AndroidAutomation，含预览版）
   → 显示版本号与更新说明
-  → 用户点「下载更新」：下载 Wanlong-Assistant-<版本>-mac-arm64.dmg 到「下载」文件夹（先写 .part，可断点续传）
+  → 用户点「下载更新」：下载 Wanlong-Assistant-<版本>-mac-arm64.dmg 到「下载」文件夹（先写 .part，可断点续传；
+    「下载」文件夹不让写时改存临时文件夹 <tmpdir>/wanlong-assistant-update）
   → 用同一 Release 的 SHA256SUMS 校验，通过才改名成 .dmg
   → 用户点「退出并打开安装包」：忙碌闸门 → 再校验一次 → 再问一次闸门 → 打开 DMG → 退出助手
   → 用户在打开的窗口里把「万龙助手」拖到「应用程序」替换旧版，再重新打开
@@ -19,11 +20,11 @@
 | 文件 | 职责 | 边界 |
 |---|---|---|
 | `src/shared/update.ts` | 契约：8 个阶段 + 中文、`UpdateState`、版本比较 / 字节与速度格式化（纯函数） | 主进程与渲染进程共用，不引 Node / Electron |
-| `center.ts` | `UpdateCenter` 状态机、`UpdaterPort` / `UpdateDeps` 接口、`describe()` 错误中文化 | 不引 Electron、不联网，测试塞假端口 |
+| `center.ts` | `UpdateCenter` 状态机、`UpdaterPort` / `UpdateDeps` 接口、`describe()` 错误中文化（网络 / 限流 / 404 / 校验 / 权限 / 磁盘满） | 不引 Electron、不联网，测试塞假端口 |
 | `github.ts` | `UpdaterPort` 的真实实现：Releases API、SHA256SUMS、带进度与续传的下载、复核、打开 | 不引 Electron（fetch / 下载目录 / 访达动作都注入） |
-| `busy.ts` | `BusyGate`：汇总各服务的占用探针（原版 `instanceAccess.anyBusy()`） | 探针必须同步、便宜；抛错按占用处理 |
+| `busy.ts` | `updateBusyCheck()`：SDK 安装 + 实例占用（原版 `instanceAccess.anyBusy()`）；`interimInstanceBusy()` 是占用表的替身 | 异步；**不另建登记表** |
 | `electron-deps.ts` | 用 `app` / `net.fetch` / `shell` 组装 `UpdateDeps` | **本目录唯一引用 electron 的文件** |
-| `index.ts` | `UpdateService`：初始化状态机 + 启动 30 秒后自动查一次 | — |
+| `index.ts` | `UpdateService`：初始化状态机 + 启动 30 秒后自动查一次 + 待安装时每 5 秒重问占用；`updateLog()` 日志端口 | — |
 | `src/main/ipc/update.ts` | `update*` 七个方法；都不接收渲染进程参数 | 仅主窗口可调（统一鉴权） |
 
 渲染进程：`src/renderer/views/update/`（`update-store.ts` 单一状态源 + 引用计数订阅、`UpdatePanel` 完整 / 紧凑两种形态、
@@ -33,25 +34,38 @@
 
 1. **绝不自作主张装。** 自动的只有「启动 30 秒后静默查一次」（只读 Release 元数据）；下载和安装都必须用户点。
    开发模式、截图验证模式（`AVDM_SCREENSHOT_PATH`）不自动查。
-2. **有任务在跑就不许装。** 安装 = 退出助手。`BusyGate` 由主进程拦，按钮禁用只是提示；
-   复核安装包（算 SHA-256 要一两秒）之后**再问一次**，防止这期间有任务开始。
-   **仅仅开着自动续跑不算忙**：那只是个定时器，重新打开助手后按磁盘上的状态恢复。
+2. **有任务在跑就不许装。** 安装 = 退出助手。`install()` 由主进程 await 占用检查来拦，按钮禁用只是提示；
+   复核安装包（算 SHA-256 要一两秒）之后**再问一次**，防止这期间有任务开始。占用检查本身出错按占用处理。
+   **仅仅开着自动续跑不算忙**：那只是个定时器，重新打开助手后按磁盘上的状态恢复（`update-busy.test.ts` 用真实的
+   `AutomationHost` + 已开启的自动续跑钉死这一条）。
 3. **不能更新的环境给出能照着做的下一步**：`dev`（开发模式）、`platform`（不是 macOS Apple Silicon，没有安装包）。
    任何时候都能「打开 Release 页面」手动下载。
 4. **开发模式不检查**，也不会构造更新器。
 
-## 忙碌闸门现有的探针（`main/index.ts` 的 `// ── update ──` 段）
+## 忙碌闸门：只有一个占用来源
 
-| 名称 | 占用条件 |
-|---|---|
-| 采集运行 | `AutomationHost.activeRunIndices()`：手动或自动续跑的一轮正在跑 / 正在停止 |
-| 脚本计划 | `PlanService.isActiveForInstance(i)`：执行中或排队中 |
-| 账号登录 | 登录向导处于 准备 / 启动 / 等待登录 / 验证 |
-| SDK 安装 | 外壳的 `sdkInstall.active` |
+原版是 `busy: () => instanceAccess.anyBusy()` —— 问**一张**占用表。这里同样不另建登记表：
 
-之后移植的、会占着设备的链路（调度器 `exclusive`、卡死恢复、资源统计读取、机器人重新拉起……）
-在同一段里各加一行 `busyGate.register('<中文名>', () => [{ index, activity: '<正在做什么>' }])`。
-`busyGate.holdersOf(i)` 也可用于「停止 / 重启实例前先确认」。
+```ts
+updateBusyCheck({ instances, sdkInstall })   // SDK 安装（全局，不属于任何实例）排最前，其余问 instances
+```
+
+- `instances` 应当是应用外壳的实例占用表：`() => occupancy.anyBusy()`（`InstanceOccupancy`，异步）。
+  采集 / 脚本计划 / 登录，以及之后移植的调度器 `exclusive`、卡死恢复、资源统计读取、机器人重新拉起……
+  都登记在那张表里，更新闸门不用挨个模块打听。
+- 那张表还没接进来时，`main/index.ts` 用 `interimInstanceBusy({ automation, plans, accounts, loginActive })` 顶替：
+  读的是占用表同样登记为「阻塞」的几项，措辞一致（「实例 #N 正在运行采集 / 停止采集 / 运行脚本计划 / 进行账号登录。」）。
+  **接上占用表后删掉它，不要两个都挂**（两个汇总器迟早说法打架）。
+- 占用检查是异步的，而状态读取是同步的：`UpdateCenter` 记住上一次的答案给 `getState()`；
+  `updateState` IPC 走 `refreshBusy()` 现问一次，下载完成那次推送前问一次，处于「待安装」时 `UpdateService`
+  每 5 秒再问一次、变了才推给面板；`install()` 每次都现问（复核前后各一次）。
+
+## 日志
+
+更新的每一行都走 `UpdateDeps.log` → `updateLog(writer)`，按原版以 `scope: 'update'` 写进助手的运行日志
+（`~/.avdm/automation/logs/app.ndjson`）—— 打包后从访达打开的应用没有控制台，只打 console 等于没记。
+`writer` 就是应用外壳的 `AppLog`（`record(level, scope, message)` 签名一致）；它还没接进来时用 `consoleLogWriter`，
+行首带 `[update]` 标记，外壳的 console 捕获会把 warn / error 按这个标记落进同一个日志文件。
 
 ## 与原版的差异
 
@@ -63,8 +77,10 @@
   差距报告里提议的 `not-installed`（从 DMG 里直接运行）与 `unsigned` 不再需要：DMG 路线本身就是给未签名应用的替代方案，
   从哪里运行都不影响「下载新 DMG 再拖一次」。
 - 下载完成后再点「检查更新」沿用原版行为（按新结果重新判定为「有新版本」）；再点下载时已校验的文件会被直接复用，不会重下。
-- 更新日志目前只写 console（`[wanlong/update]` 前缀）；助手的应用日志落地后，把 `index.ts` 里 `electronUpdateDeps` 的 `log`
-  接过去即可（原版写 `<数据目录>/logs/app.ndjson`，`scope: 'update'`）。
+- 下载目录：原版由 electron-updater 管缓存目录；这里默认「下载」文件夹，macOS 不让写（用户拒绝了「访问『下载』文件夹」，
+  每个新的临时签名版本都可能再问一次）或路径拿不到时改存临时文件夹。两处都写不了时给出「系统设置 → 隐私与安全性 →
+  文件和文件夹」的中文指引。
+- 「没找到带安装包的发布」时清掉上一次检查留下的发布字段（原版只清版本号，面板会在「已是最新版」旁留着旧的「发布于」）。
 
 ## 安全
 
