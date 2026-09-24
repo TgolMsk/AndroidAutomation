@@ -4,9 +4,10 @@ import {
   DEFAULT_VIEW, NAVIGATION, RETIRED_VIEWS, VIEW_KEYS, VIEW_STORAGE_KEY, parseStoredView, readStoredView,
   sectionForView, storeView, viewForSection, viewLabel,
 } from '../src/renderer/navigation';
-import { VIEW_REGISTRY } from '../src/renderer/views/registry';
+import { VIEW_REGISTRY, restoredScrollTop } from '../src/renderer/views/registry';
 import { sectionTones, sortBadges } from '../src/renderer/state/badges';
 import { isRunActive, upsertRun, upsertSchedule } from '../src/renderer/state/activity';
+import { isPlanRunActive } from '../src/renderer/state/plan-runs';
 import { GATHER_RESOURCES, wanlongConfig, wanlongDraftOf } from '../src/renderer/views/gather/gather-config';
 
 function memoryStorage(initial: Record<string, string> = {}) {
@@ -31,8 +32,16 @@ describe('seven-section navigation', () => {
     expect(Object.keys(VIEW_REGISTRY).sort()).toEqual([...VIEW_KEYS].sort());
     for (const key of VIEW_KEYS) expect(sectionForView(key).views.some((view) => view.key === key)).toBe(true);
     expect(viewLabel('templates')).toBe('模板库');
-    // The script editor keeps its draft while the template library is open.
-    expect(VIEW_REGISTRY.scripts.keepAlive).toBe(true);
+    // Pages holding unsaved drafts stay mounted, as the always-mounted workspace kept them before the split:
+    // the script editor (template library round trip), the plan / 调度设置 drafts and the gather draft + probe.
+    for (const key of ['gatherOverview', 'plans', 'scripts'] as const) expect(VIEW_REGISTRY[key].keepAlive, key).toBe(true);
+  });
+
+  it('brings a kept-alive page back at its scroll position and opens other pages at the top', () => {
+    const saved = new Map([['scripts', 840], ['stats', 300]] as const);
+    expect(restoredScrollTop('scripts', saved)).toBe(840);
+    expect(restoredScrollTop('stats', saved)).toBe(0);
+    expect(restoredScrollTop('plans', saved)).toBe(0);
   });
 
   it('remembers pages and survives broken storage', () => {
@@ -83,6 +92,10 @@ describe('gather activity state', () => {
     const runs = upsertRun(upsertRun([run('a', 1)], run('b', 3)), run('a', 1, 'succeeded'));
     expect(runs.map((item) => `${item.runId}:${item.status}`)).toEqual(['b:running', 'a:succeeded']);
     expect(runs.filter(isRunActive)).toHaveLength(1);
+    expect(isRunActive(run('c', 4, 'stopping'))).toBe(true);
+    // The top bar's 「执行中」 also counts script runs that are queued or running.
+    expect((['queued', 'running', 'succeeded', 'failed', 'cancelled', 'skipped'] as const).filter((status) => isPlanRunActive({ status })))
+      .toEqual(['queued', 'running']);
     const schedules = upsertSchedule([schedule(0, true), schedule(1, true)], schedule(0, false));
     expect(schedules).toEqual([schedule(0, false), schedule(1, true)]);
   });

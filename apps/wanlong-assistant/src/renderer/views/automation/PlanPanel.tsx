@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TemplateSet } from '@avdm/automation';
 import type { GameAccount } from '../../../main/automation/accounts/types';
 import type { AccountPlan, PlanConfig, PlanOverview, PlanRun, PlanTask, ScriptDef, ScriptIssue, ScriptMeta, ScriptStep, TaskTrigger } from '../../../main/plans/types';
-import { convertLegacyAccountPlan, convertLegacyConfig, convertLegacyScript, legacyPlanChoices } from '../../../main/plans/legacy';
+import { legacyPlanChoices } from '../../../main/plans/legacy';
 import { avdm, errMsg } from '../../api';
 import { beijingTime } from '../../format';
 import { useToast } from '../../components/Toasts';
+import { usePlanImport } from '../../state/plan-import';
+import { importLegacyScripts, legacyPlanForAccount, withImportedScripts, withLegacyPlanFile } from './plan-legacy-import';
 import { ScriptStepBlock } from './ScriptStepBlock';
 import { insertSavedTemplate, type TemplateInsertRequest, type TemplateInsertResult } from './script-template-flow';
 import './PlanPanel.css';
@@ -60,10 +62,14 @@ interface PlanPanelProps {
   onCreateTemplate?(request: TemplateInsertRequest): void;
   templateResult?: TemplateInsertResult | null;
   onTemplateResultHandled?(requestId: string): void;
+  /** After any successful action (save, run now, stop …), e.g. to refresh the shell's running-task count. */
+  onChanged?(): void;
 }
 
-export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, onCreateTemplate, templateResult, onTemplateResultHandled }: PlanPanelProps) {
+export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, onCreateTemplate, templateResult, onTemplateResultHandled, onChanged }: PlanPanelProps) {
   const toast = useToast();
+  // Shared with the other page: scripts imported there must be found when a plan is imported here.
+  const { legacy, updateLegacy } = usePlanImport();
   const [ownTab, setOwnTab] = useState<PlanPanelMode>(mode ?? 'plans');
   const tab = mode ?? ownTab;
   const setTab = (next: PlanPanelMode): void => {
@@ -89,10 +95,7 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
   const [configDraft, setConfigDraft] = useState<PlanConfig | null>(null);
   const [configDirty, setConfigDirty] = useState(false);
   const [packageName, setPackageName] = useState('');
-  const [legacyPlanFile, setLegacyPlanFile] = useState<unknown>(null);
-  const [legacyAccountId, setLegacyAccountId] = useState('');
-  const [importMessage, setImportMessage] = useState('');
-  const [legacyScriptMap, setLegacyScriptMap] = useState<Record<string, string>>({});
+  const { planFile: legacyPlanFile, planAccountId: legacyAccountId, message: importMessage } = legacy;
   const [invalidSteps, setInvalidSteps] = useState<Record<string, boolean>>({});
   const [templateSets, setTemplateSets] = useState<TemplateSet[]>([]);
   const [activeTemplateSet, setActiveTemplateSet] = useState<TemplateSet | null>(null);
@@ -171,7 +174,7 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
   const act = async (label: string, fn: () => Promise<void>): Promise<void> => {
     if (busy) return;
     setBusy(label);
-    try { await fn(); await refresh(); toast.push({ kind: 'success', title: `${label}已完成` }); }
+    try { await fn(); await refresh(); onChanged?.(); toast.push({ kind: 'success', title: `${label}已完成` }); }
     catch (cause) { toast.error(`${label}失败`, errMsg(cause)); }
     finally { setBusy(''); }
   };
@@ -192,49 +195,29 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
   const importScriptFiles = async (files: FileList | null): Promise<void> => {
     if (!files?.length || !packageName) return;
     await act('导入旧脚本', async () => {
-      const warnings: string[] = [];
-      const mapping: Record<string, string> = {};
-      const used = new Set(scripts.map((item) => item.id));
-      for (const file of Array.from(files)) {
-        const raw = JSON.parse(await file.text()) as unknown;
-        const converted = convertLegacyScript(raw, packageName);
-        const oldId = converted.script.id;
-        if (used.has(oldId)) converted.script.id = `${oldId}-import-${crypto.randomUUID().slice(0, 6)}`;
-        const issues = await api.scriptValidate(gameId, converted.script);
-        const errors = issues.filter((issue) => issue.level === 'error');
-        if (errors.length) throw new Error(`${file.name}：${errors.map((issue) => issue.message).join('；')}`);
-        const saved = await api.scriptSave(gameId, converted.script);
-        mapping[oldId] = saved.id;
-        used.add(saved.id);
-        warnings.push(...converted.warnings.map((item) => `${file.name}：${item}`));
-      }
-      setLegacyScriptMap((current) => ({ ...current, ...mapping }));
-      setImportMessage(`已导入 ${Object.keys(mapping).length} 个脚本。${warnings.join(' ')}`);
+      const { mapping, message } = await importLegacyScripts(api, gameId, packageName, Array.from(files), scripts.map((item) => item.id));
+      updateLegacy((current) => withImportedScripts(current, mapping, message));
     });
   };
   const loadLegacyPlanFile = async (file: File | undefined): Promise<void> => {
     if (!file) return;
     try {
       const data = JSON.parse(await file.text()) as unknown;
-      const choices = legacyPlanChoices(data);
-      setLegacyPlanFile(data);
-      setLegacyAccountId(choices[0]?.accountId ?? '');
-      setImportMessage(`旧计划含 ${choices.length} 个账号。选择要映射的旧账号，再导入到当前账号。`);
+      legacyPlanChoices(data); // Throws on a file that is not a legacy plans.json, before anything changes.
+      updateLegacy((current) => withLegacyPlanFile(current, data));
     } catch (cause) { toast.error('无法读取旧计划', errMsg(cause)); }
   };
   const importLegacyPlan = (): void => {
     if (!legacyPlanFile || !legacyAccountId || !accountId) return;
     void act('导入旧计划', async () => {
-      const converted = convertLegacyAccountPlan(legacyPlanFile, legacyAccountId, accountId);
-      const next = { ...converted.plan, tasks: converted.plan.tasks.map((task) => ({ ...task, scriptId: legacyScriptMap[task.scriptId] ?? task.scriptId })) };
-      const available = new Set(scripts.map((item) => item.id));
-      const missing = next.tasks.filter((task) => !available.has(task.scriptId));
-      if (missing.length) throw new Error(`请先导入这些脚本：${[...new Set(missing.map((task) => task.scriptId))].join('、')}`);
-      await api.planSave(gameId, next);
-      await api.planSaveConfig(gameId, convertLegacyConfig(legacyPlanFile));
+      // Read the library afresh: the scripts may have just been imported on the other page.
+      const available = (await api.scriptList(gameId)).map((item) => item.id);
+      const imported = legacyPlanForAccount(legacy, accountId, available);
+      await api.planSave(gameId, imported.plan);
+      await api.planSaveConfig(gameId, imported.config);
       setPlanDirty(false);
       setConfigDirty(false);
-      setImportMessage(converted.warnings.join(' '));
+      updateLegacy((current) => ({ ...current, message: imported.warnings.join(' ') }));
     });
   };
 
@@ -249,7 +232,7 @@ export function PlanPanel({ gameId, index, visible = true, mode, onOpenScripts, 
     {tab === 'plans' && <>
       <div className="plan-toolbar"><label>账号<select value={accountId} onChange={(e) => { setPlanDirty(false); setAccountId(e.target.value); }}><option value="">选择账号</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.binding ? `#${account.binding.index}` : '未绑定'}</option>)}</select></label><label className="plan-switch"><input type="checkbox" checked={overview?.config.enabled ?? false} onChange={(e) => void act('更新计划总开关', async () => { await api.planSaveConfig(gameId, { enabled: e.target.checked }); })} disabled={!overview || !!busy} />自动计划总开关</label></div>
       {configDraft && <details className="plan-settings"><summary>调度设置</summary><div className="plan-task-fields"><label>错过后补跑（分钟）<input type="number" min={0} max={720} value={configDraft.catchUpMs / 60_000} onChange={(e) => { setConfigDirty(true); setConfigDraft({ ...configDraft, catchUpMs: Number(e.target.value) * 60_000 }); }} /></label><label>排队等待上限（分钟）<input type="number" min={1} max={720} value={configDraft.queueWaitMs / 60_000} onChange={(e) => { setConfigDirty(true); setConfigDraft({ ...configDraft, queueWaitMs: Number(e.target.value) * 60_000 }); }} /></label><label>失败重试次数<input type="number" min={0} max={5} value={configDraft.retry} onChange={(e) => { setConfigDirty(true); setConfigDraft({ ...configDraft, retry: Number(e.target.value) }); }} /></label><label>重试等待（秒）<input type="number" min={0} max={1800} value={configDraft.retryDelayMs / 1000} onChange={(e) => { setConfigDirty(true); setConfigDraft({ ...configDraft, retryDelayMs: Number(e.target.value) * 1000 }); }} /></label></div><div className="plan-settings-foot"><span>失败重试会从脚本首步重新执行；涉及点击、提交等动作时建议保持 0 次。</span><button className="btn sm" disabled={!configDirty || !!busy} onClick={() => void act('保存调度设置', async () => { await api.planSaveConfig(gameId, configDraft); setConfigDirty(false); })}>保存设置</button></div></details>}
-      <div className="plan-import"><label className="btn xs">导入旧 plans.json<input type="file" accept=".json,application/json" onChange={(e) => void loadLegacyPlanFile(e.currentTarget.files?.[0])} /></label>{Boolean(legacyPlanFile) && <><select aria-label="旧账号计划" value={legacyAccountId} onChange={(e) => setLegacyAccountId(e.target.value)}>{legacyPlanChoices(legacyPlanFile).map((choice) => <option key={choice.accountId} value={choice.accountId}>{choice.accountId} · {choice.tasks} 项</option>)}</select><button className="btn xs" onClick={importLegacyPlan} disabled={!accountId || !!busy}>导入到当前账号</button></>}</div>
+      <div className="plan-import"><label className="btn xs">导入旧 plans.json<input type="file" accept=".json,application/json" onChange={(e) => void loadLegacyPlanFile(e.currentTarget.files?.[0])} /></label>{Boolean(legacyPlanFile) && <><select aria-label="旧账号计划" value={legacyAccountId} onChange={(e) => { const planAccountId = e.target.value; updateLegacy((current) => ({ ...current, planAccountId })); }}>{legacyPlanChoices(legacyPlanFile).map((choice) => <option key={choice.accountId} value={choice.accountId}>{choice.accountId} · {choice.tasks} 项</option>)}</select><button className="btn xs" onClick={importLegacyPlan} disabled={!accountId || !!busy}>导入到当前账号</button></>}</div>
       {importMessage && <p className="plan-import-message" role="status">{importMessage}</p>}
       {!accounts.length && <div className="plan-empty">还没有账号。先在「设备与账号 → 账号管理」创建并绑定实例，再配置脚本计划。</div>}
       {selectedAccount && plan && <>

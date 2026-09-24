@@ -3,7 +3,7 @@
  * running tasks, badges) and the content area. Page state lives in `state/*` providers so every page reads the
  * same game, instance and activity.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Settings } from '@avdm/core';
 import { avdm } from './api';
 import { BADGE_SOURCES } from './badge-sources';
@@ -15,9 +15,11 @@ import { NAVIGATION, sectionForView, type ViewKey } from './navigation';
 import { ActivityProvider, useActivity } from './state/activity';
 import { BadgesProvider, sectionTones, useShellBadges } from './state/badges';
 import { NavigationProvider, useNavigation } from './state/navigation';
+import { PlanImportProvider } from './state/plan-import';
+import { PlanRunsProvider, usePlanRuns } from './state/plan-runs';
 import { SelectionProvider, useSelection } from './state/selection';
 import { TemplateFlowProvider } from './state/template-flow';
-import { VIEW_REGISTRY } from './views/registry';
+import { VIEW_REGISTRY, restoredScrollTop } from './views/registry';
 import './shell.css';
 
 const COLLAPSED_KEY = 'wl.nav.collapsed';
@@ -85,6 +87,8 @@ function InstancePicker() {
 function TopBar() {
   const { view, navigate } = useNavigation();
   const { runningCount } = useActivity();
+  const { activePlanRuns } = usePlanRuns();
+  const executing = runningCount + activePlanRuns;
   const { instances } = useSelection();
   const badges = useShellBadges();
   const maxRunning = useMaxRunning();
@@ -101,7 +105,7 @@ function TopBar() {
         <GameStatus />
         <InstancePicker />
         <span className={`wl-shell-chip ${full ? 'is-warn' : ''}`} title="已开机实例数 / 模拟器同时运行上限">在线 {online}/{maxRunning ?? '—'}</span>
-        <span className={`wl-shell-chip ${runningCount > 0 ? 'is-accent' : ''}`} title="正在执行的采集任务数">执行中 {runningCount}</span>
+        <span className={`wl-shell-chip ${executing > 0 ? 'is-accent' : ''}`} title={`采集 ${runningCount} 个 · 脚本 ${activePlanRuns} 个（含排队）`}>执行中 {executing}</span>
         {badges.length > 0 && <div className="wl-shell-badges" role="status" aria-label="待处理事项">
           {badges.map((badge) => (
             <button
@@ -184,10 +188,18 @@ function Workspace() {
   const section = sectionForView(view);
   const content = useRef<HTMLElement>(null);
   const [kept, setKept] = useState<ViewKey[]>([]);
+  // The pages share one scroll container: remember where each page was left.
+  const scrollTops = useRef(new Map<ViewKey, number>());
+  const shown = useRef(view);
 
   useEffect(() => {
     if (VIEW_REGISTRY[view].keepAlive) setKept((current) => current.includes(view) ? current : [...current, view]);
-    content.current?.scrollTo({ top: 0 });
+  }, [view]);
+
+  // Before paint, so a kept-alive page never flashes at another page's offset.
+  useLayoutEffect(() => {
+    shown.current = view;
+    if (content.current) content.current.scrollTop = restoredScrollTop(view, scrollTops.current);
   }, [view]);
 
   // Render a kept-alive page on its very first visit too (the state catches up in the effect).
@@ -205,7 +217,10 @@ function Workspace() {
           ))}
         </nav>
       )}
-      <main className="wl-shell-content" ref={content}>
+      <main
+        className="wl-shell-content" ref={content}
+        onScroll={(event) => { scrollTops.current.set(shown.current, event.currentTarget.scrollTop); }}
+      >
         {keptViews.map((key) => <Page key={key} viewKey={key} visible={key === view} />)}
         {!VIEW_REGISTRY[view].keepAlive && <Page key={view} viewKey={view} visible />}
       </main>
@@ -222,15 +237,19 @@ export function App() {
     <NavigationProvider>
       <ActivityProvider>
         <SelectionProvider>
-          <TemplateFlowProvider>
-            <BadgesProvider>
-              <BadgeSources />
-              <div className="wl-shell">
-                <Sidebar />
-                <Workspace />
-              </div>
-            </BadgesProvider>
-          </TemplateFlowProvider>
+          <PlanRunsProvider>
+            <TemplateFlowProvider>
+              <PlanImportProvider>
+                <BadgesProvider>
+                  <BadgeSources />
+                  <div className="wl-shell">
+                    <Sidebar />
+                    <Workspace />
+                  </div>
+                </BadgesProvider>
+              </PlanImportProvider>
+            </TemplateFlowProvider>
+          </PlanRunsProvider>
         </SelectionProvider>
       </ActivityProvider>
     </NavigationProvider>

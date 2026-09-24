@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { PlanRun } from '../../../main/plans/types';
 import { avdm, errMsg } from '../../api';
 import { Spinner } from '../../components/StatusBadge';
 import { useToast } from '../../components/Toasts';
 import { beijingTime } from '../../format';
 import { RUN_LABEL, isRunActive, useActivity } from '../../state/activity';
+import { isPlanRunActive, usePlanRuns } from '../../state/plan-runs';
 import { useSelection } from '../../state/selection';
 import type { ViewProps } from '../types';
 import './RunsView.css';
@@ -13,6 +14,7 @@ const PLAN_RUN_LABEL: Record<PlanRun['status'], string> = {
   queued: '排队中', running: '运行中', succeeded: '已完成', failed: '失败', cancelled: '已取消', skipped: '已跳过',
 };
 
+/** Faster than the shell's shared poll while this page is on screen. */
 const PLAN_POLL_MS = 5_000;
 
 /** 执行监控: what is running right now on every instance — gather rounds and plan script runs. */
@@ -20,20 +22,9 @@ export function RunsView({ visible }: ViewProps) {
   const toast = useToast();
   const { game } = useSelection();
   const { runs, refreshRuns } = useActivity();
-  const [planRuns, setPlanRuns] = useState<PlanRun[]>([]);
-  const [planError, setPlanError] = useState<string>();
+  const { planRuns, planRunsError: planError, refreshPlanRuns: refreshPlans } = usePlanRuns();
   const [busy, setBusy] = useState<string | null>(null);
   const gameId = game?.id ?? '';
-
-  const refreshPlans = useCallback(async () => {
-    if (!gameId) return;
-    try {
-      setPlanRuns((await avdm.planOverview(gameId)).runs);
-      setPlanError(undefined);
-    } catch (error) {
-      setPlanError(errMsg(error));
-    }
-  }, [gameId]);
 
   useEffect(() => {
     if (!visible) return;
@@ -53,7 +44,7 @@ export function RunsView({ visible }: ViewProps) {
   const gatherRuns = runs.filter((run) => !gameId || run.gameId === gameId).slice(0, 30);
   const taskName = (taskId: string): string => game?.tasks.find((task) => task.id === taskId)?.name ?? taskId;
   const activeGather = gatherRuns.filter(isRunActive).length;
-  const activePlans = planRuns.filter((run) => run.status === 'queued' || run.status === 'running').length;
+  const activePlans = planRuns.filter(isPlanRunActive).length;
 
   return (
     <div className="runs-view">
@@ -88,7 +79,7 @@ export function RunsView({ visible }: ViewProps) {
               <td><span className={`runs-status is-${run.status}`}>{PLAN_RUN_LABEL[run.status]}</span></td>
               <td>{beijingTime(run.startedAt ?? run.queuedAt)}</td>
               <td className="runs-message" title={run.message}>{run.message || '—'}</td>
-              <td>{(run.status === 'queued' || run.status === 'running') && <button className="btn xs danger-ghost" disabled={busy !== null} onClick={() => void stop('停止脚本', run.runId, async () => { await avdm.planCancelRun(gameId, run.runId); await refreshPlans(); })}>{busy === run.runId ? <Spinner size={12} /> : null}停止</button>}</td>
+              <td>{isPlanRunActive(run) && <button className="btn xs danger-ghost" disabled={busy !== null} onClick={() => void stop('停止脚本', run.runId, async () => { await avdm.planCancelRun(gameId, run.runId); await refreshPlans(); })}>{busy === run.runId ? <Spinner size={12} /> : null}停止</button>}</td>
             </tr>)}</tbody>
           </table>
         </div>}

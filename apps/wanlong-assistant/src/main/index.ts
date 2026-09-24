@@ -97,8 +97,16 @@ bootstrapApp({
       log: (message) => console.warn('[wanlong/bot]', message),
     });
 
-    // ── ipc ──
-    registerWanlongIpcHandlers({ automation, accounts, insights, advisor, plans, remoteBot, windows: services.windows });
+    // ── ipc ── (one service per line: a ported module appends its own line)
+    registerWanlongIpcHandlers({
+      automation,
+      accounts,
+      insights,
+      advisor,
+      plans,
+      remoteBot,
+      windows: services.windows,
+    });
 
     return {
       /** Each service starts on its own: one failure is logged and never blocks the others. */

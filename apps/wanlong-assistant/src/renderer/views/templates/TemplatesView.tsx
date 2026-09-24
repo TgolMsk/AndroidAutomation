@@ -10,11 +10,11 @@ export function TemplatesView(_props: ViewProps) {
   const { refreshSchedules } = useActivity();
   const flow = useTemplateFlow();
   if (!game) return null;
-  // Template edits switch the instance's auto-resume off in the main process; refresh what the shell shows.
+  // Template edits switch the instance's auto-resume off in the main process and invalidate the gather probe.
   return (
     <TemplatePanel
       gameId={game.id} index={index} proposal={flow.proposal}
-      onChanged={() => void refreshSchedules()}
+      onChanged={(directory) => { flow.noteTemplateChanged(game.id, index, directory); void refreshSchedules(); }}
       scriptInsert={flow.scriptInsert} onScriptTemplateSaved={flow.finishScriptTemplate} onCancelScriptInsert={flow.cancelScriptTemplate}
     />
   );

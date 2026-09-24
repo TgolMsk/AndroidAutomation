@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AutomationGameSummary, AutomationProbeReport, AutomationSettings } from '../../../shared/ipc';
 import { avdm, errMsg } from '../../api';
 import { Icon } from '../../components/Icon';
@@ -8,6 +8,7 @@ import { beijingTime } from '../../format';
 import { RUN_LABEL, isRunActive, useActivity } from '../../state/activity';
 import { useNavigation } from '../../state/navigation';
 import { useSelection, useSelectionLock } from '../../state/selection';
+import { useTemplateFlow } from '../../state/template-flow';
 import type { ViewProps } from '../types';
 import { GATHER_RESOURCES, wanlongConfig, wanlongDraftOf, type WanlongDraft } from './gather-config';
 import './GatherOverviewView.css';
@@ -28,7 +29,11 @@ export function probeReady(report: AutomationProbeReport | null, game: Automatio
   );
 }
 
-/** 采集总览: per-instance gather config, read-only probe, one manual round, auto-resume and recent runs. */
+/**
+ * 采集总览: per-instance gather config, read-only probe, one manual round, auto-resume and recent runs. Kept alive
+ * by the shell, so the unsaved config draft and the confirmed probe survive a visit to another page; only a
+ * template change for this instance (or switching instance) resets the probe, as before the page split.
+ */
 export function GatherOverviewView(_props: ViewProps) {
   const toast = useToast();
   const { navigate } = useNavigation();
@@ -46,6 +51,8 @@ export function GatherOverviewView(_props: ViewProps) {
   const [probeError, setProbeError] = useState<string>();
   const [probeConfirmed, setProbeConfirmed] = useState(false);
   const [busy, setBusy] = useState<BusyAction>(null);
+  const { templateChange } = useTemplateFlow();
+  const seenTemplateChange = useRef(templateChange?.seq ?? 0);
   useSelectionLock(busy ? BUSY_LOCK[busy] : scheduleTarget !== null ? '正在切换自动续跑，完成后再切换实例' : null);
 
   useEffect(() => {
@@ -76,6 +83,16 @@ export function GatherOverviewView(_props: ViewProps) {
     });
     return () => { active = false; };
   }, [gameId, index]);
+
+  useEffect(() => {
+    if (!templateChange || templateChange.seq === seenTemplateChange.current) return;
+    seenTemplateChange.current = templateChange.seq;
+    if (templateChange.gameId !== gameId || templateChange.index !== index) return;
+    setSettings((current) => current ? { ...current, templateDir: templateChange.directory } : current);
+    setProbe(null);
+    setProbeError(undefined);
+    setProbeConfirmed(false);
+  }, [templateChange, gameId, index]);
 
   if (!game) return null;
 

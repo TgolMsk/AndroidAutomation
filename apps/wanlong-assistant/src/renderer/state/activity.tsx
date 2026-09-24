@@ -29,6 +29,7 @@ export function isRunActive(run: AutomationRun): boolean {
 export interface ActivityState {
   /** Gather runs of every instance, newest first. */
   runs: AutomationRun[];
+  /** Gather runs still executing (running or stopping). */
   runningCount: number;
   refreshRuns(): Promise<void>;
   upsertRun(run: AutomationRun): void;
@@ -82,7 +83,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ActivityState>(() => ({
     runs,
-    runningCount: runs.filter((run) => run.status === 'running').length,
+    runningCount: runs.filter(isRunActive).length,
     refreshRuns,
     upsertRun: (run) => setRuns((previous) => upsertRun(previous, run)),
     schedules,

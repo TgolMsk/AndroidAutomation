@@ -4,11 +4,21 @@ import type { TemplateInsertRequest, TemplateInsertResult, TemplateSavedForScrip
 import { useNavigation } from './navigation';
 import { useSelection } from './selection';
 
+/** A template-set change made in the template library (select / create / save / delete). */
+export interface TemplateChange {
+  /** Increases with every change, so each one is seen exactly once. */
+  seq: number;
+  gameId: string;
+  index: number | null;
+  directory: string;
+}
+
 /**
  * Cross-page template flows:
  *  - AI page: an advisor template proposal opens the template library with the proposed crop;
  *  - script editor: 「从画面截取」 opens the template library, and saving returns to the script with the new
- *    template inserted. Request ids make stale callbacks harmless (`script-template-flow.ts`).
+ *    template inserted. Request ids make stale callbacks harmless (`script-template-flow.ts`);
+ *  - gather page (kept alive): a template change invalidates its probe result for that instance.
  */
 export interface TemplateFlowState {
   proposal: AdvisorTemplateProposal | null;
@@ -19,6 +29,8 @@ export interface TemplateFlowState {
   finishScriptTemplate(saved: TemplateSavedForScript, requestId: string): void;
   cancelScriptTemplate(): void;
   clearScriptResult(requestId: string): void;
+  templateChange: TemplateChange | null;
+  noteTemplateChanged(gameId: string, index: number | null, directory: string): void;
 }
 
 const TemplateFlowContext = createContext<TemplateFlowState | null>(null);
@@ -29,6 +41,7 @@ export function TemplateFlowProvider({ children }: { children: ReactNode }) {
   const [proposal, setProposal] = useState<AdvisorTemplateProposal | null>(null);
   const [scriptInsert, setScriptInsert] = useState<TemplateInsertRequest | null>(null);
   const [scriptResult, setScriptResult] = useState<TemplateInsertResult | null>(null);
+  const [templateChange, setTemplateChange] = useState<TemplateChange | null>(null);
   const insertRef = useRef<TemplateInsertRequest | null>(null);
 
   // A pending insert or result for another game/instance no longer applies.
@@ -80,11 +93,15 @@ export function TemplateFlowProvider({ children }: { children: ReactNode }) {
     setScriptResult((current) => current?.id === requestId ? null : current);
   }, []);
 
+  const noteTemplateChanged = useCallback((changedGameId: string, changedIndex: number | null, directory: string) => {
+    setTemplateChange((current) => ({ seq: (current?.seq ?? 0) + 1, gameId: changedGameId, index: changedIndex, directory }));
+  }, []);
+
   const value = useMemo<TemplateFlowState>(() => ({
     proposal, openTemplateProposal, scriptInsert, scriptResult,
-    startScriptTemplate, finishScriptTemplate, cancelScriptTemplate, clearScriptResult,
+    startScriptTemplate, finishScriptTemplate, cancelScriptTemplate, clearScriptResult, templateChange, noteTemplateChanged,
   }), [proposal, openTemplateProposal, scriptInsert, scriptResult, startScriptTemplate, finishScriptTemplate,
-    cancelScriptTemplate, clearScriptResult]);
+    cancelScriptTemplate, clearScriptResult, templateChange, noteTemplateChanged]);
 
   return <TemplateFlowContext.Provider value={value}>{children}</TemplateFlowContext.Provider>;
 }
