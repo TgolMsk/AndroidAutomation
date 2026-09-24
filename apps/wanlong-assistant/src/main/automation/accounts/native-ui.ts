@@ -1,6 +1,19 @@
 import type { AdbDevice } from '@avdm/core';
 import type { AccountLoginCommand, LoginScreen } from './types';
 
+/**
+ * An error whose message was written here and is safe to show. Anything else raised while driving the login UI
+ * (core adb errors carry the full argv, e.g. `input text <phone>`) is replaced by a fixed message upstream.
+ */
+export class LoginUserError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LoginUserError';
+  }
+}
+
+const DIGITS_FAILED = '登录数字输入失败，请检查设备连接后重试。';
+
 export interface NativeNode {
   id: string;
   text: string;
@@ -27,7 +40,7 @@ function decodeXml(value: string): string {
 /** Parse only UIAutomator node attributes. No XML entities, DTDs, or external references are loaded. */
 export function parseNativeUi(xml: string, packageName: string): NativeNode[] {
   const nodes: NativeNode[] = [];
-  if (xml.length > 2_000_000) throw new Error('登录界面树过大');
+  if (xml.length > 2_000_000) throw new LoginUserError('登录界面树过大');
   for (const match of xml.matchAll(/<node\s+([^>]+?)\s*\/?>/g)) {
     const attrs = Object.fromEntries([...match[1]!.matchAll(/([\w-]+)="([^"]*)"/g)]
       .map((item) => [item[1]!, decodeXml(item[2]!) ]));
@@ -70,7 +83,10 @@ export function loginScreen(nodes: NativeNode[], packageName: string): LoginScre
 }
 
 export async function readLoginUi(device: Pick<AdbDevice, 'foregroundPackage' | 'shell'>, packageName: string): Promise<NativeNode[]> {
-  if (await device.foregroundPackage() !== packageName) throw new Error('请先让游戏显示在前台');
+  let foreground: string | undefined;
+  try { foreground = await device.foregroundPackage(); }
+  catch { throw new LoginUserError('无法读取前台应用，请检查实例连接后重试'); }
+  if (foreground !== packageName) throw new LoginUserError('请先让游戏显示在前台');
   const remote = '/sdcard/avdm-login-ui.xml';
   try {
     await device.shell(`rm -f ${remote}`, { timeoutMs: 5000 });
@@ -78,7 +94,7 @@ export async function readLoginUi(device: Pick<AdbDevice, 'foregroundPackage' | 
     if (!output.includes('<hierarchy')) throw new Error('UIAutomator 没有返回界面树');
     return parseNativeUi(output, packageName);
   } catch {
-    throw new Error('当前登录页面暂时无法识别，请等待画面稳定或使用实时画面手动操作');
+    throw new LoginUserError('当前登录页面暂时无法识别，请等待画面稳定或在下方画面中手动操作');
   } finally {
     await device.shell(`rm -f ${remote}`, { timeoutMs: 5000 }).catch(() => undefined);
   }
@@ -92,13 +108,26 @@ export interface LoginInputDevice {
   text(value: string): Promise<void>;
 }
 
+/**
+ * Type a phone number or SMS code with Android's own `input text` (no third-party IME). ★ The digits are in the
+ * adb argv, and core's COMMAND_FAILED message quotes the argv: never let that error escape.
+ */
+export async function inputLoginDigits(device: Pick<LoginInputDevice, 'text'>, value: string): Promise<void> {
+  if (!/^\d{1,32}$/.test(value)) throw new LoginUserError('登录输入仅支持数字手机号或验证码');
+  try { await device.text(value); }
+  catch { throw new LoginUserError(DIGITS_FAILED); }
+}
+
 async function fillDigits(device: LoginInputDevice, node: NativeNode, value: string, signal: AbortSignal): Promise<void> {
-  if (!/^\d{1,32}$/.test(value)) throw new Error('登录输入仅支持数字');
+  if (!/^\d{1,32}$/.test(value)) throw new LoginUserError('登录输入仅支持数字');
   signal.throwIfAborted();
-  await device.tap(node.x, node.y);
-  await device.shell(`input keyevent KEYCODE_MOVE_END ${Array(32).fill('KEYCODE_DEL').join(' ')}`, { timeoutMs: 10_000 });
+  try {
+    await device.tap(node.x, node.y);
+    // MOVE_END plus enough DEL clears only the field that was just identified and tapped.
+    await device.shell(`input keyevent KEYCODE_MOVE_END ${Array(32).fill('KEYCODE_DEL').join(' ')}`, { timeoutMs: 10_000 });
+  } catch { throw new LoginUserError(DIGITS_FAILED); }
   signal.throwIfAborted();
-  await device.text(value);
+  await inputLoginDigits(device, value);
   signal.throwIfAborted();
 }
 
@@ -113,38 +142,38 @@ export async function executeWanlongLoginCommand(
   if (command.action === 'inspect') return loginScreen(nodes, packageName);
   if (command.action === 'requestSms') {
     if (!/^1[3-9]\d{9}$/.test(command.phone) || command.agreementAccepted !== true) {
-      throw new Error('请填写有效手机号，并确认已阅读游戏用户协议及隐私条款');
+      throw new LoginUserError('请填写有效手机号，并确认已阅读游戏用户协议及隐私条款');
     }
     const field = byId(nodes, packageName, 'phoneEditText');
-    if (!field) throw new Error('当前不是已校准的手机号登录页面，请刷新登录步骤');
+    if (!field) throw new LoginUserError('当前不是已校准的手机号登录页面，请刷新登录步骤');
     await fillDigits(device, field, command.phone, signal);
     await device.keyevent('BACK');
     signal.throwIfAborted();
     nodes = await read(device, packageName);
     if (byId(nodes, packageName, 'phoneEditText')?.text.replace(/\D/g, '') !== command.phone) {
-      throw new Error('手机号未完整填入，请刷新登录步骤后重试');
+      throw new LoginUserError('手机号未完整填入，请刷新登录步骤后重试');
     }
     const agreement = byId(nodes, packageName, 'agreementCheckBox');
-    if (!agreement) throw new Error('未找到游戏协议控件，请在实时画面中检查');
+    if (!agreement) throw new LoginUserError('未找到游戏协议控件，请在下方画面中检查');
     if (!agreement.checked) {
       await device.tap(agreement.x, agreement.y);
       nodes = await read(device, packageName);
       signal.throwIfAborted();
     }
-    if (!byId(nodes, packageName, 'agreementCheckBox')?.checked) throw new Error('游戏协议未确认');
+    if (!byId(nodes, packageName, 'agreementCheckBox')?.checked) throw new LoginUserError('游戏协议未确认');
     const submit = byId(nodes, packageName, 'submitButton');
-    if (!submit || submit.text !== '登录') throw new Error('未识别到登录按钮，请刷新登录步骤');
+    if (!submit || submit.text !== '登录') throw new LoginUserError('未识别到登录按钮，请刷新登录步骤');
     await device.tap(submit.x, submit.y);
   } else if (command.action === 'submitCode') {
-    if (!/^\d{6}$/.test(command.code)) throw new Error('验证码应为 6 位数字');
+    if (!/^\d{6}$/.test(command.code)) throw new LoginUserError('验证码应为 6 位数字');
     const input = byId(nodes, packageName, 'digitsInput');
-    if (!input) throw new Error('当前不是已校准的验证码页面，请刷新登录步骤');
+    if (!input) throw new LoginUserError('当前不是已校准的验证码页面，请刷新登录步骤');
     await fillDigits(device, { ...input, x: Math.round(input.x - input.width / 2 + input.width / 12) }, command.code, signal);
   } else {
-    if (!byId(nodes, packageName, 'digitsInput')) throw new Error('当前不是已校准的验证码页面');
+    if (!byId(nodes, packageName, 'digitsInput')) throw new LoginUserError('当前不是已校准的验证码页面');
     const resend = byId(nodes, packageName, 'resendButton');
     if (!resend || /^\s*\d+\s*秒/.test(resend.text) || !/^(重新发送|重新获取|重发)(验证码)?$/.test(resend.text.trim())) {
-      throw new Error('请等待短信倒计时结束后再重新发送');
+      throw new LoginUserError('请等待短信倒计时结束后再重新发送');
     }
     await device.tap(resend.x, resend.y);
   }

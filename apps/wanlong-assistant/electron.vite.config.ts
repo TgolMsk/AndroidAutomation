@@ -45,6 +45,7 @@ export default defineConfig({
           'probe-worker': resolve(__dirname, 'src/main/automation/probe-worker.ts'),
           'template-test-worker': resolve(__dirname, 'src/main/automation/template-test-worker.ts'),
           'gather-worker': resolve(__dirname, 'src/main/automation/gather-worker.ts'),
+          'home-verify-worker': resolve(__dirname, 'src/main/automation/accounts/home-verify-worker.ts'),
         },
       },
     },

@@ -1,33 +1,38 @@
-import type { AutomationProbeReport } from '../../../shared/ipc';
+import { CITY_TEMPLATES, WORLD_MAP_TEMPLATES } from '@avdm/automation/wanlong';
 import { executeWanlongLoginCommand, type LoginInputDevice } from './native-ui';
-import type { AccountLoginCommand, LoginScreen } from './types';
+import type { AccountLoginCommand, HomeVerdict, LoginScreen } from './types';
 
 export interface GameLoginDriver {
   /** Optional native login controls; all taps use fresh page nodes. */
   command(device: LoginInputDevice, packageName: string, command: AccountLoginCommand,
     signal: AbortSignal): Promise<LoginScreen>;
-  /** Only a verified home scene can enable an account. */
-  verifyHome(probe: AutomationProbeReport): { ok: true } | { ok: false; reason: string };
+  /**
+   * Templates whose hit, each at its own threshold and default ROI, proves the game home screen. Only a verified
+   * home scene can enable an account.
+   */
+  homeTemplates: readonly string[];
 }
 
-const WANLONG_HOME_ANCHORS = new Set([
-  'tpl_world_search_icon', 'tpl_nav_map_toggle', 'tpl_nav_map_toggle_b',
-]);
+/**
+ * Wanlong's home proof is the original `verifyGameHome`: any city template (map toggle A/B) or world-map template
+ * (castle toggle A/B + magnifier). ★ Never the magnifier alone: its lens is translucent and its score drifts with
+ * the terrain (0.981 → 0.794), gather iron rule 5.
+ */
+export const WANLONG_HOME_TEMPLATES: readonly string[] = [...CITY_TEMPLATES, ...WORLD_MAP_TEMPLATES];
 
 const drivers = new Map<string, GameLoginDriver>([
-  ['wanlong', {
-    command: executeWanlongLoginCommand,
-    verifyHome(probe) {
-      if (!probe.launchReady) return { ok: false, reason: probe.launchReason };
-      if (!probe.matches.some((match) => match.found && WANLONG_HOME_ANCHORS.has(match.templateId))) {
-        return { ok: false, reason: '没有识别到城内或世界地图' };
-      }
-      return { ok: true };
-    },
-  }],
+  ['wanlong', { command: executeWanlongLoginCommand, homeTemplates: WANLONG_HOME_TEMPLATES }],
 ]);
 
 /** Future games register a native login driver and a read-only home proof here. */
 export function gameLoginDriver(gameId: string): GameLoginDriver | undefined {
   return drivers.get(gameId);
+}
+
+export const HOME_NOT_RECOGNIZED = '尚未识别到游戏主界面。请完成登录并关闭公告、角色选择或其他面板，回到城内或世界地图后再检查。';
+
+/** Any single hit passes (original semantics): no lead or ambiguity rule, unlike the gather probe gate. */
+export function decideHome(matches: ReadonlyArray<{ templateId: string; found: boolean; score: number }>): HomeVerdict {
+  const hit = matches.filter((match) => match.found).sort((a, b) => b.score - a.score)[0];
+  return hit ? { ok: true, templateId: hit.templateId, score: hit.score } : { ok: false, reason: HOME_NOT_RECOGNIZED };
 }

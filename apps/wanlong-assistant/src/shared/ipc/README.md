@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | `automation.ts` | 游戏目录、每实例采集设置、只读探测、采集运行、自动续跑 | `src/main/ipc/automation.ts` |
 | `templates.ts` | 模板集、截图、去底预览、保存 / 删除 / 测试模板 | `src/main/ipc/templates.ts` |
-| `accounts.ts` | 账号、实例绑定、登录会话 | `src/main/ipc/accounts.ts` |
+| `accounts.ts` | 账号、实例绑定（确认改绑）、脚本参数、就绪闸门、登录会话与预览输入；推送 `account-changed` / `login-changed` | `src/main/ipc/accounts.ts` |
 | `plans.ts` | 任务计划与脚本库 | `src/main/ipc/plans.ts` |
 | `runs.ts` | 脚本执行监控（空，待 script-engine） | `src/main/ipc/runs.ts` |
 | `insights.ts` | 现有洞察、通知、只读机器人 | `src/main/ipc/insights.ts` |

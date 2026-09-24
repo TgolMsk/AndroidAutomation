@@ -55,6 +55,8 @@ export interface AutomationHostHooks {
   onCycle?: (run: AutomationRun, result: GatherCycleResult, source: 'manual' | 'scheduled') => Promise<void>;
   onFailure?: (run: AutomationRun, error: unknown, source: 'manual' | 'scheduled') => Promise<void>;
   onScheduleStop?: (gameId: string, index: number, failureCount: number) => Promise<void>;
+  /** Accounts gate: refuses the base instance, an active login and a pending / stale bound account (throws the reason). */
+  ensureAutomationReady?: (gameId: string, index: number) => Promise<void>;
 }
 
 interface ActiveAutomationRun {
@@ -403,6 +405,7 @@ export class AutomationHost {
     return this.withControlLock(i, async () => {
       if (!enabled) return this.scheduler.disable(gameId, i);
       if (this.activeByIndex.has(i) || this.gatherRunner.isRunning(i)) throw new Error(`实例 #${i} 已有自动化任务在运行`);
+      await this.hooks.ensureAutomationReady?.(gameId, i);
       const manager = await this.host.get();
       const [instance, settings] = await Promise.all([manager.getState(i), this.store.get(gameId, i)]);
       if (instance.status !== 'running') throw new Error(`实例 #${i} 尚未就绪`);
@@ -518,6 +521,7 @@ export class AutomationHost {
     if (gameId !== 'wanlong' || task.id !== 'gather-once') throw new Error('该自动化任务尚未接入');
     const i = asIndex(index);
     if (this.activeByIndex.has(i) || this.gatherRunner.isRunning(i)) throw new Error(`实例 #${i} 已有自动化任务在运行`);
+    await this.hooks.ensureAutomationReady?.(gameId, i);
 
     const manager = await this.host.get();
     const [instance, settings] = await Promise.all([manager.getState(i), this.store.get(gameId, i)]);

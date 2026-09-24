@@ -1,0 +1,440 @@
+/* 账号管理, login drawer, instance account cell and base instance card. Design tokens only. */
+
+.accounts-view {
+  display: grid;
+  gap: 14px;
+  max-width: 1240px;
+}
+
+.accounts-view .notice {
+  margin-bottom: 0;
+}
+
+.accounts-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.accounts-head h2 {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.accounts-head p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.accounts-head-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.accounts-dim {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.accounts-sub {
+  display: block;
+  margin-top: 2px;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accounts-inline-error {
+  margin: 0;
+  color: var(--red);
+  font-size: 12px;
+}
+
+.accounts-inline-warn {
+  margin: 0;
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.accounts-empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 32px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.accounts-empty strong {
+  color: var(--text);
+}
+
+.accounts-scroll {
+  overflow-x: auto;
+}
+
+.accounts-table td {
+  vertical-align: middle;
+}
+
+.accounts-table select {
+  max-width: 300px;
+}
+
+.accounts-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.accounts-name .tag:first-of-type {
+  margin-left: 8px;
+}
+
+.accounts-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.accounts-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  background: var(--panel-3);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+
+.accounts-switch > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out);
+}
+
+.accounts-switch.is-on {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+
+.accounts-switch.is-on > span {
+  transform: translateX(14px);
+  background: var(--accent);
+}
+
+.accounts-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.accounts-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.accounts-wide-input {
+  width: 100%;
+}
+
+.accounts-span-2 {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+/* ── base instance ── */
+
+.accounts-base {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+}
+
+.accounts-base-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.accounts-base-head p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.accounts-base-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.accounts-base-row > select {
+  width: min(360px, 100%);
+}
+
+.accounts-base-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 220px;
+}
+
+.accounts-base-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.accounts-base-row .accounts-inline-warn {
+  flex-basis: 100%;
+}
+
+.accounts-clone-form {
+  display: grid;
+  gap: 10px;
+}
+
+.accounts-clone-form .field {
+  max-width: 160px;
+}
+
+.accounts-clone-form .notice {
+  margin-bottom: 0;
+}
+
+/* ── instance account cell ── */
+
+.accounts-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.accounts-cell select {
+  flex: 1;
+  min-width: 0;
+  max-width: 240px;
+}
+
+.accounts-cell .tag {
+  margin-left: 0;
+  white-space: nowrap;
+}
+
+/* ── login drawer ── */
+
+.accounts-login-drawer .drawer-body {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.accounts-login-position {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-2);
+}
+
+.accounts-login {
+  display: grid;
+  gap: 14px;
+}
+
+.accounts-login .notice {
+  margin-bottom: 0;
+}
+
+.accounts-notice-ok {
+  border-color: var(--green);
+  background: var(--green-bg);
+}
+
+.accounts-login-head h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.accounts-login-head p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.accounts-steps {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.accounts-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 2px solid var(--border);
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.accounts-steps li > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--panel-3);
+  font-size: 11px;
+}
+
+.accounts-steps li.is-current {
+  border-top-color: var(--accent);
+  color: var(--text);
+}
+
+.accounts-steps li.is-current > span {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.accounts-steps li.is-done {
+  border-top-color: var(--green);
+  color: var(--text-2);
+}
+
+.accounts-steps li.is-done > span {
+  background: var(--green-bg);
+  color: var(--green);
+}
+
+.accounts-login-flow {
+  display: grid;
+  gap: 12px;
+}
+
+.accounts-login-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.accounts-login-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.accounts-login-form input[type='tel'],
+.accounts-login-form input[type='password'] {
+  width: 200px;
+}
+
+.accounts-login-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ── login preview ── */
+
+.accounts-preview {
+  display: grid;
+  gap: 8px;
+}
+
+.accounts-preview-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.accounts-preview-bar .tag {
+  margin-left: 0;
+}
+
+.accounts-preview-live {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.accounts-preview-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.accounts-preview-frame img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.accounts-preview-frame img.is-swipe {
+  cursor: grab;
+}
+
+.accounts-preview-frame.is-busy {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.accounts-preview-hint {
+  margin: 0;
+}
+
+.accounts-preview-digits {
+  width: 260px;
+}
+
+@media (max-width: 720px) {
+  .accounts-head {
+    flex-direction: column;
+  }
+
+  .accounts-steps {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

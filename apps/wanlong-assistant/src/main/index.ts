@@ -1,10 +1,12 @@
 import { bootstrapApp } from '@avdm/emulator-shell/main/bootstrap';
 import { AccountManager } from './automation/accounts';
+import { HomeVerifier } from './automation/accounts/home-verify';
 import { loginActive } from './automation/accounts/types';
 import { AdvisorService } from './automation/advisor';
 import { gamePlugin } from './automation/games';
 import { AutomationHost } from './automation/host';
 import { InsightsService } from './automation/insights';
+import { InstanceProvisioner } from './instances/provisioner';
 import { broadcast } from './events';
 import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
@@ -37,13 +39,45 @@ bootstrapApp({
         await monitoring.recordFailure(run, error);
       },
       onScheduleStop: (gameId, index, count) => insights.recordScheduleStop(gameId, index, count),
+      ensureAutomationReady: (gameId, index): Promise<void> => accounts.assertInstanceAutomationReady(gameId, index),
     });
     // Template edits (save / delete / import) make compiled templates stale: tell the renderer; cache owners
     // (vision workers, sampler, resources, AI harvest) subscribe through automation.onTemplatesChanged too.
     automation.onTemplatesChanged((change) => broadcast('templates-changed', change));
 
     // ── accounts ──
-    const accounts = new AccountManager(services.host, automation, home);
+    const homeVerifier = new HomeVerifier({
+      capture: (gameId, index) => automation.captureReadOnly(gameId, index),
+      // A fresh copy inherits the base's template set; until then the base's set is the fallback.
+      templateDir: async (gameId, index): Promise<string> =>
+        (await automation.settings(gameId, index)).templateDir || await provisioner.baseTemplateDir(gameId),
+    });
+    const accounts: AccountManager = new AccountManager(services.host, automation, home, {
+      base: (gameId) => provisioner.baseIdentity(gameId),
+      verifyHome: (gameId, index) => homeVerifier.verify(gameId, index),
+      instanceGatherConfig: async (gameId, index) => {
+        const { config } = await automation.settings(gameId, index);
+        return Object.keys(config).length > 0 ? config : null;
+      },
+      onAccountsChanged: (event) => broadcast('account-changed', event),
+      onLoginChanged: (session) => broadcast('login-changed', session),
+    });
+
+    // ── instances (base instance, batch clone) ──
+    const provisioner: InstanceProvisioner = new InstanceProvisioner(services.host, home, {
+      settings: (gameId, index) => automation.settings(gameId, index),
+      saveSettings: (gameId, index, patch) => automation.saveSettings(gameId, index, patch),
+      disableSchedule: async (gameId, index) => { await automation.setSchedule(gameId, index, false); },
+      async busyReason(index): Promise<string | null> {
+        if (accounts.loginActiveOn(index)) return '正在进行账号登录';
+        if (plans.isActiveForInstance(index)) return '正在运行脚本计划';
+        const runs = await automation.runs();
+        return runs.some((run) => run.index === index && (run.status === 'running' || run.status === 'stopping')) ? '正在运行自动采集' : null;
+      },
+      boundAccountName: async (gameId, index, createdAt): Promise<string | null> => (await accounts.list(gameId)).find((account) =>
+        account.binding?.index === index && account.binding.instanceCreatedAt === createdAt)?.name ?? null,
+      onChanged: (event) => broadcast('instance-base-changed', event),
+    });
 
     // ── advisor (AI) ──
     const advisor = new AdvisorService(home, (gameId, index) => automation.captureReadOnly(gameId, index));
@@ -113,6 +147,7 @@ bootstrapApp({
       plans,
       remoteBot,
       serviceHealth,
+      provisioner,
       windows: services.windows,
     });
 
@@ -133,6 +168,7 @@ bootstrapApp({
           { name: '运行监控', run: () => monitoring.dispose() },
           { name: '脚本计划', run: () => plans.shutdown() },
           { name: '账号登录', run: () => accounts.shutdown() },
+          { name: '登录检查', run: () => homeVerifier.dispose() },
           { name: '自动化运行', run: () => automation.dispose() },
           { name: '运行统计', run: () => insights.dispose() },
         ]);

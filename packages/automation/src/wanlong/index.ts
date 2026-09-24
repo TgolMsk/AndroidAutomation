@@ -44,3 +44,5 @@ export { GATHER_CRITICAL_TEMPLATES, GATHER_OPTIONAL_TEMPLATES, GLYPH, TPL, glyph
 export type { GatherTemplateCoverage, GlyphCoverage, MissingTemplate } from './gather/templateCoverage.js';
 export { GATHER_TEMPLATE_LABELS, GLYPH_SET_LABELS, gatherTemplateCoverage } from './gather/templateCoverage.js';
 export * as tplkit from './tools/tplkit.js';
+// The login wizard's home check reuses gather's multi-template city / world-map criterion (never the magnifier alone).
+export { CITY_TEMPLATES, WORLD_MAP_TEMPLATES } from './gather/navigation.js';

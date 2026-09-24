@@ -1,15 +1,36 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { isAvdmError, withFileLock, type InstanceState } from '@avdm/core';
+import { isAvdmError, withFileLock, type AdbDevice, type InstanceState } from '@avdm/core';
+import type { RawFrame } from '@avdm/automation';
 import type { ManagerHost } from '../../manager-host';
 import type { AutomationHost } from '../host';
 import { gamePlugin } from '../games';
 import { gameLoginDriver } from './drivers';
-import { AccountStore } from './store';
-import { loginActive, type AccountDetails, type AccountLoginCommand,
-  type AccountLoginSession, type GameAccount } from './types';
+import { previewLegacyAccounts } from './legacy';
+import { inputLoginDigits, LoginUserError } from './native-ui';
+import { AccountStore, isAccountId, isNewAccountId } from './store';
+import {
+  GATHER_PARAM_KEY, GATHER_PARAM_SCOPE, LOGIN_INPUT_KEYS, loginActive,
+  type AccountBindOptions, type AccountBindResult, type AccountDetails, type AccountLoginCommand,
+  type AccountLoginSession, type AccountPatch, type AccountsChangedEvent, type AutomationReadiness, type GameAccount,
+  type HomeVerdict, type LegacyAccountImport, type LoginFrame, type LoginInput, type LoginInputKey, type ScriptParamValue,
+} from './types';
 
-export type { AccountDetails, AccountLoginCommand, AccountLoginSession, GameAccount } from './types';
+export type {
+  AccountBindOptions, AccountBindResult, AccountDetails, AccountLoginCommand, AccountLoginSession, AccountPatch,
+  AccountsChangedEvent, AutomationReadiness, GameAccount, LegacyAccountImport, LoginFrame, LoginInput,
+} from './types';
+export { AccountError } from './store';
+
+/** Reference space of login preview coordinates (the game's 2560×1440 layout). */
+const REF_WIDTH = 2560;
+const REF_HEIGHT = 1440;
+const PREVIEW_WIDTH = 960;
+const MAX_LEGACY_FILE_BYTES = 4 * 1024 * 1024;
+const INPUT_FAILED = '登录输入未完成，请检查设备连接后重试。';
+const COMMAND_FAILED = '登录操作未完成，请检查实例连接后重试。';
+const FRAME_FAILED = '画面读取失败，请检查实例连接后重试。';
 
 interface Lease {
   release(): Promise<void>;
@@ -23,15 +44,86 @@ interface Task {
   instanceCreatedAt?: string;
   commands: Map<string, { fingerprint: string; result: Promise<AccountLoginSession> }>;
   committing: boolean;
+  /** Screencap size of the device, for converting reference coordinates; refreshed by every preview frame. */
+  frameSize?: { width: number; height: number };
+  frameInFlight?: Promise<LoginFrame>;
 }
+
+/** Ports the composition root wires; every one is optional so the manager stays testable with fakes. */
+export interface AccountManagerPorts {
+  /** Base instance of a game (index + creation identity), for 「基础实例不能登录 / 绑定 / 自动化」. */
+  base?(gameId: string): Promise<{ index: number; createdAt: string } | null>;
+  /** Read-only home proof of the game (city / world-map templates). Required to finish a login. */
+  verifyHome?(gameId: string, index: number): Promise<HomeVerdict>;
+  /** The gather config saved on the instance, moved into an account when it is bound (original afterAccountBind). */
+  instanceGatherConfig?(gameId: string, index: number): Promise<Record<string, unknown> | null>;
+  /** Preview encoder; defaults to a sharp JPEG at 960 px width. */
+  encodePreview?(frame: RawFrame): Promise<{ jpeg: Uint8Array; width: number; height: number }>;
+  onAccountsChanged?(event: AccountsChangedEvent): void;
+  onLoginChanged?(session: AccountLoginSession): void;
+}
+
+type AutomationPort = Pick<AutomationHost, 'setSchedule' | 'runs' | 'schedules'>;
 
 function validCommand(command: AccountLoginCommand): void {
   if (!command || typeof command !== 'object' || typeof command.requestId !== 'string' ||
     !/^[A-Za-z0-9_-]{1,120}$/.test(command.requestId)) throw new Error('登录请求编号无效');
   if (command.action === 'inspect' || command.action === 'resendCode') return;
-  if (command.action === 'requestSms' && /^1[3-9]\d{9}$/.test(command.phone) && command.agreementAccepted === true) return;
-  if (command.action === 'submitCode' && /^\d{6}$/.test(command.code)) return;
+  if (command.action === 'requestSms' && typeof command.phone === 'string' && /^1[3-9]\d{9}$/.test(command.phone) &&
+    command.agreementAccepted === true) return;
+  if (command.action === 'submitCode' && typeof command.code === 'string' && /^\d{6}$/.test(command.code)) return;
   throw new Error('登录操作无效，请检查手机号、验证码和协议确认');
+}
+
+function validPoint(value: unknown): value is { x: number; y: number } {
+  if (!value || typeof value !== 'object') return false;
+  const { x, y } = value as { x: unknown; y: unknown };
+  return typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y) &&
+    x >= 0 && x <= REF_WIDTH && y >= 0 && y <= REF_HEIGHT;
+}
+
+/**
+ * Manual preview input allowed during a login (original `login:input`): reference-space tap / swipe (50–2000 ms),
+ * an allow-listed key, or digits only (phone number / SMS code). Rejects without echoing the input.
+ */
+export function validateLoginInput(input: unknown): LoginInput {
+  const bad = (): never => { throw new Error('登录输入无效：只能点击、滑动画面、发送允许的按键或最多 32 位数字'); };
+  if (!input || typeof input !== 'object') return bad();
+  const value = input as Record<string, unknown>;
+  switch (value.kind) {
+    case 'tap':
+      return validPoint(value.at) ? { kind: 'tap', at: { x: value.at.x, y: value.at.y } } : bad();
+    case 'swipe': {
+      const duration = value.durationMs;
+      if (!validPoint(value.at) || !validPoint(value.to) || typeof duration !== 'number' || !Number.isInteger(duration) ||
+        duration < 50 || duration > 2000) return bad();
+      return { kind: 'swipe', at: { x: value.at.x, y: value.at.y }, to: { x: value.to.x, y: value.to.y }, durationMs: duration };
+    }
+    case 'key':
+      return typeof value.key === 'string' && (LOGIN_INPUT_KEYS as readonly string[]).includes(value.key)
+        ? { kind: 'key', key: value.key as LoginInputKey } : bad();
+    case 'text':
+      return typeof value.text === 'string' && /^\d{1,32}$/.test(value.text) ? { kind: 'text', text: value.text } : bad();
+    default:
+      return bad();
+  }
+}
+
+/** Reference (2560×1440) → device pixels of the actual screencap, clamped inside the frame. */
+export function toDevicePoint(point: { x: number; y: number }, size: { width: number; height: number }): { x: number; y: number } {
+  return {
+    x: Math.min(size.width - 1, Math.max(0, Math.round(point.x * size.width / REF_WIDTH))),
+    y: Math.min(size.height - 1, Math.max(0, Math.round(point.y * size.height / REF_HEIGHT))),
+  };
+}
+
+async function defaultEncodePreview(frame: RawFrame): Promise<{ jpeg: Uint8Array; width: number; height: number }> {
+  const { default: sharp } = await import('sharp');
+  const width = Math.min(PREVIEW_WIDTH, frame.width);
+  const { data, info } = await sharp(Buffer.from(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength),
+    { raw: { width: frame.width, height: frame.height, channels: 4 } })
+    .resize({ width }).jpeg({ quality: 70 }).toBuffer({ resolveWithObject: true });
+  return { jpeg: new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)), width: info.width, height: info.height };
 }
 
 /** A long-held lease stops a second process from running automation during account login. */
@@ -45,10 +137,17 @@ async function acquireLoginLease(home: string, index: number): Promise<Lease> {
     entered();
     await held;
   }, { timeoutMs: 150 });
-  await Promise.race([
-    acquired,
-    lockDone.then(() => { throw new Error('登录实例占用异常'); }),
-  ]);
+  try {
+    await Promise.race([
+      acquired,
+      lockDone.then(() => { throw new Error('登录实例占用异常'); }),
+    ]);
+  } catch (error) {
+    if (isAvdmError(error, 'LOCK_TIMEOUT')) {
+      throw new Error(`实例 #${index} 正被采集、脚本计划或模板操作占用，请先结束后再登录`);
+    }
+    throw error;
+  }
   let released = false;
   return {
     async release() {
@@ -60,7 +159,7 @@ async function acquireLoginLease(home: string, index: number): Promise<Lease> {
   };
 }
 
-/** Account metadata and an interactive, device-scoped login coordinator. */
+/** Account metadata, the automation readiness gate and an interactive, device-scoped login coordinator. */
 export class AccountManager {
   readonly store: AccountStore;
   private readonly tasks = new Map<number, Task>();
@@ -68,8 +167,9 @@ export class AccountManager {
 
   constructor(
     private readonly host: Pick<ManagerHost, 'get'>,
-    private readonly automation: Pick<AutomationHost, 'setSchedule' | 'probe' | 'runs' | 'schedules'>,
+    private readonly automation: AutomationPort,
     private readonly home: string,
+    private readonly ports: AccountManagerPorts = {},
   ) {
     this.store = new AccountStore(home);
   }
@@ -79,11 +179,78 @@ export class AccountManager {
     return this.store.list(gameId);
   }
 
+  /** Push the full list of one game; observers never break the caller. */
+  private notifyAccounts(gameId: string): void {
+    const notify = this.ports.onAccountsChanged;
+    if (!notify) return;
+    void this.store.list(gameId).then((accounts) => {
+      try { notify({ gameId, accounts }); } catch { /* Observers cannot break account edits. */ }
+    }).catch((error: unknown) => console.warn('[wanlong/accounts] 刷新账号列表失败', error));
+  }
+
+  private notifyLogin(task: Task): void {
+    try { this.ports.onLoginChanged?.(structuredClone(task.view)); } catch { /* Observers cannot break the wizard. */ }
+  }
+
+  private async isBase(gameId: string, index: number, createdAt: string): Promise<boolean> {
+    const base = await this.ports.base?.(gameId);
+    return Boolean(base && base.index === index && base.createdAt === createdAt);
+  }
+
+  /** The account bound to this instance whose binding still matches the AVD's creation identity. */
+  async accountForInstance(gameId: string, index: number): Promise<GameAccount | null> {
+    gamePlugin(gameId);
+    let createdAt: string;
+    try { createdAt = (await (await this.host.get()).getState(index)).record.createdAt; }
+    catch (error) {
+      if (isAvdmError(error, 'INSTANCE_NOT_FOUND')) return null;
+      throw error;
+    }
+    return (await this.store.list(gameId)).find((account) => account.binding?.index === index &&
+      account.binding.instanceCreatedAt === createdAt) ?? null;
+  }
+
+  /** Whether a login wizard is running on the instance (any game). */
+  loginActiveOn(index: number): boolean {
+    const task = this.tasks.get(index);
+    return Boolean(task && loginActive(task.view.phase));
+  }
+
+  /**
+   * Original `assertInstanceAutomationReady`: gather and plans must not start on the base instance, during a
+   * login, or for a bound account whose login check is pending or whose AVD was replaced. An unbound instance
+   * passes (gather then only reads the panel; plans need a ready account anyway).
+   */
+  async readiness(gameId: string, index: number): Promise<AutomationReadiness> {
+    gamePlugin(gameId);
+    if (this.loginActiveOn(index)) return { ready: false, reason: `实例 #${index} 正在进行账号登录，请先完成或结束登录向导` };
+    let state: InstanceState;
+    try { state = await (await this.host.get()).getState(index); }
+    catch (error) {
+      if (isAvdmError(error, 'INSTANCE_NOT_FOUND')) return { ready: false, reason: `实例 #${index} 不存在，请刷新实例列表` };
+      throw error;
+    }
+    if (await this.isBase(gameId, index, state.record.createdAt)) {
+      return { ready: false, reason: '基础实例用于克隆，请在副本中配置自动任务。' };
+    }
+    const account = (await this.store.list(gameId)).find((item) => item.binding?.index === index);
+    if (account && (account.login.status !== 'ready' || account.binding?.instanceCreatedAt !== state.record.createdAt)) {
+      return { ready: false, reason: `账号「${account.name}」尚未完成登录检查，或绑定实例已改变。请在账号登录向导中继续。` };
+    }
+    return { ready: true };
+  }
+
+  /** Throws the readiness reason; the scheduler / plans call this before any automatic device work. */
+  async assertInstanceAutomationReady(gameId: string, index: number): Promise<void> {
+    const result = await this.readiness(gameId, index);
+    if (!result.ready) throw new Error(result.reason);
+  }
+
   private assertEditable(accountId: string, indices: Array<number | null | undefined> = []): void {
     for (const task of this.tasks.values()) {
       if (loginActive(task.view.phase) &&
         (task.view.accountId === accountId || indices.includes(task.view.index))) {
-        throw new Error('该账号或实例正在登录，请先结束登录向导');
+        throw new Error('该账号或实例正在登录，请先结束登录向导再修改。');
       }
     }
   }
@@ -124,46 +291,137 @@ export class AccountManager {
     return enter(0);
   }
 
-  create(gameId: string, details: AccountDetails): Promise<GameAccount> {
+  async create(gameId: string, details: AccountDetails & { defaultScriptId?: string | null }): Promise<GameAccount> {
     const game = gamePlugin(gameId);
-    return this.store.create(gameId, game.packageName, details);
+    const account = await this.store.create(gameId, game.packageName, details, { defaultScriptId: details?.defaultScriptId });
+    this.notifyAccounts(gameId);
+    return account;
   }
 
-  async update(accountId: string, patch: Partial<AccountDetails>): Promise<GameAccount> {
-    return this.withAccountMutation(accountId, [], () => this.store.update(accountId, patch));
+  async update(accountId: string, patch: AccountPatch): Promise<GameAccount> {
+    const account = await this.withAccountMutation(accountId, [], () => this.store.update(accountId, patch));
+    this.notifyAccounts(account.gameId);
+    return account;
+  }
+
+  /** Replace (or with `null` remove) the account's parameter overrides for one script. */
+  async setScriptParams(accountId: string, scriptId: string, params: Record<string, ScriptParamValue> | null): Promise<GameAccount> {
+    const account = await this.store.setScriptParams(accountId, scriptId, params);
+    this.notifyAccounts(account.gameId);
+    return account;
+  }
+
+  /** The account's overrides for one script (empty when none). */
+  async scriptParams(accountId: string, scriptId: string): Promise<Record<string, ScriptParamValue>> {
+    const account = await this.store.get(accountId);
+    if (!account) throw new Error('账号不存在');
+    return { ...(account.scriptParams?.[scriptId] ?? {}) };
   }
 
   async remove(accountId: string): Promise<void> {
-    await this.withAccountMutation(accountId, [], async (account) => {
+    const gameId = await this.withAccountMutation(accountId, [], async (account) => {
       if (account.binding) await this.automation.setSchedule(account.gameId, account.binding.index, false);
       await this.store.remove(accountId);
+      return account.gameId;
     });
+    this.notifyAccounts(gameId);
   }
 
-  async bind(accountId: string, index: number | null): Promise<GameAccount> {
-    return this.withAccountMutation(accountId, [index], async (account) => {
+  /**
+   * Bind (any instance, running or not) or unbind. Binding an instance owned by another account needs the user's
+   * explicit `takeOver`; the displaced account's schedule on that instance is switched off first.
+   */
+  async bind(accountId: string, index: number | null, opts: AccountBindOptions = {}): Promise<AccountBindResult> {
+    const takeOver = opts?.takeOver === true;
+    const result = await this.withAccountMutation(accountId, [index], async (account) => {
+      if (index === null) {
+        if (account.binding) await this.automation.setSchedule(account.gameId, account.binding.index, false);
+        const outcome = await this.store.bind(accountId, null);
+        const hasGather = typeof outcome.account.scriptParams?.[GATHER_PARAM_SCOPE]?.[GATHER_PARAM_KEY] === 'string';
+        return { ...outcome, notice: hasGather ? `已解除绑定。采集配置仍留在账号「${outcome.account.name}」里，绑回它就会回来。` : undefined };
+      }
+      const state = await (await this.host.get()).getState(index);
+      if (state.status === 'error' || state.record.provisioning) throw new Error(`实例 #${index} 未准备好（正在创建或处于错误状态）`);
+      if (account.gameId !== gamePlugin(account.gameId).id) throw new Error('账号游戏不存在');
+      if (await this.isBase(account.gameId, index, state.record.createdAt)) {
+        throw new Error('基础实例只用于克隆，不需要绑定账号。请在克隆出的副本中绑定并登录。');
+      }
       if (account.binding && account.binding.index !== index) {
         await this.automation.setSchedule(account.gameId, account.binding.index, false);
       }
-      if (index === null) return this.store.bind(accountId, null);
-      const state = await (await this.host.get()).getState(index);
-      if (state.status === 'error' || state.record.provisioning) throw new Error('实例未准备好');
-      if (account.gameId !== gamePlugin(account.gameId).id) throw new Error('账号游戏不存在');
-      return this.store.bind(accountId, { index, instanceCreatedAt: state.record.createdAt });
+      if (takeOver) {
+        const owner = (await this.store.list(account.gameId)).find((item) => item.id !== accountId && item.binding?.index === index);
+        if (owner) await this.automation.setSchedule(account.gameId, index, false);
+      }
+      const outcome = await this.store.bind(accountId, { index, instanceCreatedAt: state.record.createdAt }, { takeOver });
+      return { ...outcome, notice: await this.moveGatherConfig(outcome.account, index) };
     });
+    this.notifyAccounts(result.account.gameId);
+    return {
+      account: result.account,
+      displaced: result.displaced ? { id: result.displaced.id, name: result.displaced.name } : null,
+      ...(result.notice ? { notice: result.notice } : {}),
+    };
+  }
+
+  /**
+   * Original afterAccountBind: the instance's gather config moves into a newly bound account that has none, so
+   * binding never looks like the settings were lost. An existing account config is never overwritten.
+   */
+  private async moveGatherConfig(account: GameAccount, index: number): Promise<string | undefined> {
+    const read = this.ports.instanceGatherConfig;
+    if (!read) return undefined;
+    let config: Record<string, unknown> | null;
+    try { config = await read(account.gameId, index); }
+    catch { return '账号已绑定，但实例上保存的采集配置没能读取，请打开采集配置核对后重新保存。'; }
+    if (!config || Object.keys(config).length === 0) return undefined;
+    const existing = account.scriptParams?.[GATHER_PARAM_SCOPE]?.[GATHER_PARAM_KEY];
+    const json = JSON.stringify(config);
+    if (typeof existing === 'string' && existing.trim()) {
+      return existing === json ? undefined
+        : `账号「${account.name}」里本来就有一份采集配置，没有用实例上的那份覆盖。要用实例那份，请打开采集配置核对后重新保存。`;
+    }
+    try {
+      const next = { ...(account.scriptParams?.[GATHER_PARAM_SCOPE] ?? {}), [GATHER_PARAM_KEY]: json };
+      const saved = await this.store.setScriptParams(account.id, GATHER_PARAM_SCOPE, next);
+      account.scriptParams = saved.scriptParams;
+      return `实例上保存的采集配置已搬到账号「${account.name}」，以后跟着账号走。`;
+    } catch (error) {
+      return `账号已绑定，但采集配置没能搬进账号：${(error as Error).message}。打开采集配置点一次「保存」即可。`;
+    }
   }
 
   async setEnabled(accountId: string, enabled: boolean): Promise<GameAccount> {
-    return this.withAccountMutation(accountId, [], async (account) => {
+    const account = await this.withAccountMutation(accountId, [], async (current) => {
       if (enabled) {
-        if (!account.binding) throw new Error('账号尚未绑定实例');
-        const state = await (await this.host.get()).getState(account.binding.index);
-        if (state.record.createdAt !== account.binding.instanceCreatedAt) throw new Error('原实例已被替换，请重新绑定并登录');
-      } else if (account.binding) {
-        await this.automation.setSchedule(account.gameId, account.binding.index, false);
+        if (!current.binding) throw new Error('账号尚未绑定实例');
+        const state = await (await this.host.get()).getState(current.binding.index);
+        if (state.record.createdAt !== current.binding.instanceCreatedAt) throw new Error('原实例已被替换，请重新绑定并登录');
+      } else if (current.binding) {
+        await this.automation.setSchedule(current.gameId, current.binding.index, false);
       }
       return this.store.setEnabled(accountId, enabled);
     });
+    this.notifyAccounts(account.gameId);
+    return account;
+  }
+
+  /**
+   * Preview (and with `apply`, import) a wanlong-panel accounts.json. Imported accounts are unbound, pending and
+   * disabled; the returned id map lets the legacy plan importer point old plans at the new accounts.
+   */
+  async importLegacyAccounts(gameId: string, file: string, opts: { apply: boolean }): Promise<LegacyAccountImport> {
+    const game = gamePlugin(gameId);
+    if (!path.isAbsolute(file)) throw new Error('旧账号文件路径必须是绝对路径');
+    if ((await stat(file)).size > MAX_LEGACY_FILE_BYTES) throw new Error('旧账号文件超过 4 MB，未导入');
+    let raw: unknown;
+    try { raw = JSON.parse(await readFile(file, 'utf8')); }
+    catch { throw new Error(`旧账号文件不是合法 JSON：${file}`); }
+    const { entries, rows } = previewLegacyAccounts(raw, game.packageName);
+    if (!opts?.apply || rows.length === 0) return { entries, idMap: {}, applied: false };
+    const idMap = await this.store.importLegacy(gameId, game.packageName, rows);
+    this.notifyAccounts(gameId);
+    return { entries, idMap, applied: true };
   }
 
   loginSession(index: number): AccountLoginSession | null {
@@ -171,11 +429,25 @@ export class AccountManager {
     return task ? structuredClone(task.view) : null;
   }
 
-  /** Returns promptly; preparation continues in the background and the renderer polls the session. */
-  beginLogin(gameId: string, index: number, accountId: string): AccountLoginSession {
+  /** The latest session of every instance (terminal ones included until the next begin). */
+  loginSessions(): AccountLoginSession[] {
+    return [...this.tasks.values()].map((task) => structuredClone(task.view)).sort((a, b) => a.index - b.index);
+  }
+
+  /**
+   * Returns promptly; preparation continues in the background and pushes `login-changed`. For a new account the
+   * renderer generates the UUID once, so 「继续登录」 after a failure reuses it instead of creating a duplicate.
+   */
+  beginLogin(gameId: string, index: number, accountId: string, newAccountName?: string): AccountLoginSession {
     const game = gamePlugin(gameId);
-    if (!Number.isInteger(index) || index < 0 || index > 63 || typeof accountId !== 'string') {
+    if (!Number.isInteger(index) || index < 0 || index > 63 || !isAccountId(accountId)) {
       throw new Error('登录目标无效');
+    }
+    let newName: string | undefined;
+    if (newAccountName !== undefined && newAccountName !== null) {
+      if (typeof newAccountName !== 'string' || !newAccountName.trim() || newAccountName.trim().length > 100 ||
+        /[\0\r\n]/.test(newAccountName) || !isNewAccountId(accountId)) throw new Error('新账号名称无效');
+      newName = newAccountName.trim();
     }
     if (this.closing) throw new Error('应用正在退出');
     const current = this.tasks.get(index);
@@ -185,25 +457,27 @@ export class AccountManager {
     }
     this.assertEditable(accountId);
     const task: Task = {
-      view: { id: randomUUID(), gameId, index, accountId, accountName: '', phase: 'preparing',
-        message: '正在检查账号、实例与采集状态…', updatedAt: Date.now() },
+      view: { id: randomUUID(), gameId, index, accountId, accountName: newName ?? '', phase: 'preparing',
+        message: '正在检查基础实例、账号绑定与自动任务…', updatedAt: Date.now() },
       controller: new AbortController(), tail: Promise.resolve(), commands: new Map(), committing: false,
     };
     this.tasks.set(index, task);
-    task.tail = this.prepare(task, game.packageName).catch(async (error: unknown) => {
+    task.tail = this.prepare(task, game.packageName, newName).catch(async (error: unknown) => {
       if (task.controller.signal.aborted) return;
       this.updateSession(task, 'failed', (error as Error).message || '登录准备失败');
       await this.release(task);
     });
+    this.notifyLogin(task);
     return structuredClone(task.view);
   }
 
   private updateSession(task: Task, phase: AccountLoginSession['phase'], message: string): void {
     task.view = { ...task.view, phase, message, updatedAt: Math.max(Date.now(), task.view.updatedAt + 1) };
+    this.notifyLogin(task);
   }
 
   private check(task: Task): void {
-    if (task.controller.signal.aborted) throw new Error('登录向导已取消');
+    if (task.controller.signal.aborted) throw new LoginUserError('登录向导已结束。');
   }
 
   private async release(task: Task): Promise<void> {
@@ -212,48 +486,67 @@ export class AccountManager {
     await lease?.release();
   }
 
-  private async prepare(task: Task, packageName: string): Promise<void> {
-    const signal = task.controller.signal;
+  private async prepare(task: Task, packageName: string, newAccountName: string | undefined): Promise<void> {
+    const { gameId, index, accountId } = task.view;
     const manager = await this.host.get();
-    let state = await manager.getState(task.view.index);
+    let state: InstanceState;
+    try { state = await manager.getState(index); }
+    catch (error) {
+      if (isAvdmError(error, 'INSTANCE_NOT_FOUND')) throw new Error('实例不存在，请刷新实例列表。');
+      throw error;
+    }
     this.check(task);
-    if (state.record.provisioning) throw new Error('实例仍在创建中');
-    const account = await this.store.get(task.view.accountId);
-    if (!account || account.gameId !== task.view.gameId || account.packageName !== packageName) {
-      throw new Error('账号和游戏不匹配');
+    if (state.record.provisioning) throw new Error('实例仍在创建或克隆中，请稍后再登录。');
+    // ★ Before any side effect: the base instance only serves as a clone source.
+    if (await this.isBase(gameId, index, state.record.createdAt)) {
+      throw new Error('这是基础实例，请先克隆副本，再在副本中登录账号。');
     }
-    task.view.accountName = account.name;
-    if (account.binding && (account.binding.index !== task.view.index ||
-      account.binding.instanceCreatedAt !== state.record.createdAt)) {
-      throw new Error('该账号已绑定其他实例，或原实例已被替换，请先解除绑定');
+    this.check(task);
+    const account = await this.store.get(accountId);
+    if (account) {
+      if (account.gameId !== gameId || account.packageName !== packageName) throw new Error('账号和游戏不匹配');
+      if (account.binding && (account.binding.index !== index || account.binding.instanceCreatedAt !== state.record.createdAt)) {
+        throw new Error('该账号已绑定其他实例，或原实例已被替换，请先解除绑定。');
+      }
+    } else if (!newAccountName) {
+      throw new Error('账号不存在，请刷新账号列表');
     }
-    // Pausing every game scheduled on this AVD avoids a background task changing the login screen.
+    const owner = (await this.store.list(gameId)).find((item) => item.id !== accountId && item.binding?.index === index);
+    if (owner) throw new Error(`实例已绑定「${owner.name}」，请使用该账号继续登录，或先解除原绑定。`);
+    task.view.accountName = account?.name ?? newAccountName ?? '';
+    // Pausing every game scheduled on this AVD avoids a background task changing the login screen; never auto-resumed.
     const schedules = await this.automation.schedules();
-    for (const schedule of schedules.filter((entry) => entry.index === task.view.index && entry.enabled)) {
+    for (const schedule of schedules.filter((entry) => entry.index === index && entry.enabled)) {
       await this.automation.setSchedule(schedule.gameId, schedule.index, false);
     }
     this.check(task);
-    if ((await this.automation.runs()).some((run) => run.index === task.view.index &&
+    if ((await this.automation.runs()).some((run) => run.index === index &&
       (run.status === 'running' || run.status === 'stopping'))) {
       throw new Error('该实例正在运行自动化任务，请结束后再登录');
     }
-    const lease = await acquireLoginLease(this.home, task.view.index);
+    const lease = await acquireLoginLease(this.home, index);
     task.lease = lease;
     this.check(task);
-    await this.store.prepareLogin(account.id,
-      { index: task.view.index, instanceCreatedAt: state.record.createdAt }, task.view.id);
+    const prepared = await this.store.prepareLogin(accountId, { index, instanceCreatedAt: state.record.createdAt }, task.view.id,
+      newAccountName ? { gameId, packageName, details: { name: newAccountName } } : undefined);
+    task.view.accountName = prepared.name;
     task.instanceCreatedAt = state.record.createdAt;
+    this.notifyAccounts(gameId);
+    this.check(task);
     this.updateSession(task, 'starting', '正在启动实例和游戏，首次开机可能需要一两分钟…');
     if (state.status !== 'running') {
-      state = await manager.start(task.view.index, { wait: true, timeoutMs: 120_000 });
+      // Core admission control (maxRunning / memory) refuses with its own Chinese message; the account stays pending.
+      state = await manager.start(index, { wait: true, timeoutMs: 120_000 });
     }
     this.check(task);
-    if (state.record.createdAt !== task.instanceCreatedAt) throw new Error('实例已被替换，请重新开始登录');
-    const device = await manager.device(task.view.index);
+    if (state.record.createdAt !== task.instanceCreatedAt) throw new Error('实例已被替换，请重新开始登录。');
+    const device = await manager.device(index);
     if (!(await device.listPackages()).includes(packageName)) throw new Error('游戏尚未安装到该实例');
+    this.check(task);
+    // ★ Only monkey launches this game (am start "succeeds" without a process): startApp(pkg) with no activity.
     await device.startApp(packageName);
     this.check(task);
-    this.updateSession(task, 'awaitingLogin', '游戏已启动。请完成手机号、服务器和角色登录，随后检查主界面。');
+    this.updateSession(task, 'awaitingLogin', '请在游戏画面中完成登录、选择服务器与角色，再回到城内或世界地图检查。');
   }
 
   private require(sessionId: string): Task {
@@ -262,14 +555,16 @@ export class AccountManager {
     return task;
   }
 
-  private async currentDevice(task: Task) {
+  private async currentDevice(task: Task): Promise<AdbDevice> {
     const manager = await this.host.get();
     const state: InstanceState = await manager.getState(task.view.index);
     this.check(task);
     if (state.status !== 'running' || state.record.createdAt !== task.instanceCreatedAt) {
-      throw new Error('实例已关闭或被替换，请重新开始登录');
+      throw new LoginUserError('实例已关闭或被替换，请重新开始登录');
     }
-    return manager.device(task.view.index);
+    const device = await manager.device(task.view.index);
+    this.check(task);
+    return device;
   }
 
   loginCommand(sessionId: string, command: AccountLoginCommand): Promise<AccountLoginSession> {
@@ -283,44 +578,122 @@ export class AccountManager {
       if (previous.fingerprint !== fingerprint) throw new Error('同一请求编号不能用于不同操作');
       return previous.result;
     }
-    if (task.commands.size >= 200) throw new Error('本次向导操作过多，请重新开始');
+    if (task.commands.size >= 200) throw new Error('本次向导操作过多，请关闭后重新继续登录');
     const operation = task.tail.then(async () => {
       this.check(task);
-      if (task.view.phase !== 'awaitingLogin') throw new Error('请等待游戏启动完成');
-      const device = await this.currentDevice(task);
-      const screen = await driver.command(device, gamePlugin(task.view.gameId).packageName,
-        command, task.controller.signal);
-      this.check(task);
-      task.view.screen = screen;
-      this.updateSession(task, 'awaitingLogin', screen.message);
-      return structuredClone(task.view);
+      if (task.view.phase !== 'awaitingLogin') throw new LoginUserError('请等待游戏启动完成');
+      try {
+        const device = await this.currentDevice(task);
+        const screen = await driver.command(device, gamePlugin(task.view.gameId).packageName,
+          command, task.controller.signal);
+        this.check(task);
+        task.view.screen = screen;
+        this.updateSession(task, 'awaitingLogin', screen.message);
+        return structuredClone(task.view);
+      } catch (error) {
+        // ★ Core adb errors quote the full argv (`input text <phone>`): only our own messages may leave.
+        if (error instanceof LoginUserError) throw error;
+        if (task.controller.signal.aborted) throw new LoginUserError('登录向导已结束。');
+        throw new LoginUserError(COMMAND_FAILED);
+      }
     });
     task.commands.set(command.requestId, { fingerprint, result: operation });
     task.tail = operation.catch(() => undefined);
     return operation;
   }
 
+  /**
+   * Manual input from the embedded preview. Queued on the session tail (serialized with SDK commands), re-checks
+   * the phase and the AVD identity before touching the device, and never echoes the input in an error.
+   */
+  loginInput(sessionId: string, raw: LoginInput): Promise<void> {
+    let input: LoginInput;
+    let task: Task;
+    try { input = validateLoginInput(raw); task = this.require(sessionId); }
+    catch (error) { return Promise.reject(error); }
+    const packageName = gamePlugin(task.view.gameId).packageName;
+    const operation = task.tail.then(async () => {
+      this.check(task);
+      if (task.view.phase !== 'awaitingLogin') throw new LoginUserError('请等待游戏启动完成再操作。');
+      try {
+        const device = await this.currentDevice(task);
+        if (input.kind !== 'key' && await device.foregroundPackage() !== packageName) {
+          throw new LoginUserError('游戏未处于前台，已拒绝点击和输入。可先发送「返回」键回到游戏。');
+        }
+        if (input.kind === 'text') await inputLoginDigits(device, input.text);
+        else if (input.kind === 'key') await device.keyevent(input.key);
+        else {
+          const size = task.frameSize ?? await (async () => {
+            const frame = await device.screencapRaw();
+            return (task.frameSize = { width: frame.width, height: frame.height });
+          })();
+          const at = toDevicePoint(input.at, size);
+          if (input.kind === 'tap') await device.tap(at.x, at.y);
+          else {
+            const to = toDevicePoint(input.to, size);
+            await device.swipe(at.x, at.y, to.x, to.y, input.durationMs);
+          }
+        }
+      } catch (error) {
+        if (error instanceof LoginUserError) throw error;
+        throw new LoginUserError(INPUT_FAILED);
+      }
+      this.check(task);
+    });
+    task.tail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  /** One read-only preview frame (any foreground app, so system dialogs stay visible). Never stored. */
+  loginFrame(sessionId: string): Promise<LoginFrame> {
+    let task: Task;
+    try { task = this.require(sessionId); }
+    catch (error) { return Promise.reject(error); }
+    if (task.view.phase !== 'awaitingLogin' && task.view.phase !== 'verifying') {
+      return Promise.reject(new LoginUserError('游戏启动后才能显示画面'));
+    }
+    if (task.frameInFlight) return task.frameInFlight;
+    const encode = this.ports.encodePreview ?? defaultEncodePreview;
+    const frame = (async (): Promise<LoginFrame> => {
+      try {
+        const device = await this.currentDevice(task);
+        const foregroundPackage = await device.foregroundPackage().catch(() => undefined) ?? null;
+        const raw = await device.screencapRaw();
+        task.frameSize = { width: raw.width, height: raw.height };
+        const preview = await encode(raw);
+        return { ...preview, deviceWidth: raw.width, deviceHeight: raw.height, capturedAt: raw.capturedAt, foregroundPackage };
+      } catch (error) {
+        if (error instanceof LoginUserError) throw error;
+        throw new LoginUserError(FRAME_FAILED);
+      }
+    })().finally(() => { task.frameInFlight = undefined; });
+    task.frameInFlight = frame;
+    return frame;
+  }
+
   verifyLogin(sessionId: string, identityConfirmed: boolean): Promise<AccountLoginSession> {
-    if (identityConfirmed !== true) return Promise.reject(new Error('请先确认游戏中的账号、服务器与角色正确'));
+    if (identityConfirmed !== true) return Promise.reject(new Error('请先确认游戏中的账号、服务器与角色正确。'));
     const task = this.require(sessionId);
     const operation = task.tail.then(async () => {
       this.check(task);
       if (task.view.phase !== 'awaitingLogin') throw new Error('请先完成游戏登录');
-      this.updateSession(task, 'verifying', '正在只读检查游戏主界面…');
+      this.updateSession(task, 'verifying', '正在检查是否已进入城内或世界地图…');
       try {
-        const device = await this.currentDevice(task);
-        const game = gamePlugin(task.view.gameId);
-        if (await device.foregroundPackage() !== game.packageName) throw new Error('游戏未处于前台');
-        const probe = await this.automation.probe(task.view.gameId, task.view.index);
+        await this.currentDevice(task);
+        const verify = this.ports.verifyHome;
+        if (!verify) throw new Error('该游戏没有登录验证适配器');
+        const verdict = await verify(task.view.gameId, task.view.index);
         this.check(task);
-        const decision = gameLoginDriver(task.view.gameId)?.verifyHome(probe);
-        if (!decision || !decision.ok) throw new Error(`尚未确认游戏主界面：${decision?.reason ?? '该游戏没有登录验证适配器'}`);
+        if (!verdict.ok) throw new Error(verdict.reason);
+        // Home verified: the write below is a commit phase. A cancel waits for it, so an enabled account never
+        // shows as cancelled.
         task.committing = true;
         try {
           await this.store.completeLogin(task.view.accountId,
             { index: task.view.index, instanceCreatedAt: task.instanceCreatedAt! }, task.view.id);
         } finally { task.committing = false; }
-        this.updateSession(task, 'completed', '游戏主界面已验证，账号已启用。');
+        this.notifyAccounts(task.view.gameId);
+        this.updateSession(task, 'completed', '已检查游戏主界面并启用账号。自动采集不会自动开启，可前往采集总览设置。');
         await this.release(task);
       } catch (error) {
         if (!task.controller.signal.aborted) this.updateSession(task, 'awaitingLogin', (error as Error).message);
@@ -341,7 +714,8 @@ export class AccountManager {
     }
     task.controller.abort();
     await task.tail;
-    this.updateSession(task, 'cancelled', '登录已结束。账号与实例保留，可稍后继续。');
+    if (!loginActive(task.view.phase)) return;
+    this.updateSession(task, 'cancelled', '登录向导已结束，账号和实例已保留，可稍后继续。');
     await this.release(task);
   }
 

@@ -1,15 +1,28 @@
 /** Assistant-side instance operations: base instance, batch clone and occupancy checks. */
+import type {
+  BaseInstanceView, CloneFromBaseRequest, CloneFromBaseResult, InstanceBaseChangedEvent,
+} from '../../main/instances/types';
 import type { Assert, ListsExactly } from './contract';
 
-/** No methods yet; the accounts-login / instances module adds them here (and to `INSTANCES_METHODS`). */
-export interface InstancesApi {}
+export interface InstancesApi {
+  /** The game's base instance, validated against the live AVD (a deleted or replaced base is cleared). */
+  instanceBase(gameId: string): Promise<BaseInstanceView>;
+  /** Mark an instance as the clone source of this game, or `null` to cancel. */
+  instanceSetBase(gameId: string, index: number | null): Promise<BaseInstanceView>;
+  /** Clone 1–8 copies from the stopped base; copies inherit its template set. */
+  instanceCloneFromBase(gameId: string, request: CloneFromBaseRequest): Promise<CloneFromBaseResult>;
+}
 
-export const INSTANCES_METHODS = [] as const satisfies readonly (keyof InstancesApi)[];
+export const INSTANCES_METHODS = [
+  'instanceBase', 'instanceSetBase', 'instanceCloneFromBase',
+] as const satisfies readonly (keyof InstancesApi)[];
 
-/** No push events yet; the accounts-login / instances module adds them here (and to `INSTANCES_EVENTS`). */
-export interface InstancesEvents {}
+export interface InstancesEvents {
+  /** The base selection or its clone availability changed (set, cancelled, auto-cleared, clone finished). */
+  'instance-base-changed': InstanceBaseChangedEvent;
+}
 
-export const INSTANCES_EVENTS = [] as const satisfies readonly (keyof InstancesEvents)[];
+export const INSTANCES_EVENTS = ['instance-base-changed'] as const satisfies readonly (keyof InstancesEvents)[];
 
 export type InstancesContractCheck = [
   Assert<ListsExactly<InstancesApi, typeof INSTANCES_METHODS>>,

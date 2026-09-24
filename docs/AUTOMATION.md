@@ -47,3 +47,20 @@
 - 模板内容变化（保存 / 删除 / 导入）会推送 `templates-changed {gameId, directory}`，主进程侧用 `AutomationHost.onTemplatesChanged(listener)` 订阅，持有编译缓存的模块（常驻视觉 worker、采样器、资源统计、AI 自学）据此失效。
 - 开发者工具 tplkit：`pnpm --filter @avdm/wanlong-assistant run tplkit -- <命令>`（cap / view / analyze / probe / alpha / glyphs / save / verify / cross / ocr / find / scan / ls / del），抓帧走 `@avdm/core`，帧与预览默认写到 `~/.avdm/automation/tplkit`，模板集默认用 `--dir`、`TPLKIT_SET_DIR` 或 `WL_INSTANCE` 绑定的模板集。字形 id 后缀与采集加载器一致（`dig_xxx_0`~`_9`、`colon`、`comma`、`slash`、`dot`、`percent`）。
 - 分辨率：模板与字形按 2560×1440 参考坐标。低于参考分辨率的实例截图会被放大后匹配，小图标与数字字形不可靠，模板页会提示；建议把实例建成 2560×1440（至少 1920×1080）再截模板。
+## 万龙登录控件
+
+账号登录向导的手机号 / 验证码步骤读取游戏原生 SDK 的 UIAutomator 节点（仅 `com.lilithgames.samo.android.cn` 的节点，重复 id 与无效 bounds 一律拒绝）。每次写入前重新读取界面树，坐标取节点 bounds，不维护固定屏幕坐标。以下 id 均以 `com.lilithgames.samo.android.cn:id/` 为前缀：
+
+| 页面 | 控件 id | 语义／验证条件 |
+| --- | --- | --- |
+| 手机号 | `phoneEditText` | 填入后去除空格与请求号码核对 |
+| 手机号 | `agreementCheckBox` | 检查 `checked`；用户明确确认协议后才勾选 |
+| 手机号 | `submitButton` | 文案必须是「登录」；点击后发送验证码 |
+| 验证码 | `digitsInput` | 六格自定义容器；点第一格并输入数字，满六位游戏自动校验 |
+| 验证码 | `messageText` | 短信提示；对外只返回掩码号码 |
+| 验证码 | `resendButton` | 倒计时期间拒绝重发，只接受「重新发送／重新获取／重发」文案 |
+| 游戏 | `unitySurfaceView` | 只说明登录窗口已关闭，仍需主界面模板检查 |
+
+登录检查沿用采集的城内（地图按钮 A/B）与世界地图（城堡按钮 A/B + 放大镜）模板，任一在自身阈值上命中即通过，不单靠放大镜。测试只使用手写的合成界面树，不提交真实 UIAutomator 导出或截图。
+
+只读实机检查（开发者工具，不随安装包分发）：`npx tsx apps/wanlong-assistant/scripts/login-live-check.ts <实例编号> <模板目录>` 读取登录步骤并检查主界面；`--frame <PNG> <模板目录> [true|false]` 回放保存的画面。它不发短信、不输入、不启用任何自动任务。
