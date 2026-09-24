@@ -164,6 +164,9 @@ automation.setHooks({
 - `recognizeScreen(i, raw, signal?)`：这一帧是不是已知界面（`isRecognizableScreen`；AI 点完复验、卡死恢复等主界面）。
 - `matchTemplates(i, raw, templateIds, { threshold?, roi?, signal? })`：按 id 匹配界面模板（顶号探针在失败现场那一帧上）；
   模板集里没有的 id 返回 `found: false`、`reason: '模板缺失'`，从不抛。
+- `matchTemplatesIn(i, templateDir, raw, templateIds, options)`：同上，但用指定的模板集目录（AI 模块的脚本链路）。
+- `checkGameUpdate(i, templateDir, raw, signal?)`：游戏资源更新弹窗 / 下载进度的判定（查询 `update`，由工作线程里的
+  `GameUpdateRecovery` 回答；缺更新模板时回答「没有更新」）。AI 模块据此在主进程驱动更新处理，主线程不跑 OpenCV。
 
 ★ 它们是「查询」而不是「作业」：正在跑的采样 / 采集作业等待钩子（`onUnrecognizedFrame`、`adviseUnknownScreen`、`probeKicked`）时，
 同一个 worker 照样回答（作业此时停在 await 上），而再开一个作业只会得到 `CONCURRENCY_LIMIT`。作业与同时到达的查询共用一次编译。

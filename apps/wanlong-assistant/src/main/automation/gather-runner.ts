@@ -401,6 +401,17 @@ export class WanlongGatherRunner {
     return result.matches;
   }
 
+  /**
+   * The game-update prompt / progress verdict of a frame (ai module), from the calibrated update crops in
+   * `templateDir`, answered by the instance worker (read-only query; also inside a running job's hook).
+   */
+  async updateCheck(index: number, templateDir: string, raw: RawFrame, signal?: AbortSignal): Promise<{ target: { x: number; y: number } | null; downloading: boolean; progress: boolean }> {
+    assertIndex(index);
+    const result = await this.pool.query(index, { kind: 'update', templateDir: await realpath(templateDir), frame: raw }, signal);
+    if (result.kind !== 'update') throw new SchedulerError('UNKNOWN', '视觉工作线程返回了错误的结果类型');
+    return { target: result.target, downloading: result.downloading, progress: result.progress };
+  }
+
   private async prepare(
     index: number, templateDir: string, signal: AbortSignal, onDeviceError?: (error: unknown) => void,
   ): Promise<{ device: GatherAdbDevice; createdAt: string; templateDir: string }> {

@@ -1,10 +1,12 @@
 import { runDoctorChecks } from '@avdm/core';
+import { loadTemplateSet } from '@avdm/automation';
 import { normalizeGatherConfig } from '@avdm/automation/wanlong';
 import { bootstrapApp } from '@avdm/emulator-shell/main/bootstrap';
 import { AccountManager } from './automation/accounts';
 import { HomeVerifier } from './automation/accounts/home-verify';
 import { loginActive } from './automation/accounts/types';
 import { AdvisorService } from './automation/advisor';
+import { AiRecoveryService } from './automation/ai-recover';
 import { gamePlugin } from './automation/games';
 import { AutomationHost } from './automation/host';
 import { InsightsService } from './automation/insights';
@@ -136,7 +138,14 @@ bootstrapApp({
     });
 
     // ── advisor (AI) ──
-    const advisor = new AdvisorService(home, (gameId, index) => automation.captureReadOnly(gameId, index));
+    // Read-only advisor: config, quota, two-stage questions, records. Records and config changes are pushed
+    // (`ai-consulted` / `ai-config-changed`, masked view only); the executor that taps lives in the「ai」section below.
+    const advisor = new AdvisorService(home, (gameId, index) => automation.captureReadOnly(gameId, index), {
+      onRecord: (record) => broadcast('ai-consulted', record),
+      onConfigChanged: (view) => broadcast('ai-config-changed', view),
+      log: (level, message) => appLog.record(level, 'ai', message),
+      gameName: (gameId) => { try { return gamePlugin(gameId).name; } catch { return gameId; } },
+    });
     appLog.addSecrets(() => advisor.logSecrets());
 
     // ── plans (task plans + script library) + runs (script executor, run monitor) ──
@@ -186,6 +195,52 @@ bootstrapApp({
         return login && loginActive(login.phase) ? '账号登录' : null;
       },
     });
+
+    // ── ai (unknown-screen recovery: gather G0, troop-panel sampler, script runs; see automation/ai-recover/README.md) ──
+    // One routing for the three chains (original recoverUnknownWithUpdate): calibrated game-update handling first (even
+    // with the AI off), then the AI executor — which taps only when「自动处理」(autoActions) is on. Template matching
+    // is asked of the instance's vision worker; taps go through the device lane with identity + foreground checks.
+    const aiRecovery = new AiRecoveryService({
+      gameId: 'wanlong',
+      packageName: gamePlugin('wanlong').packageName,
+      advisor,
+      manager: {
+        getState: async (index) => (await deviceHost.get()).getState(index),
+        device: async (index) => (await deviceHost.get()).device(index),
+      },
+      lane: (index, work) => deviceLanes.run(index, work),
+      instanceTemplateSet: (index) => automation.templateSet('wanlong', index),
+      loadTemplateSet: (directory) => loadTemplateSet(directory),
+      recognize: (index, raw, signal) => automation.recognizeScreen(index, raw, signal),
+      match: (index, directory, raw, ids, options) => automation.matchTemplatesIn(index, directory, raw, ids, options),
+      updateVerdict: (index, directory, raw, signal) => automation.checkGameUpdate(index, directory, raw, signal),
+      // Learnt close buttons go through the template library (variance guard, atomic write); the change notification
+      // drops the vision workers' compiled sets, so the next round already uses the new template.
+      saveTemplate: async (directory, draft) => {
+        const saved = await automation.saveTemplateToSet('wanlong', directory, draft);
+        return { id: saved.definition.id, std: saved.std };
+      },
+      // Plan config「脚本执行期间允许 AI 介入」: default on until the plans module stores it (DECISIONS A.3).
+      planAiAssist: async (gameId) => ((await plans.overview(gameId)).config as { aiAssist?: unknown }).aiAssist !== false,
+      // AI_RISK_BLOCKED / GAME_UPDATE_REQUIRED: a scheduled gather or sample rethrows the code and the scheduler pauses
+      // and alerts itself (pauseForAttention). A script run or a manual cycle pauses auto here and raises the alert.
+      onNeedsAttention: async (index, info, context) => {
+        const auto = automation.eta.isAuto(index);
+        if (auto && context !== 'script-run') return;
+        if (auto) void automation.eta.setAuto(index, false, `需要人工处理（${info.stage}）：${info.message}`).catch(() => undefined);
+        await insights.recordAttentionPause('wanlong', index, { code: info.code, message: `${info.stage}：${info.message}` })
+          .catch((error: unknown) => appLog.warn('ai', `需要人工处理的告警没能保存：${describeThrown(error)}`, undefined, index));
+      },
+      log: (level, message, index) => appLog.record(level, 'ai', message, undefined, index),
+    });
+    automation.setPorts({
+      adviseUnknownScreen: (index, raw, attempt, signal) => aiRecovery.adviseGather(index, raw, attempt, signal),
+    });
+    // ★ Alerts: compose the kicked probe in front of this (original order: kicked probe → update → AI).
+    automation.eta.setHooks({
+      onUnrecognizedFrame: (index, raw, { signal }) => aiRecovery.recoverForSampler(index, raw, signal),
+    });
+    scriptRunner.setAiAssist((request) => aiRecovery.assistScript(request));
 
     // ── alerts / freeze (failure detection, automatic pauses, notifications, freeze watchdog; see src/main/alerts) ──
     const alertShots = new ShotStore(home);

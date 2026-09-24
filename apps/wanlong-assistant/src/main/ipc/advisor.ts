@@ -20,6 +20,6 @@ export const advisorHandlers: DomainHandlers<AdvisorApi, AdvisorServices> = {
     const id = game(gameId);
     const plugin = gamePlugin(id);
     return advisor.consult({ gameId: id, gameName: plugin.name, packageName: plugin.packageName,
-      index: asIndex(index), context: '用户手动查看当前画面' });
+      index: asIndex(index), context: 'manual' });
   },
 };

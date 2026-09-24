@@ -51,11 +51,18 @@ export type VisionQuery =
     threshold?: number;
     /** Search region in reference coordinates; defaults to each template's own ROI (whole frame without one). */
     roi?: { x: number; y: number; w: number; h: number };
-  };
+  }
+  /**
+   * Game-update verdict (ai module): the game-data `GameUpdateRecovery` of `templateDir` answers detect / progress for
+   * a frame, so main can drive the update handling (tap, wait) without running OpenCV itself.
+   */
+  | { kind: 'update'; templateDir: string; frame: RawFrame };
 
 export type VisionQueryResult =
   | { kind: 'recognize'; recognized: boolean }
-  | { kind: 'match'; matches: MatchResult[] };
+  | { kind: 'match'; matches: MatchResult[] }
+  /** Confirm button (2560×1440 reference) when the calibrated update prompt is shown; progress texts. */
+  | { kind: 'update'; target: { x: number; y: number } | null; downloading: boolean; progress: boolean };
 
 export type VisionRequest =
   | { op: 'capture'; args: [] }

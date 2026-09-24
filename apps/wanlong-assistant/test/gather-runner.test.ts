@@ -458,6 +458,22 @@ describe('WanlongGatherRunner', () => {
     await expect(runner.match(1, templateDir, frame(), ['x'.repeat(200)])).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
   });
 
+  it('answers a game-update verdict query (ai module) with the instance worker, no job needed', async () => {
+    const created: FakeWorker[] = [];
+    const runner = runnerWith((message, worker) => {
+      if (message.type === 'query' && message.query.kind === 'update') {
+        worker.emit('message', { type: 'queryResult', queryId: message.queryId, ok: true, result: {
+          kind: 'update', target: { x: 1280, y: 900 }, downloading: false, progress: true,
+        } } satisfies WorkerToMain);
+      }
+    }, created);
+    await expect(runner.updateCheck(2, templateDir, frame())).resolves.toEqual({ target: { x: 1280, y: 900 }, downloading: false, progress: true });
+    const queries = created[0].sentOf('query');
+    expect(queries).toHaveLength(1);
+    expect(queries[0].query).toMatchObject({ kind: 'update' });
+    expect(queries[0].query.frame.width).toBe(frame().width);
+  });
+
   it('refuses a gather result that skipped the probe gate', async () => {
     const runner = runnerWith((message, worker) => { if (message.type === 'job') worker.finish(); });
     await expect(runner.runOnce(1, options())).rejects.toThrow('越过探针门槛');

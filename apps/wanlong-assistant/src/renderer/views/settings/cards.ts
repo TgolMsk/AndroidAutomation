@@ -13,7 +13,8 @@ import { HealthCard } from './HealthCard';
 import { LogsCard } from './LogsCard';
 import { PanelSettingsCard } from './PanelSettingsCard';
 import { ServiceFailuresCard } from './ServiceFailuresCard';
-import { AiSlotCard, BotSlotCard, LegacyImportSlotCard } from './SlotCards';
+import { AiSettingsCard } from './AiSettingsCard';
+import { BotSlotCard, LegacyImportSlotCard } from './SlotCards';
 import { AlertsSettingsCard } from '../alerts/AlertsSettingsCard';
 import { UpdateCard } from './UpdateCard';
 
@@ -38,7 +39,7 @@ export const SETTINGS_CARDS: readonly SettingsCardEntry[] = [
   { key: 'panel', column: 'main', component: PanelSettingsCard },
   { key: 'notifications', column: 'main', component: AlertsSettingsCard },
   { key: 'bot', column: 'main', component: BotSlotCard },
-  { key: 'ai', column: 'main', component: AiSlotCard },
+  { key: 'ai', column: 'main', component: AiSettingsCard },
   { key: 'features', column: 'main', component: FeatureLinksCard },
   { key: 'logs', column: 'main', component: LogsCard },
   { key: 'health', column: 'side', component: HealthCard },

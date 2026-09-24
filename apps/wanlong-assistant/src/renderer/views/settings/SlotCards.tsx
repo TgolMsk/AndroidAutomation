@@ -31,17 +31,6 @@ export function BotSlotCard() {
   );
 }
 
-/** AI (advisor module). */
-export function AiSlotCard() {
-  return (
-    <SlotCard
-      title="AI 处理" icon="chip"
-      lines={['视觉模型接口、每小时请求上限与同实例冷却、分析记录都在「AI 处理」页。', '目前 AI 只给建议与风险判断，点击和保存模板都由你决定。']}
-      link={{ label: '前往 AI 处理', view: 'ai' }}
-    />
-  );
-}
-
 /** 导入旧版数据 (legacy import module). */
 export function LegacyImportSlotCard() {
   return (

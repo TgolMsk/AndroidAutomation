@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import { Worker } from 'node:worker_threads';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { AppError, canonicalDirectory, TemplateLibrary, type MatchResult, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
@@ -58,7 +58,7 @@ function isRun(value: unknown): value is AutomationRun {
 }
 
 type GatherRunnerPort = Pick<WanlongGatherRunner, 'runOnce' | 'stop' | 'dispose' | 'isRunning'> &
-  Partial<Pick<WanlongGatherRunner, 'sample' | 'healthFrame' | 'invalidateTemplates' | 'recognize' | 'match'>>;
+  Partial<Pick<WanlongGatherRunner, 'sample' | 'healthFrame' | 'invalidateTemplates' | 'recognize' | 'match' | 'updateCheck'>>;
 
 /** A future durable scheduler may consume a completed cycle and return only a wake it actually stored. */
 export type CycleCompletionSink = (run: AutomationRun, result: GatherCycleResult) => Promise<number | null>;
@@ -892,6 +892,29 @@ export class AutomationHost {
     if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
     if (!this.gatherRunner.match) throw new SchedulerError('UNKNOWN', '采集运行器不支持模板匹配');
     return this.gatherRunner.match(i, settings.templateDir, raw, templateIds, options);
+  }
+
+  /**
+   * `matchTemplates` against an explicit template directory (a script run's set) instead of the instance's selected
+   * one. Same read-only worker query: no device, no lock. The directory must be absolute.
+   */
+  async matchTemplatesIn(index: number, templateDir: string, raw: RawFrame, templateIds: string[], options: MatchQueryOptions = {}): Promise<MatchResult[]> {
+    const i = asIndex(index);
+    if (!templateDir || !isAbsolute(templateDir)) throw new Error('模板集目录必须是绝对路径');
+    if (!this.gatherRunner.match) throw new SchedulerError('UNKNOWN', '采集运行器不支持模板匹配');
+    return this.gatherRunner.match(i, templateDir, raw, templateIds, options);
+  }
+
+  /**
+   * Game-update verdict of a frame (the calibrated update prompt's confirm button, the download / check progress
+   * texts) from the update crops in `templateDir`, answered by the instance's vision worker. Missing crops answer
+   * "no update"; never runs OpenCV in main. For the AI module's update routing.
+   */
+  async checkGameUpdate(index: number, templateDir: string, raw: RawFrame, signal?: AbortSignal): Promise<{ target: { x: number; y: number } | null; downloading: boolean; progress: boolean }> {
+    const i = asIndex(index);
+    if (!templateDir || !isAbsolute(templateDir)) throw new Error('模板集目录必须是绝对路径');
+    if (!this.gatherRunner.updateCheck) throw new SchedulerError('UNKNOWN', '采集运行器不支持游戏更新识别');
+    return this.gatherRunner.updateCheck(i, templateDir, raw, signal);
   }
 
   /**

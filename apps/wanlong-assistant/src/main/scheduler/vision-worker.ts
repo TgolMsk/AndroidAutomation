@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { parentPort } from 'node:worker_threads';
 import { matchTemplate, prepareFrame, type DevicePort, type MatchResult, type ProbeReport, type RawFrame } from '@avdm/automation';
 import {
-  AppError, FAILURE_SHOT_LABELS, POPUP_CLOSE_ROI, TPL, assertGatherTemplatesComplete, buildSchedulerTemplates,
+  AppError, FAILURE_SHOT_LABELS, GameUpdateRecovery, POPUP_CLOSE_ROI, TPL, assertGatherTemplatesComplete, buildSchedulerTemplates,
   closePopupTemplates, createGatherIo, isRecognizableScreen, loadGatherTemplates, runGatherCycle, sampleTroopPanel,
   serializeError, wanlongPlugin, type GamePresence, type GatherTemplates, type SampleIo, type SchedulerTemplates,
   type UnknownScreenAdvisor,
@@ -47,6 +47,8 @@ let compiling: { dir: string; stamp: string; promise: Promise<CompiledSet> } | n
 let generation = 0;
 let active: ActiveJob | null = null;
 let nextRequestId = 1;
+/** Game-update detectors per template directory (ai module 'update' queries); each caches its own compiled crops. */
+const updaters = new Map<string, GameUpdateRecovery>();
 
 function post(message: WorkerToMain, transfer?: ArrayBuffer[]): void {
   port.postMessage(message, transfer);
@@ -419,7 +421,22 @@ async function runGather(job: ActiveJob, spec: Extract<VisionJobSpec, { kind: 'g
 
 // ── read-only queries (any time, also during a job) ──────────────────────
 
+/** The calibrated update prompt and progress texts on a frame (game-data `GameUpdateRecovery`, silent without templates). */
+async function answerUpdate(templateDir: string, frame: RawFrame): Promise<VisionQueryResult> {
+  const dir = await realpath(templateDir);
+  let updater = updaters.get(dir);
+  if (!updater) {
+    updater = new GameUpdateRecovery({ templateDir: () => dir });
+    updaters.set(dir, updater);
+  }
+  const target = await updater.detect(frame);
+  const downloading = await updater.progress(frame, false);
+  const progress = downloading || await updater.progress(frame, true);
+  return { kind: 'update', target, downloading, progress };
+}
+
 async function answer(query: VisionQuery): Promise<VisionQueryResult> {
+  if (query.kind === 'update') return answerUpdate(query.templateDir, query.frame);
   const set = await templates(query.templateDir);
   const g = set.gather;
   if (query.kind === 'recognize') {
@@ -467,7 +484,11 @@ async function run(jobId: number, spec: VisionJobSpec): Promise<void> {
 }
 
 port.on('message', (message: MainToWorker) => {
-  if (message.type === 'invalidate') { compiled = null; compiling = null; generation++; return; }
+  if (message.type === 'invalidate') {
+    compiled = null; compiling = null; generation++;
+    for (const updater of updaters.values()) updater.invalidate();
+    return;
+  }
   if (message.type === 'query') { void runQuery(message.queryId, message.query); return; }
   if (message.type === 'job') {
     if (active) {
