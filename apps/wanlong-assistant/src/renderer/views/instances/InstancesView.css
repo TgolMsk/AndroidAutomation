@@ -45,8 +45,9 @@
   color: var(--text-dim);
 }
 
+/* No own scroll box: the row menus (dropdowns) and hint bubbles must not be clipped by the table. */
 .instances-scroll {
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .instances-table .instances-actions {
@@ -106,8 +107,18 @@
   font-size: 12px;
 }
 
-.instances-table td {
+.inst-table.instances-table td {
   vertical-align: top;
+  /* Page CSS loads before the shell's styles.css, hence the doubled class. The shell table clips cells (overflow hidden, nowrap): here cells hold menus, hint bubbles and two-line controls. */
+  max-width: none;
+  overflow: visible;
+  white-space: normal;
+}
+
+.inst-table.instances-table .inst-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .instances-name,
@@ -171,4 +182,13 @@
 .instances-new-option:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+.instances-inline select {
+  width: auto;
+  min-width: 120px;
+}
+
+.instances-inline .search {
+  width: 260px;
 }

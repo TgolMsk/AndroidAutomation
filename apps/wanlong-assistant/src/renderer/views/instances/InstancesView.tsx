@@ -346,21 +346,23 @@ export function InstancesView({ visible }: ViewProps) {
                                 onResume={controls.resume} onOpenConfig={setConfigFor} onOpenAccounts={() => navigate('accounts')} />
                             ) : <span className="dim">—</span>}
                           </td>
-                          <td className="instances-actions">
-                            {canStop(instance) ? (
-                              <button type="button" className="btn xs danger-ghost" disabled={isBusy(i)} onClick={() => void stop(i)}>
-                                {busy[`${i}:关闭`] ? <Spinner size={11} /> : <Icon name="power" size={13} />}关闭
-                              </button>
-                            ) : (
-                              <button type="button" className="btn xs primary" disabled={isBusy(i) || !canStart(instance) || atLimit}
-                                title={atLimit ? `已开机 ${upCount} 个，达到同时运行上限 ${maxRunning}。请先关掉一个，或到「设置」里调高上限。` : undefined}
-                                onClick={() => void start(i)}>
-                                {busy[`${i}:启动`] ? <Spinner size={11} /> : <Icon name="play" size={13} />}启动
-                              </button>
-                            )}
-                            <button type="button" className="icon-btn small" onClick={() => void openLive(i)} disabled={!isRunning(instance)}
-                              title="打开实时画面" aria-label={`打开实例 #${i} 的实时画面`}><Icon name="screen" /></button>
-                            <DropdownMenu title={`实例 #${i} 更多操作`} items={rowMenu(instance)} trigger={<Icon name="more" />} />
+                          <td>
+                            <div className="instances-actions">
+                              {canStop(instance) ? (
+                                <button type="button" className="btn xs danger-ghost" disabled={isBusy(i)} onClick={() => void stop(i)}>
+                                  {busy[`${i}:关闭`] ? <Spinner size={11} /> : <Icon name="power" size={13} />}关闭
+                                </button>
+                              ) : (
+                                <button type="button" className="btn xs primary" disabled={isBusy(i) || !canStart(instance) || atLimit}
+                                  title={atLimit ? `已开机 ${upCount} 个，达到同时运行上限 ${maxRunning}。请先关掉一个，或到「设置」里调高上限。` : undefined}
+                                  onClick={() => void start(i)}>
+                                  {busy[`${i}:启动`] ? <Spinner size={11} /> : <Icon name="play" size={13} />}启动
+                                </button>
+                              )}
+                              <button type="button" className="icon-btn small" onClick={() => void openLive(i)} disabled={!isRunning(instance)}
+                                title="打开实时画面" aria-label={`打开实例 #${i} 的实时画面`}><Icon name="screen" /></button>
+                              <DropdownMenu title={`实例 #${i} 更多操作`} items={rowMenu(instance)} trigger={<Icon name="more" />} />
+                            </div>
                           </td>
                         </tr>
                       );
