@@ -24,8 +24,11 @@ export interface DevicePort extends ReadOnlyDevicePort {
   tap(x: number, y: number): Promise<void>;
   swipe(x1: number, y1: number, x2: number, y2: number, durationMs: number): Promise<void>;
   key(key: AndroidKey): Promise<void>;
+  /** Wanlong must launch through monkey (AdbDevice.startApp without an activity), never `am start -n`. */
   launchApp(packageName: string, cold?: boolean): Promise<void>;
   stopApp(packageName: string): Promise<void>;
+  /** Optional read-only process check (`pidof`); used only for launch diagnostics and health probes. */
+  isAppRunning?(packageName: string): Promise<boolean>;
 }
 
 export interface TemplateDefinition {

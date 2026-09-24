@@ -6,7 +6,7 @@
  *     const r = await runGatherCycle({ io, templates, config, state })
  *     saveState(r.state); scheduleWakeAt(r.nextWakeAt)
  *
- * 状态编号与 resources/game-data/gather-flow.json 一一对应：
+ * 状态编号与 packages/automation/game-data/wanlong/gather-flow.json 一一对应：
  *   G0  确保在世界地图                G1  读部队管理面板（队列 N/M、各队 ETA）
  *   G2  判定是否派兵（纯计算）        G3  打开搜索面板
  *   G4  选资源分类（对账式）          G5  探测等级上限

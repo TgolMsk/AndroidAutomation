@@ -1,7 +1,7 @@
 /**
  * 自动采集配置：类型 + 默认值 + 归一化。
  *
- * 与 resources/game-data/gather-config.schema.json（draft-07, version=2）一一对应。
+ * 与 packages/automation/game-data/wanlong/gather-config.schema.json（draft-07, version=2）一一对应。
  * 这里不引 ajv：面板保存时可以用 schema 校验，运行期只需要一个「把任意输入夹成合法值」的归一化函数，
  * 缺字段一律回落默认值，绝不让一个手滑的配置把流程搞成死循环。
  *

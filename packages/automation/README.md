@@ -47,3 +47,10 @@ The state machine is integrated behind an explicit enable switch and a strict kn
 ## Packaging
 
 The package uses `sharp` and `@techstark/opencv-js`. Electron packaging must unpack sharp native libraries and the OpenCV WASM runtime from ASAR. The vision module loads OpenCV on first match, keeping application launch light.
+
+## Wanlong cold start, game updates and resource statistics
+
+- `ensureGameForeground(io, { packageName })` (`wanlong/launch.ts`) brings the game to the foreground. The host's launch adapter must be monkey (`AdbDevice.startApp(pkg)` with no activity). `DevicePort.isAppRunning` (optional, `pidof`) only changes the diagnostic wording; `createGatherIo(device, { log })` wires both and stops the wait as soon as the run is aborted. A launched game is not yet usable: callers poll templates afterwards.
+- `GameUpdateRecovery` (`wanlong/update.ts`) handles only the calibrated resource-download dialog: two templates in a fixed relative geometry, one click after a fresh re-detection, a cancellable 15-minute wait that never clicks again, and `GAME_UPDATE_REQUIRED` when a person must act. `recoverUnknownWithUpdate` / `createUpdateAwareAdvisor` route unknown screens through it before any BACK press; an optional AI consult port plugs in later. Templates come from the user's template set (`importGameUpdateTemplates` re-anchors the old panel's crops).
+- `readResourceStatsPanel({ io, templates, templateDir, instanceIndex, log })` (`wanlong/resources/`) reads 道具 → 资源 → 资源统计 over the same `GatherIo` as the gather flow: required-template gate, main-screen precheck that sends no input on failure, BACK×2 restore with the quit-dialog guard. The renderer-safe contract (`ResourceSnapshot`, `parseCnAmount`, `formatCnAmount`, `renderResourceSnapshotText`, layout, template ids) lives in `wanlong/resources/pure.ts`.
+- `game-data/wanlong/*.json` are the sanitized specifications (coordinates, state machine, template catalog, config schema) ported from the old panel; they are documentation, and hand copies in code are pinned by tests. Game docs are in `docs/wanlong/`.

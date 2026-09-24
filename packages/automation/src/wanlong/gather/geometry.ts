@@ -1,7 +1,7 @@
 /**
  * 采集流程的全部几何常量（参考分辨率 2560x1440 空间）。
  *
- * 数据来源：resources/game-data/gather-flow.json 的 anchors / fixedTaps，
+ * 数据来源：packages/automation/game-data/wanlong/gather-flow.json 的 anchors / fixedTaps，
  * 其中带「真机复量」标注的值优先（早期从 1280x720 缩放图量的值已作废）。
  *
  * ★ 铁律：除了下面 FIXED_TAP 里那几个确认不动的坐标，**其余一律由模板命中位置推算**。
@@ -131,7 +131,7 @@ export const CARD = {
   gathererValueRoi: { x: 180, y: -280, w: 118, h: 48 } as Rect,
   /**
    * 所属联盟数值。
-   * ★ 特意开宽：值是右对齐的，「无」贴在 x≈2091..2126，而联盟缩写 [T89S] 在 1958..2074，
+   * ★ 特意开宽：值是右对齐的，「无」贴在 x≈2091..2126，而联盟缩写（如 [XYZ1]）在 1958..2074，
    *   两种情况的位置差很多，窄 ROI 会漏掉其中一种。
    */
   allianceValueRoi: { x: 90, y: -222, w: 210, h: 50 } as Rect,

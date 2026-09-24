@@ -1,0 +1,607 @@
+{
+ "$schema": "http://json-schema.org/draft-07/schema#",
+ "$id": "https://wanlong.local/schemas/gather-config.schema.json",
+ "title": "自动采集资源 配置",
+ "description": "面板可配置项。坐标一律是参考分辨率 2560x1440 空间。所有游戏内设置项（当前只有「自动采集至清空」）必须走「读实际态 → 比对 → 仅不一致时点 → 复验」的对账流程，禁止盲点。",
+ "type": "object",
+ "required": [
+  "version",
+  "resources",
+  "levelPolicy",
+  "schedule"
+ ],
+ "additionalProperties": false,
+ "x-invariants": [
+  "【最重要】游戏搜索的匹配规则是「返回等级 >= 搜索等级的资源点」，不是精确匹配。所以本配置里出现的一切等级值都是**搜索下限（floor）**，不是目标值。",
+  "搜 5 级跳到 7 级点是正常且合理的结果，收益更高。卡片等级校验必须写成 `卡片等级 >= searchFloor`，**绝不能写 ==**（写成相等会在完全正常的情况下判失败并重搜，造成无限重搜死循环）。",
+  "游戏无法搜「恰好等于某等级」的点，因此本 schema **不提供、也不可能提供等级上界**。要避开不想要的点只能靠 thresholds 里的其它维度（采集者 / 所属联盟 / 储量 / 行军时长）。",
+  "searchRetry.floorRelaxStep 的语义是「放宽下限以匹配更多候选点」，不是「退而求其次采低级点」。放宽后仍可能采到高级点。",
+  "卡片的真实通过判据 = 等级 >= searchFloor 且 采集者 == 无 且 储量/行军时长达标 且 所属联盟符合 allianceTerritory 策略。等级偏高不构成拒绝理由。"
+ ],
+ "properties": {
+  "version": {
+   "type": "integer",
+   "const": 2,
+   "default": 2,
+   "title": "配置版本",
+   "description": "结构变更时递增，加载时按版本迁移。v1→v2 变更：等级语义明确为搜索下限；levelDownStep 更名 floorRelaxStep；requireAllianceNone 换成三态 allianceTerritory。"
+  },
+  "enabled": {
+   "type": "boolean",
+   "default": false,
+   "title": "启用自动采集"
+  },
+  "resources": {
+   "type": "array",
+   "title": "资源类型（多选）",
+   "description": "只有 enabled=true 的条目参与调度。派兵时按 priority 升序取第一个「还欠队列」的资源。",
+   "minItems": 1,
+   "maxItems": 4,
+   "items": {
+    "$ref": "#/definitions/resourceEntry"
+   },
+   "default": [
+    {
+     "type": "wood",
+     "enabled": true,
+     "priority": 1,
+     "queues": 2
+    },
+    {
+     "type": "gold",
+     "enabled": true,
+     "priority": 2,
+     "queues": 1
+    },
+    {
+     "type": "iron",
+     "enabled": true,
+     "priority": 3,
+     "queues": 1
+    },
+    {
+     "type": "mana",
+     "enabled": false,
+     "priority": 4,
+     "queues": 0
+    }
+   ]
+  },
+  "levelPolicy": {
+   "$ref": "#/definitions/levelPolicy",
+   "title": "全局等级下限策略",
+   "description": "resources[].levelPolicy 会覆盖本项。★这里配的是搜索下限，不是目标等级。"
+  },
+  "thresholds": {
+   "type": "object",
+   "title": "全局筛选阈值",
+   "description": "resources[] 里的同名字段会覆盖本项。这些是**唯一**能限制「不想要的点」的维度——等级方向只有下限、没有上限。",
+   "additionalProperties": false,
+   "properties": {
+    "minStorage": {
+     "type": "integer",
+     "minimum": 0,
+     "default": 300000,
+     "title": "最低储量",
+     "description": "读卡片「储量」（实测 1,260,000）。低于此值直接换点。0 = 不限制。"
+    },
+    "maxTravelSeconds": {
+     "type": "integer",
+     "minimum": 0,
+     "default": 600,
+     "title": "最长单程行军（秒）",
+     "description": "★首选的距离约束。在「创建部队」页从行军按钮上直接读到（实测显示 00:01:04），精确且必然可见。超过则退出该页重搜。0 = 不限制。",
+     "x-reliability": "high"
+    },
+    "maxDistanceKm": {
+     "type": "integer",
+     "minimum": 0,
+     "default": 0,
+     "title": "最远距离（km，可选）",
+     "description": "读卡片右下角「18 km」。该标签贴在地图标记上、背景不稳定，识别可靠性低于 maxTravelSeconds，默认 0 = 不启用。",
+     "x-reliability": "low"
+    },
+    "requireGathererNone": {
+     "type": "boolean",
+     "default": true,
+     "title": "必须「采集者 无」",
+     "description": "关掉等于允许抢占已被采集的点（会失败）。除非调试，不要关。"
+    },
+    "allianceTerritory": {
+     "type": "string",
+     "enum": [
+      "own-only",
+      "own-and-neutral",
+      "any"
+     ],
+     "default": "any",
+     "title": "所属联盟策略",
+     "description": "卡片「所属联盟」字段实测**不只有「无」**，还会出现联盟缩写标签（如 [XYZ1]），表示该点位于某联盟领地。own-only=只采本方领地（通常有采集加成）；own-and-neutral=本方 + 中立（默认）；any=不筛（可能被对方打掉部队与资源）。识别方式见 gather-flow.json 的 allianceJudgement。"
+    },
+    "ownAllianceTag": {
+     "type": "string",
+     "default": "",
+     "title": "本方联盟缩写",
+     "description": "如 XYZ1。allianceTerritory != 'any' 时必填；留空则引擎降级为「只接受『无』」并在面板上告警。该值同时决定要不要裁 tpl_alliance_own 模板（按账号一张）。",
+     "maxLength": 8
+    },
+    "preferLoadCoversStorage": {
+     "type": "boolean",
+     "default": false,
+     "title": "优先一趟采空",
+     "description": "开启后，若「创建部队」页的负载量 < 卡片储量，则退出重搜更小的点。默认关（勾了「自动采集至清空」后游戏会自己续采）。"
+    }
+   },
+   "default": {}
+  },
+  "autoGatherUntilEmpty": {
+   "type": "boolean",
+   "default": true,
+   "title": "自动采集至清空",
+   "description": "游戏内建勾选框，位于资源点卡片。★必须对账：先读实际勾选态，只有与本配置不一致时才点一下，点完复验；复验仍不符则本轮中止并报错，不得反复点击。",
+   "x-control": {
+    "kind": "checkbox",
+    "anchor": "resourceCard",
+    "tapAt": [
+     1732,
+     922
+    ],
+    "probeAt": [
+     1703,
+     924
+    ],
+    "probeNote": "5x5 邻域 RGB 均值（必须取自 RawFrame，PreparedFrame 只有灰度）。勾选态实测为饱和金黄带外发光；未勾选态尚未采样，下阶段必须两态各截一张并把判据回填到 gather-flow.json 的 checkboxRule。标定前引擎只读不点。"
+   }
+  },
+  "queuePlan": {
+   "type": "object",
+   "title": "队列分配",
+   "additionalProperties": false,
+   "properties": {
+    "reserveQueues": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 5,
+     "default": 0,
+     "title": "预留队列数",
+     "description": "留给打野/集结等其它功能块，自动采集不会占用。可用队列 = 队列上限 M − 已用 N − reserveQueues。"
+    },
+    "maxConcurrentGather": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 5,
+     "default": 5,
+     "title": "自动采集最多同时占用的队列数"
+    },
+    "avoidDuplicateTarget": {
+     "type": "boolean",
+     "default": true,
+     "title": "避免两队派同一个点",
+     "description": "用「部队管理」面板每行的坐标去重；新搜到的点若与在途目标坐标相同则重搜。"
+    },
+    "minCommanderStamina": {
+     "type": "integer",
+     "minimum": 0,
+     "default": 1,
+     "title": "指挥官最低耐力（已废弃）",
+     "description": "已废弃（2026-09-10）：该游戏的指挥官耐力只用于打架，不影响采集，派兵不再据此拦截；字段保留只为兼容旧配置。"
+    }
+   },
+   "default": {}
+  },
+  "searchRetry": {
+   "type": "object",
+   "title": "搜索与放宽下限重试",
+   "additionalProperties": false,
+   "properties": {
+    "occupiedRetryLimit": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 20,
+     "default": 4,
+     "title": "同一下限下最多重搜次数",
+     "description": "点被占用 / 储量不达标 / 行军过远 / 联盟不符 / 坐标重复，都算一次失败。达到上限后按 floorRelaxStep 放宽下限。★「等级高于下限」不算失败，不得计数。"
+    },
+    "floorRelaxStep": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 3,
+     "default": 1,
+     "title": "每次把搜索下限放宽几级",
+     "description": "下限调低 = 匹配到更多候选点。不等于「采到更低级的点」——放宽后仍可能采到高级点。（v1 里叫 levelDownStep，名字有误导，已更名。）",
+     "x-renamedFrom": "levelDownStep"
+    },
+    "researchDelayMs": {
+     "type": "integer",
+     "minimum": 0,
+     "default": 900,
+     "title": "两次搜索之间的间隔（ms）",
+     "description": "给地图跳转与卡片动画留时间。太小会截到动画中间帧导致识别失败。"
+    },
+    "probeMaxLevel": {
+     "type": "boolean",
+     "default": true,
+     "title": "动态探测等级上限",
+     "description": "把滑杆推到最右读数得 maxLv（实测当前 8，后期会到 10）。关掉则用 levelPolicy.assumedMaxLevel。"
+    },
+    "probeIntervalMin": {
+     "type": "integer",
+     "minimum": 1,
+     "default": 720,
+     "title": "重新探测上限的间隔（分钟）",
+     "description": "上限随游戏进程增长，变化极慢。默认 12 小时探一次，其余时间用缓存值。"
+    }
+   },
+   "default": {}
+  },
+  "schedule": {
+   "type": "object",
+   "title": "调度冗余量",
+   "description": "用户明确要求「不必卡死时间，留冗余，宁晚勿早」。全部可调。",
+   "additionalProperties": false,
+   "properties": {
+    "slackSeconds": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 900,
+     "default": 60,
+     "title": "唤醒冗余（秒）",
+     "description": "唤醒时刻 = freeAt + slackSeconds。freeAt = gatherDoneAt + travelTime（采集完成后队伍自动回城，队列此时才释放）。调小提高效率但更容易撞上「队伍还没回来」。"
+    },
+    "retryBackoffSeconds": {
+     "type": "array",
+     "items": {
+      "type": "integer",
+      "minimum": 5
+     },
+     "default": [
+      30,
+      60,
+      120,
+      240,
+      300
+     ],
+     "title": "队列仍未空时的退避序列（秒）",
+     "description": "逐项取用，用完后一直用最后一项。派兵成功后计数清零。"
+    },
+    "maxBackoffSeconds": {
+     "type": "integer",
+     "minimum": 30,
+     "default": 300,
+     "title": "退避上限（秒）"
+    },
+    "calibrateIntervalMin": {
+     "type": "integer",
+     "minimum": 1,
+     "default": 15,
+     "title": "兜底校准间隔（分钟）",
+     "description": "距上次读「部队管理」面板超过这个时长就强制重采一次，纠正本地递推漂移。"
+    },
+    "jitterSeconds": {
+     "type": "integer",
+     "minimum": 0,
+     "default": 20,
+     "title": "多实例错峰抖动（秒）",
+     "description": "唤醒时刻加 [0, jitter) 的随机量，避免多个账号同时抢 adb。"
+    },
+    "maxDispatchesPerHour": {
+     "type": "integer",
+     "minimum": 0,
+     "default": 30,
+     "title": "每小时派兵次数上限",
+     "description": "熔断保护：识别出错导致疯狂重试时兜底。0 = 不限制。"
+    },
+    "giveUpCooldownMin": {
+     "type": "integer",
+     "minimum": 1,
+     "default": 10,
+     "title": "放弃后的冷却（分钟）",
+     "description": "下限已放宽到 minLevel 仍搜不到可用点时，隔这么久再试一轮。"
+    }
+   },
+   "default": {}
+  },
+  "safety": {
+   "type": "object",
+   "title": "安全与容错",
+   "additionalProperties": false,
+   "properties": {
+    "abortOnReconcileFail": {
+     "type": "boolean",
+     "default": true,
+     "title": "对账复验失败即中止",
+     "description": "游戏内设置项点完复验仍不符时中止本轮并报错，不得继续点击。"
+    },
+    "onUnknownLevel": {
+     "type": "string",
+     "enum": [
+      "abort",
+      "acceptCard"
+     ],
+     "default": "acceptCard",
+     "title": "卡片等级数字识别失败时",
+     "description": "abort=中止本轮（最保守，不敢派兵）；acceptCard=既然游戏只会返回 >= 下限的点，读不出等级时也认为满足下限、继续走后续校验。★默认取 acceptCard：当前模板库里 dig_card_title 只有 7、8 两个字形，取 abort 会让几乎每一轮都在读卡片等级这一步中止；补齐 0-9 后可改回 abort。"
+    },
+    "onUnknownStorage": {
+     "type": "string",
+     "enum": [
+      "skipPoint",
+      "accept"
+     ],
+     "default": "skipPoint",
+     "title": "储量识别失败时",
+     "description": "skipPoint=当作不达标换点（保守，默认）。"
+    },
+    "unknownEtaFallbackSeconds": {
+     "type": "integer",
+     "minimum": 60,
+     "default": 600,
+     "title": "倒计时识别失败时的保守 ETA（秒）",
+     "description": "读不出「采集中 HH:MM:SS」时按这个值重排唤醒，宁晚勿早。"
+    },
+    "maxCapturesPerCycle": {
+     "type": "integer",
+     "minimum": 6,
+     "default": 60,
+     "title": "单轮派兵截图数上限",
+     "description": "游戏在前台时单张截图实测约 750ms。超过上限说明流程卡住了，中止并报错。★默认从 24 上调到 60：离线回放实测一次顺利派兵要 17 帧、一次「点被占用换一个」要 6~7 帧，occupiedRetryLimit=4 最坏约需 45 帧，给 24 的话重试策略根本跑不满就被熔断。"
+    },
+    "swipeRetry": {
+     "type": "integer",
+     "minimum": 0,
+     "default": 3,
+     "title": "滑动重试次数",
+     "description": "adb input swipe 偶发 SecurityException: INJECT_EVENTS，实测重试即成功。"
+    },
+    "shotPolicy": {
+     "type": "string",
+     "enum": [
+      "never",
+      "onFail",
+      "always"
+     ],
+     "default": "onFail",
+     "title": "截图留痕策略（覆盖全局设置）"
+    }
+   },
+   "default": {}
+  }
+ },
+ "definitions": {
+  "resourceType": {
+   "type": "string",
+   "enum": [
+    "wood",
+    "gold",
+    "iron",
+    "mana"
+   ],
+   "title": "资源类型",
+   "description": "wood=木材(伐木场) gold=金币(金矿) iron=铁矿石(铁矿) mana=魔水(魔水池)",
+   "x-labels": {
+    "wood": {
+     "resource": "木材",
+     "category": "伐木场",
+     "categoryTapX": 1276
+    },
+    "gold": {
+     "resource": "金币",
+     "category": "金矿",
+     "categoryTapX": 874
+    },
+    "iron": {
+     "resource": "铁矿石",
+     "category": "铁矿",
+     "categoryTapX": 1686
+    },
+    "mana": {
+     "resource": "魔水",
+     "category": "魔水池",
+     "categoryTapX": 2088
+    }
+   },
+   "x-categoryTapY": 1310,
+   "x-note": "分类栏 y=1310 固定；x 见 categoryTapX。注意 (460,1310) 是「黑暗灵部队」，属于清体力功能块，不在本配置范围内。"
+  },
+  "resourceEntry": {
+   "type": "object",
+   "required": [
+    "type",
+    "enabled",
+    "priority",
+    "queues"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "type": {
+     "$ref": "#/definitions/resourceType"
+    },
+    "enabled": {
+     "type": "boolean",
+     "default": true,
+     "title": "启用"
+    },
+    "priority": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 4,
+     "title": "优先级",
+     "description": "数字越小越先派。有空队列时，先满足优先级高且尚未派满 queues 的资源。"
+    },
+    "queues": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 5,
+     "title": "分配队列数",
+     "description": "这种资源最多同时占用几个行军队列。所有 queues 之和不应超过 queuePlan.maxConcurrentGather。"
+    },
+    "levelPolicy": {
+     "$ref": "#/definitions/levelPolicy",
+     "title": "等级下限策略（覆盖全局）"
+    },
+    "minStorage": {
+     "type": "integer",
+     "minimum": 0,
+     "title": "最低储量（覆盖全局）"
+    },
+    "maxTravelSeconds": {
+     "type": "integer",
+     "minimum": 0,
+     "title": "最长单程行军秒数（覆盖全局）"
+    }
+   }
+  },
+  "levelPolicy": {
+   "type": "object",
+   "title": "等级下限策略",
+   "description": "★这里算出来的是 searchFloor（搜索下限），实际采到的点等级 >= searchFloor。不存在上界。",
+   "oneOf": [
+    {
+     "required": [
+      "mode",
+      "offset"
+     ],
+     "properties": {
+      "mode": {
+       "const": "relative"
+      },
+      "offset": {
+       "type": "integer",
+       "minimum": -5,
+       "maximum": 0,
+       "default": -1,
+       "title": "相对上限的偏移",
+       "description": "searchFloor = maxLv + offset。用户默认规则 maxLv-1（offset=-1）：下限设为 maxLv-1，实际可能采到 maxLv 的点，收益更高，是好事。maxLv 由滑杆推到最右读数动态探测，自动适应 8→10 的版本进程。"
+      },
+      "minLevel": {
+       "type": "integer",
+       "minimum": 1,
+       "default": 5,
+       "title": "下限可放宽到的最低值",
+       "description": "连续搜不到可用点时按 floorRelaxStep 逐步放宽 searchFloor，放宽到这里为止；再失败则本轮放弃并按 schedule.giveUpCooldownMin 冷却。"
+      },
+      "assumedMaxLevel": {
+       "type": "integer",
+       "minimum": 1,
+       "default": 8,
+       "title": "探测失败时假定的上限",
+       "description": "实测当前为 8。"
+      },
+      "maxLevelHardCap": {
+       "type": "integer",
+       "minimum": 1,
+       "default": 15,
+       "title": "上限硬顶（识别合理性校验）",
+       "description": "探测读到超过这个值一律判为识别错误。★这是防误识别的护栏，不是资源点等级上界。"
+      }
+     },
+     "additionalProperties": false
+    },
+    {
+     "required": [
+      "mode",
+      "level"
+     ],
+     "properties": {
+      "mode": {
+       "const": "absolute"
+      },
+      "level": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 15,
+       "title": "固定搜索下限",
+       "description": "★是下限不是目标值：配 6 会搜到 6 级及以上的点，7、8 级都算合格。"
+      },
+      "minLevel": {
+       "type": "integer",
+       "minimum": 1,
+       "default": 5,
+       "title": "下限可放宽到的最低值"
+      },
+      "allowRelax": {
+       "type": "boolean",
+       "default": true,
+       "title": "允许放宽下限重试",
+       "description": "关掉则固定下限搜不到就放弃本轮，不放宽。",
+       "x-renamedFrom": "allowDowngrade"
+      }
+     },
+     "additionalProperties": false
+    }
+   ],
+   "default": {
+    "mode": "relative",
+    "offset": -1,
+    "minLevel": 5,
+    "assumedMaxLevel": 8
+   }
+  }
+ },
+ "examples": [
+  {
+   "version": 2,
+   "enabled": true,
+   "resources": [
+    {
+     "type": "wood",
+     "enabled": true,
+     "priority": 1,
+     "queues": 2
+    },
+    {
+     "type": "gold",
+     "enabled": true,
+     "priority": 2,
+     "queues": 1
+    },
+    {
+     "type": "iron",
+     "enabled": true,
+     "priority": 3,
+     "queues": 1
+    },
+    {
+     "type": "mana",
+     "enabled": false,
+     "priority": 4,
+     "queues": 0
+    }
+   ],
+   "levelPolicy": {
+    "mode": "relative",
+    "offset": -1,
+    "minLevel": 5,
+    "assumedMaxLevel": 8
+   },
+   "thresholds": {
+    "minStorage": 300000,
+    "maxTravelSeconds": 600,
+    "requireGathererNone": true,
+    "allianceTerritory": "any",
+    "ownAllianceTag": "XYZ1"
+   },
+   "autoGatherUntilEmpty": true,
+   "queuePlan": {
+    "reserveQueues": 1,
+    "maxConcurrentGather": 4,
+    "avoidDuplicateTarget": true
+   },
+   "searchRetry": {
+    "occupiedRetryLimit": 4,
+    "floorRelaxStep": 1,
+    "probeMaxLevel": true
+   },
+   "schedule": {
+    "slackSeconds": 60,
+    "calibrateIntervalMin": 15,
+    "jitterSeconds": 20
+   },
+   "safety": {
+    "abortOnReconcileFail": true,
+    "onUnknownLevel": "acceptCard",
+    "maxCapturesPerCycle": 60
+   }
+  }
+ ]
+}

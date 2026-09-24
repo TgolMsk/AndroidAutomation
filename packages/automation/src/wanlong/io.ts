@@ -6,6 +6,8 @@ export interface GatherIoOptions {
   refWidth: number;
   refHeight: number;
   signal?: AbortSignal;
+  /** Receives cold-start diagnostics from ensureGameForeground (Chinese messages). */
+  log?: (level: 'debug' | 'info' | 'warn', message: string) => void;
 }
 
 /** Map reference coordinates to actual frame pixels at the AVD boundary. */
@@ -60,6 +62,10 @@ export function createGatherIo(device: DevicePort, options: GatherIoOptions): Ga
         foreground: () => device.foregroundPackage(),
         // The host's Wanlong launch adapter must use monkey, which works on a cold game process.
         launch: () => device.launchApp(packageName, false),
+        isRunning: device.isAppRunning ? () => device.isAppRunning!(packageName) : undefined,
+        // Cancellation must stop the 60 s foreground wait promptly; query errors stay swallowed.
+        checkAlive: check,
+        log: options.log,
       }, { packageName });
     },
   };

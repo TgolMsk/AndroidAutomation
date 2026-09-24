@@ -1,0 +1,809 @@
+{
+ "$comment": "「道具 → 资源 → 资源统计」表格的识别契约。坐标一律 2560x1440 参考分辨率像素，全部由真机 2560x1440 原图（用户本地数据，按帧角色 items / stats / back1 / worldMap 区分，不入仓库）用 PIL 按列/行投影量出（2026-09-09，阈值 <128 取字芯，四周留 1px 底）。★ packages/automation/src/wanlong/resources/layout.ts 手抄了 nav/itemsPage/dialog/rows/columns 这几组数值，packages/automation/test/wanlong-resources-*.test.ts 会断言两边一致 —— 改数值必须两边同时改。",
+ "title": "资源统计表 识别方案",
+ "game": "万龙觉醒",
+ "package": "com.lilithgames.samo.android.cn",
+ "refWidth": 2560,
+ "refHeight": 1440,
+ "schemaVersion": 2,
+ "capturedAt": "2026-09-09",
+ "sourceFrames": {
+  "before": "★注意：这一帧实际是「道具→资源」页（左上标题「资源」，右上有资源统计按钮），不是世界地图。",
+  "items": "道具→资源页，与 〔before 帧〕 同画面（少一个「新」角标）。右上「资源统计」按钮的度量来源。",
+  "stats": "资源统计弹窗。全部表格几何与字形度量来源。",
+  "back1": "弹窗上按一次 BACK 之后 = 回到「道具→资源」页（弹窗已关，按钮仍在）。",
+  "worldMap": "再按一次 BACK = 回到世界地图（顶栏 + 底部导航「宠物/见闻/战役/联盟/道具/英雄」）。",
+  "$comment": "帧角色 → 画面说明。真机原图是用户本地数据，不入仓库；seedResourceTemplates 按角色接收整帧 PNG。"
+ },
+ "nav": {
+  "itemsTap": {
+   "x": 2086,
+   "y": 1344
+  },
+  "note": "底部导航「道具」。图标本体中心实测 (2100,1340)，(2086,1344) 落在图标内。tpl_nav_items 命中时优先点命中中心。"
+ },
+ "itemsPage": {
+  "statsButtonTap": {
+   "x": 1578,
+   "y": 265
+  },
+  "resourceCategoryTap": {
+   "x": 200,
+   "y": 524
+  },
+  "note": "资源页右上「资源统计」按钮：文字 1485..1615 + 图标 1625..1670，整体中心 (1580,265)。运行时优先点 tpl_btn_res_stats 的命中中心，坐标只作兜底。左侧竖排分类第二个（金币图标）= 资源分类 (200,524)，道具页停在别的分类时点它。"
+ },
+ "dialog": {
+  "closeTap": {
+   "x": 2118,
+   "y": 192
+  },
+  "backPresses": 2,
+  "note": "关闭：BACK×2 是实测可靠路径（res_05_back1 / res_06_back2）。X（金边方块 2070..2167 × 144..241）只在第一次 BACK 后标题仍在时才点。★ 世界地图上多按一次 BACK 会弹「确定要退出游戏吗」，必须用 gather/navigation.ts 的 dismissNoticeDialog 取消，绝不能点确定。"
+ },
+ "rows": [
+  {
+   "type": "gold",
+   "centerY": 452
+  },
+  {
+   "type": "wood",
+   "centerY": 648
+  },
+  {
+   "type": "iron",
+   "centerY": 844
+  },
+  {
+   "type": "mana",
+   "centerY": 1040
+  }
+ ],
+ "rowPitchY": 196,
+ "cellRoi": {
+  "yRel": -23,
+  "h": 46
+ },
+ "columns": {
+  "item": {
+   "centerX": 1280,
+   "x": 1155,
+   "w": 250,
+   "observedExtent": [
+    1234,
+    1326
+   ]
+  },
+  "total": {
+   "centerX": 1806,
+   "x": 1681,
+   "w": 250,
+   "observedExtent": [
+    1748,
+    1862
+   ]
+  },
+  "$comment": "★数值在列内**居中**对齐（4 行「资源总量」中心均为 1805±1，「道具总量」均为 1280），ROI 以列中心对称展开，两侧各留 ≥ 60px 空白。cell = { x: col.x, y: row.centerY + cellRoi.yRel, w: col.w, h: cellRoi.h }"
+ },
+ "popupGeometry": {
+  "$comment": "〔stats 帧〕 实测。弹窗压在模糊后的资源页上；面板是浅色纸底，表格 4 行等距。",
+  "panel": {
+   "x": 410,
+   "y": 200,
+   "w": 1735,
+   "h": 1050,
+   "bg": [
+    250,
+    245,
+    244
+   ]
+  },
+  "titleBanner": {
+   "brush": {
+    "x": 989,
+    "y": 136,
+    "w": 568,
+    "h": 85,
+    "color": [
+     2,
+     3,
+     0
+    ]
+   },
+   "text": {
+    "x": 1161,
+    "y": 150,
+    "w": 225,
+    "h": 54,
+    "color": [
+     246,
+     246,
+     246
+    ],
+    "content": "资源统计"
+   }
+  },
+  "closeButton": {
+   "goldFrame": {
+    "x": 2070,
+    "y": 144,
+    "w": 98,
+    "h": 98
+   },
+   "center": [
+    2118,
+    192
+   ],
+   "note": "深红底 + 金边 + 粉色 X 笔画，纹理足够做模板；tap 用中心。"
+  },
+  "header": {
+   "band": {
+    "x": 660,
+    "y": 298,
+    "w": 1213,
+    "h": 36,
+    "bg": "淡粉"
+   },
+   "labels": {
+    "资源类型": {
+     "x": 663,
+     "y": 300,
+     "w": 129,
+     "h": 31,
+     "centerX": 727
+    },
+    "道具总量": {
+     "x": 1215,
+     "y": 300,
+     "w": 130,
+     "h": 31,
+     "centerX": 1280
+    },
+    "资源总量": {
+     "x": 1741,
+     "y": 301,
+     "w": 130,
+     "h": 30,
+     "centerX": 1806
+    }
+   },
+   "labelY": 315
+  },
+  "rows": {
+   "order": [
+    "gold",
+    "wood",
+    "iron",
+    "mana"
+   ],
+   "zh": {
+    "gold": "金币",
+    "wood": "木材",
+    "iron": "铁矿石",
+    "mana": "魔水"
+   },
+   "centerY": [
+    452,
+    648,
+    844,
+    1040
+   ],
+   "pitchY": 196,
+   "note": "★行序固定为 金币/木材/铁矿石/魔水（与顶栏顺序一致）。默认信任固定行序；若模板集里有 tpl_label_res_* 则每行顺手校验一次，标签不匹配的行标记 rowLabelMismatch 而不是把值塞进错的资源。",
+   "icon": {
+    "x": 636,
+    "w": 139,
+    "yRel": [
+     -66,
+     68
+    ],
+    "centerX": 705
+   },
+   "label": {
+    "x": 812,
+    "yRel": [
+     -17,
+     16
+    ],
+    "h": 34,
+    "widths": {
+     "gold": 68,
+     "wood": 71,
+     "iron": 108,
+     "mana": 71
+    },
+    "color": "深灰近黑，浅底"
+   }
+  },
+  "columns": {
+   "$comment": "★数值在列内**居中**对齐（实测 4 行「资源总量」中心均为 1805±1，「道具总量」均为 1280），不是左/右对齐，所以 ROI 必须以列中心对称展开，两侧各留 ≥ 60px 空白。",
+   "itemTotal": {
+    "centerX": 1280,
+    "cellRoi": {
+     "x": 1155,
+     "w": 250
+    },
+    "observedExtent": [
+     1234,
+     1326
+    ]
+   },
+   "resourceTotal": {
+    "centerX": 1806,
+    "cellRoi": {
+     "x": 1681,
+     "w": 250
+    },
+    "observedExtent": [
+     1748,
+     1862
+    ]
+   },
+   "cellRoiYRel": [
+    -23,
+    23
+   ],
+   "cellRoiH": 46,
+   "maxTextWidthPx": 120,
+   "cellRoiFormula": "cell = { x: col.cellRoi.x, y: rows.centerY[i] - 23, w: 250, h: 46 }"
+  },
+  "footerNote": {
+   "x": 952,
+   "y": 1166,
+   "w": 660,
+   "h": 31,
+   "content": "自选资源宝箱与随机资源宝箱不计入当前统计",
+   "use": "可选的次要判据，不必做模板。"
+  }
+ },
+ "valueFont": {
+  "$comment": "★浅底深字 ⇒ GlyphSet.polarity = 'dark'。字芯灰度 0~34，背景 245~250，2% 分位 lo=0、中位 bg=246（ROI 取 250x46 时）。",
+  "polarity": "dark",
+  "textColor": [
+   0,
+   0,
+   0
+  ],
+  "bgColor": [
+   250,
+   245,
+   244
+  ],
+  "digit": {
+   "w": [
+    17,
+    20
+   ],
+   "h": 28,
+   "yRelToRow": [
+    -14,
+    13
+   ],
+   "perChar": {
+    "0": 19,
+    "1": 17,
+    "2": 19,
+    "3": 18,
+    "4": 20,
+    "6": 19,
+    "7": 19,
+    "9": 19
+   }
+  },
+  "dot": {
+   "w": [
+    7,
+    8
+   ],
+   "h": [
+    7,
+    8
+   ],
+   "yRelToRow": [
+    7,
+    13
+   ],
+   "note": "落在基线，minSegW=3 能切出来"
+  },
+  "yi": {
+   "w": 35,
+   "h": [
+    34,
+    35
+   ],
+   "yRelToRow": [
+    -17,
+    16
+   ],
+   "note": "比数字高 6px，上下各多 3px"
+  },
+  "gaps": {
+   "digitDigit": [
+    4,
+    6
+   ],
+   "digitDot": [
+    5,
+    6
+   ],
+   "digitYi": [
+    3,
+    4
+   ]
+  },
+  "segmentationHazard": {
+   "$comment": "★★ 用 readNumberText 直接读整格会失败，已按其 FG_FACTORS 阶梯逐格复现：",
+   "factor0.35": "8 格全部把「亿」切成两段（亻 11px + 乙 22px，中间空 1 列），得到 5/6 段而非 4/5 段 ⇒ 两段各自匹配都不像任何字形 ⇒ 记 '?' ⇒ 整格 null。",
+   "factor0.65-0.8": "在 4.1亿 / 22.4亿 / 7.2亿 三格里「亿」反而与前一位数字粘成 58~60px 的一段。",
+   "conclusion": "readNumberText 无 expectChars 时取第一档有段的结果（即 0.35 档），所以「亿」必然被切开。★解法：先用 matchIn 在单元格里定位单位字（dig_resstat_yi / dig_resstat_wan 都是 shrink=1 的整字模板），把数字 ROI 截到单位字左边，再对纯数字串调 readNumberText。单位字用相关匹配不受列投影切分影响。"
+  }
+ },
+ "templates": [
+  {
+   "id": "tpl_title_res_stats",
+   "name": "资源统计-弹窗标题",
+   "priority": "必需",
+   "shot": "stats",
+   "bounds": {
+    "x": 1155,
+    "y": 144,
+    "w": 236,
+    "h": 66
+   },
+   "roi": {
+    "x": 1000,
+    "y": 100,
+    "w": 560,
+    "h": 160
+   },
+   "expectedCenter": [
+    1273,
+    177
+   ],
+   "purpose": "① 判定弹窗已打开（步骤 2 的校验）；② 还原时判定弹窗已关",
+   "cropNote": "白字「资源统计」+ 四周黑色笔刷底。★不要框到笔刷毛边（y<136 或 y>220 是模糊的地图背景）。"
+  },
+  {
+   "id": "tpl_btn_res_stats",
+   "name": "资源页-资源统计按钮",
+   "priority": "必需",
+   "shot": "items",
+   "bounds": {
+    "x": 1480,
+    "y": 234,
+    "w": 200,
+    "h": 62
+   },
+   "roi": {
+    "x": 1380,
+    "y": 200,
+    "w": 400,
+    "h": 130
+   },
+   "expectedCenter": [
+    1580,
+    265
+   ],
+   "purpose": "① 判定已在「道具→资源」页（步骤 1 的校验）；② 它的中心就是步骤 2 的点击点；③ 还原第一步的校验",
+   "cropNote": "深灰字「资源统计」+ 右侧深棕色小图标。底是很淡的粉色渐变，靠文字与图标提供纹理。"
+  },
+  {
+   "id": "tpl_btn_close_res_stats",
+   "name": "资源统计-右上关闭X",
+   "priority": "可选",
+   "shot": "stats",
+   "bounds": {
+    "x": 2068,
+    "y": 142,
+    "w": 102,
+    "h": 102
+   },
+   "roi": {
+    "x": 2000,
+    "y": 90,
+    "w": 260,
+    "h": 220
+   },
+   "expectedCenter": [
+    2119,
+    193
+   ],
+   "purpose": "第一次 BACK 后标题仍在时点它关弹窗；命中才点，不命中不点。"
+  },
+  {
+   "id": "tpl_title_items_res",
+   "name": "道具页-左上标题「资源」",
+   "priority": "可选",
+   "shot": "items",
+   "bounds": {
+    "x": 133,
+    "y": 33,
+    "w": 122,
+    "h": 66
+   },
+   "roi": {
+    "x": 100,
+    "y": 10,
+    "w": 220,
+    "h": 110
+   },
+   "purpose": "辅助判定「道具页已打开且选中资源分类」。"
+  },
+  {
+   "id": "tpl_nav_items",
+   "name": "主界面-底部导航「道具」",
+   "priority": "可选",
+   "shot": "worldMap",
+   "bounds": {
+    "x": 2046,
+    "y": 1312,
+    "w": 108,
+    "h": 66
+   },
+   "roi": {
+    "x": 1980,
+    "y": 1270,
+    "w": 240,
+    "h": 170
+   },
+   "purpose": "预检时确认底部导航可见；缺失时按固定坐标 nav.itemsTap 点。",
+   "cropNote": "只框米色宝箱本体的下半段，避开右上角红色角标与下方白字「道具」。★ 由 〔worldMap 帧〕 裁出（本帧含底部导航）；若真机上分数偏低请在调度空窗重裁。"
+  },
+  {
+   "id": "tpl_label_res_gold",
+   "name": "资源统计-行标签「金币」",
+   "priority": "可选",
+   "shot": "stats",
+   "bounds": {
+    "x": 808,
+    "y": 431,
+    "w": 78,
+    "h": 42
+   },
+   "roi": {
+    "x": 780,
+    "y": 412,
+    "w": 200,
+    "h": 80
+   }
+  },
+  {
+   "id": "tpl_label_res_wood",
+   "name": "资源统计-行标签「木材」",
+   "priority": "可选",
+   "shot": "stats",
+   "bounds": {
+    "x": 807,
+    "y": 626,
+    "w": 81,
+    "h": 43
+   },
+   "roi": {
+    "x": 780,
+    "y": 608,
+    "w": 200,
+    "h": 80
+   }
+  },
+  {
+   "id": "tpl_label_res_iron",
+   "name": "资源统计-行标签「铁矿石」",
+   "priority": "可选",
+   "shot": "stats",
+   "bounds": {
+    "x": 807,
+    "y": 822,
+    "w": 118,
+    "h": 43
+   },
+   "roi": {
+    "x": 780,
+    "y": 804,
+    "w": 200,
+    "h": 80
+   }
+  },
+  {
+   "id": "tpl_label_res_mana",
+   "name": "资源统计-行标签「魔水」",
+   "priority": "可选",
+   "shot": "stats",
+   "bounds": {
+    "x": 807,
+    "y": 1018,
+    "w": 81,
+    "h": 42
+   },
+   "roi": {
+    "x": 780,
+    "y": 1000,
+    "w": 200,
+    "h": 80
+   }
+  },
+  {
+   "id": "tpl_resstat_unit_yi",
+   "name": "资源统计-单位「亿」",
+   "priority": "必需",
+   "shot": "stats",
+   "bounds": {
+    "x": 1291,
+    "y": 434,
+    "w": 37,
+    "h": 37
+   },
+   "tags": [
+    "resstat_unit"
+   ],
+   "purpose": "单位字。★不进字形集（没有 digit 标签），读表模块自己按 shrink=1 编译后用 matchIn 在单元格里定位，把数字 ROI 截到它左边。",
+   "cropNote": "金币·道具总量「2.9亿」的「亿」整字（字芯 1292..1326 × 435..469，四周 1px 底）。"
+  },
+  {
+   "id": "tpl_resstat_unit_wan",
+   "name": "资源统计-单位「万」",
+   "priority": "必需",
+   "shot": null,
+   "status": "missing",
+   "tags": [
+    "resstat_unit"
+   ],
+   "note": "★现有截图里没有「万」（8 格全是 X.X亿）。★绝不能拿顶栏的 9129万 裁（白字黑边、字号与极性都不同），必须等表里真出现「万」时在调度空窗补裁。缺失时：单元格里没定位到任何单位字 ⇒ 按无单位整数读；读不出记 null。"
+  }
+ ],
+ "glyphs": {
+  "setName": "dig_resstat",
+  "label": "资源统计表数字",
+  "polarity": "dark",
+  "shrink": 1,
+  "tags": [
+   "digit",
+   "dig_resstat"
+  ],
+  "cropMargin": 1,
+  "idRule": "dig_resstat_<0-9|dot|comma>。带 digit 标签 ⇒ loadGatherTemplates 按 shrink=1 编成字形集 dig_resstat。单位字「亿/万」用 tpl_resstat_unit_* 单独存（无 digit 标签）。",
+  "items": [
+   {
+    "char": "0",
+    "id": "dig_resstat_0",
+    "shot": "stats",
+    "bounds": {
+     "x": 1269,
+     "y": 828,
+     "w": 21,
+     "h": 31
+    },
+    "from": "铁矿石·道具总量 2.0亿"
+   },
+   {
+    "char": "1",
+    "id": "dig_resstat_1",
+    "shot": "stats",
+    "bounds": {
+     "x": 1748,
+     "y": 437,
+     "w": 19,
+     "h": 30
+    },
+    "from": "金币·资源总量 11.1亿（首位）"
+   },
+   {
+    "char": "2",
+    "id": "dig_resstat_2",
+    "shot": "stats",
+    "bounds": {
+     "x": 1233,
+     "y": 437,
+     "w": 21,
+     "h": 30
+    },
+    "from": "金币·道具总量 2.9亿"
+   },
+   {
+    "char": "3",
+    "id": "dig_resstat_3",
+    "shot": "stats",
+    "bounds": {
+     "x": 1233,
+     "y": 632,
+     "w": 21,
+     "h": 31
+    },
+    "from": "木材·道具总量 3.2亿"
+   },
+   {
+    "char": "4",
+    "id": "dig_resstat_4",
+    "shot": "stats",
+    "bounds": {
+     "x": 1758,
+     "y": 633,
+     "w": 23,
+     "h": 30
+    },
+    "from": "木材·资源总量 4.1亿"
+   },
+   {
+    "char": "5",
+    "id": "dig_resstat_5",
+    "shot": null,
+    "status": "missing",
+    "note": "本帧 8 个数值里没有 5，待真机表里出现时补裁。"
+   },
+   {
+    "char": "6",
+    "id": "dig_resstat_6",
+    "shot": "stats",
+    "bounds": {
+     "x": 1233,
+     "y": 1024,
+     "w": 21,
+     "h": 31
+    },
+    "from": "魔水·道具总量 6.2亿"
+   },
+   {
+    "char": "7",
+    "id": "dig_resstat_7",
+    "shot": "stats",
+    "bounds": {
+     "x": 1759,
+     "y": 1024,
+     "w": 21,
+     "h": 30
+    },
+    "from": "魔水·资源总量 7.2亿"
+   },
+   {
+    "char": "8",
+    "id": "dig_resstat_8",
+    "shot": null,
+    "status": "missing",
+    "note": "本帧没有 8，待真机补裁。"
+   },
+   {
+    "char": "9",
+    "id": "dig_resstat_9",
+    "shot": "stats",
+    "bounds": {
+     "x": 1269,
+     "y": 437,
+     "w": 21,
+     "h": 30
+    },
+    "from": "金币·道具总量 2.9亿"
+   },
+   {
+    "char": ".",
+    "id": "dig_resstat_dot",
+    "shot": "stats",
+    "bounds": {
+     "x": 1255,
+     "y": 456,
+     "w": 12,
+     "h": 12
+    },
+    "from": "金币·道具总量 2.9亿 的小数点（7x7 字芯，四周多留 2px 底）"
+   },
+   {
+    "char": ",",
+    "id": "dig_resstat_comma",
+    "shot": null,
+    "status": "missing",
+    "note": "只有值 < 1 万时才会出现千分位整数（如 9,999）；本帧没有。"
+   }
+  ],
+  "missing": {
+   "5": "本帧没有 5",
+   "8": "本帧没有 8",
+   "comma": "本帧没有千分位整数",
+   "wan": "本帧没有「万」"
+  },
+  "degradation": {
+   "cellWithUnknownGlyph": "readNumberText 会把该字位记 '?' 并返回 text=null（reason 里写明本套只有哪些字形）。读表模块对该格记 { text: null, value: null, reason }，机器人/面板原文显示「读不出（缺字形）」，其余格照常输出；快照标记 partial=true，不整单作废。",
+   "collectForLater": "每个读失败的格子把 shrink=1 原帧按 cell ROI 外扩 10px 裁一张存进 shots 库（label 形如 resstat-fail-<res>-<col>），方便日后把 5/8/万/逗号补进字形集。",
+   "unitNotFound": "两种单位字都没命中（分 < 0.80）⇒ 按「无单位整数」读：pattern 用带千分位的整数正则；若同时没有 comma 字形 ⇒ 记 null。"
+  }
+ },
+ "pipeline": {
+  "$comment": "读表流程（packages/automation/src/wanlong/resources/read.ts）。所有匹配都在 实例设备租约（与采集 / 采样同一把锁） 锁内进行。",
+  "steps": [
+   "1. 预检：前台包名 = 游戏；tpl_dlg_title_notice 未命中；bestOf(WORLD_MAP_TEMPLATES + tpl_nav_map_toggle) 命中；tpl_btn_gather / tpl_panel_title_troop / tpl_btn_search / tpl_title_create_troop 均未命中。任一不满足 ⇒ 抛「当前不在主界面，稍后再试」，★一次都不点。",
+   "2. tap nav.itemsTap → waitFor tpl_btn_res_stats（≤6s，800ms 轮询）；超时先点 itemsPage.resourceCategoryTap 再等一次；仍失败 ⇒ 还原并抛「没打开道具页」。",
+   "3. tap 命中中心 → waitFor tpl_title_res_stats（≤6s）；超时 ⇒ 还原并抛。",
+   "4. sleep 600 → 新帧 → readResourceStatsFromFrame：f1 = prepareFrame(raw,{shrink:1})；每格先 matchIn(f1, tpl_resstat_unit_yi/wan, {roi: cell, threshold 0.8}) 定位单位字，数字 ROI 截到单位字左侧，再 readDigits(raw, digitsRoi, dig_resstat, {minScore 0.9, maxChars 8})；text 含 '?' / hasGap ⇒ 该格 null 并把原文放进 rawItem/rawTotal。任一格 null ⇒ 换一帧重读一次：两帧都读出则必须一致，否则 null；只一帧读出则采用。",
+   "5. 还原：BACK 900ms → dismissNoticeDialog → 若标题仍在且 tpl_btn_close_res_stats 命中则点它 → BACK 900ms → dismissNoticeDialog → waitFor(WORLD_MAP_TEMPLATES + tpl_nav_map_toggle ≤6s)；失败 ⇒ 留痕 res-restore-failed 后 ensureWorldMap(s,3) 兜底；仍失败 ⇒ 抛「读完资源统计后没能回到主界面，请打开模拟器看一眼」。"
+  ],
+  "readOptions": {
+   "unitThreshold": 0.8,
+   "digitMinScore": 0.9,
+   "maxChars": 8,
+   "patternWithUnit": "^\\d{1,4}(\\.\\d)?$",
+   "patternNoUnit": "^\\d{1,3}(,\\d{3})*$"
+  },
+  "segmentationHazard": {
+   "$comment": "★★ 用 readNumberText 直接读整格会失败，已按其 FG_FACTORS 阶梯逐格复现：",
+   "factor0.35": "8 格全部把「亿」切成两段（亻 11px + 乙 22px，中间空 1 列），得到 5/6 段而非 4/5 段 ⇒ 两段各自匹配都不像任何字形 ⇒ 记 '?' ⇒ 整格 null。",
+   "factor0.65-0.8": "在 4.1亿 / 22.4亿 / 7.2亿 三格里「亿」反而与前一位数字粘成 58~60px 的一段。",
+   "conclusion": "readNumberText 无 expectChars 时取第一档有段的结果（即 0.35 档），所以「亿」必然被切开。★解法：先用 matchIn 在单元格里定位单位字（dig_resstat_yi / dig_resstat_wan 都是 shrink=1 的整字模板），把数字 ROI 截到单位字左边，再对纯数字串调 readNumberText。单位字用相关匹配不受列投影切分影响。"
+  },
+  "validation": {
+   "perRow": [
+    "total >= itemTotal（违反 ⇒ warnings 记「资源总量小于道具总量，疑似读错列」，值照常返回）",
+    "value <= 1e12（超出 ⇒ 该格 null）"
+   ]
+  },
+  "botMessage": {
+   "example": "资源统计（实例 1 · 账号 主号 · 北京时间 09-10 00:05）\n金币：道具 2.9亿 ／ 总量 11.1亿\n木材：道具 3.2亿 ／ 总量 4.1亿\n铁矿石：道具 2.0亿 ／ 总量 22.4亿\n魔水：道具 6.2亿 ／ 总量 7.2亿\n（精度 0.1亿；不含自选/随机资源宝箱）",
+   "unreadableCell": "读不出的格子原文显示「?」并在末尾附一行「木材·道具总量读不出：本套字形缺 5/8」。"
+  }
+ },
+ "whyNotTopBar": [
+  "语义不同：顶栏是「持有量」（8.1亿），表格的「资源总量」= 持有 + 道具（11.1亿），「道具总量」顶栏根本没有。用户要的就是这张表。",
+  "顶栏是白字 + 黑描边压在会动的地图上（昼夜/天气整体色偏），列投影切字要靠 FG_FACTORS 阶梯反复试；表格是静态浅底黑字，一档就切干净。",
+  "顶栏单位混用（9129万 / 8.1亿 / 59,677）且随数值变宽，ROI 必须很宽又紧挨图标；表格每格居中、两侧各 60px 空白。",
+  "精度并不更好：≥1亿 时顶栏同样只到 0.1亿；只有 <1亿 时顶栏能到 1万（9129万），对日采集统计仍然不够。",
+  "顶栏的优势是「零导航」：任何健康探针帧都带着它。将来若要每小时无感快照，可另裁 dig_topbar（浅字深底）字形集，与本方案互不冲突。"
+ ],
+ "dailySnapshotBoundary": {
+  "precision": "0.1亿 = 1000 万。一趟魔水约 42 万、一趟木材约 126 万；一天 20~50 趟的采集增量（1000~6000 万）只落在 1~6 个刻度上，误差 ±1000 万 ⇒ 相对误差 20%~100%。",
+  "rule": "★日采集量的主数据源是派兵记账（DispatchRecord.storage，精确到个位，勾选「自动采集至清空」时一趟≈储量）。资源统计快照**不得**用来做日采集量差值。",
+  "allowedUses": [
+   "面板「数据统计」页展示「当日 0 点持有」与「当前」两列（0.1亿 精度，显示时保留原文如 11.1亿）",
+   "粗对账：当 Δ资源总量 与 Σ派兵储量 相差超过 2000 万时提示「今日有采集以外的资源变动（消耗/领奖/礼包）」，仅提示不报警",
+   "跨日/跨周趋势（以 亿 为单位的增长曲线）",
+   "用户在机器人里按需查看当前持有（/res）"
+  ],
+  "schedule": {
+   "when": "北京时间 0:00 之后（nextCstBoundary(now, 0) + 60s），在调度空窗里通过 exclusive() 执行；busyRunIdOf 非空或预检不在主界面 ⇒ 静默跳过，每 10 分钟重试，最多到 02:00。",
+   "record": "快照记录实际读取时刻（可能是 00:07），日桶键用 cstDateKey(at)。当天没拿到快照就留空，面板显示「当日无快照」。"
+  }
+ },
+ "offlineVerification": {
+  "$comment": "packages/automation/test/wanlong-resources-*.test.ts（vitest）在 〔stats 帧〕 / 〔items 帧〕 / 〔worldMap 帧〕 上的真值：金币 2.9亿/11.1亿，木材 3.2亿/4.1亿，铁矿石 2.0亿/22.4亿，魔水 6.2亿/7.2亿。",
+  "legacy": {
+   "$comment": "旧版离线验证脚本 在 〔stats 帧〕 / 〔items 帧〕 上的实跑结果（2026-09-09，项目自带 prepareTemplate/matchIn/readNumberText，不碰模拟器）。",
+   "uiTemplates": {
+    "tpl_title_resource_stats": {
+     "positive": 0.9777,
+     "otherFrame": 0.3885,
+     "center": [
+      1274,
+      177
+     ]
+    },
+    "tpl_btn_resource_stats": {
+     "positive": 0.9721,
+     "otherFrame": 0.3093,
+     "center": [
+      1580,
+      265
+     ]
+    },
+    "tpl_btn_close_resource_stats": {
+     "positive": 0.9641,
+     "otherFrame": 0.4504,
+     "center": [
+      2119,
+      193
+     ]
+    },
+    "tpl_title_items_resources": {
+     "positive": 0.979,
+     "otherFrame": 0.1386,
+     "center": [
+      195,
+      67
+     ]
+    },
+    "tpl_label_res_gold": 0.9754,
+    "tpl_label_res_wood": 0.9558,
+    "tpl_label_res_iron": 0.9847,
+    "tpl_label_res_mana": 0.9401
+   },
+   "cells": "8/8 格读对（2.9亿 11.1亿 3.2亿 4.1亿 2.0亿 22.4亿 6.2亿 7.2亿），全部 confident=true；数字字位分 0.955~1.0，argmax 余量 ≥ 0.23（小数点余量 ≥ 0.57）；「亿」matchIn 分 0.966~1.0，x 落点 1291 / 1817 / 1827 / 1828 与人工度量一致。",
+   "control": "对照组：整格直接 readNumberText（不先定位亿）读到「2.9.?」并返回 null —— 「亿」的亻被当成小数点（0.727）、乙认不出（0.679），证实 valueFont.segmentationHazard。",
+   "negative": "dig_resstat_yi 打 res_02 顶栏白字「8.1亿」区域仅 0.369，跨极性不会误命中。",
+   "note": "本轮字形模板直接从同一帧裁出，正样本分数偏乐观；真机上不同日期的帧预计数字分 0.9 上下，仍远高于 minScore 0.70 / confidentScore 0.78。"
+  }
+ }
+}

@@ -1,0 +1,1655 @@
+{
+ "$comment": "自动采集资源 —— 状态机与几何契约。坐标一律 2560x1440 参考分辨率。带 anchor 偏移的坐标必须先模板匹配拿锚点再加偏移，禁止写死。",
+ "title": "自动采集资源 状态机",
+ "game": "万龙觉醒",
+ "package": "com.lilithgames.samo.android.cn",
+ "refWidth": 2560,
+ "refHeight": 1440,
+ "schemaVersion": 2,
+ "capturedAt": "2026-09-09",
+ "sourceDoc": "docs/wanlong/流程-采集抓宠清体力.md",
+ "configSchema": "packages/automation/game-data/wanlong/gather-config.schema.json",
+ "templateList": "packages/automation/game-data/wanlong/gather-templates.json",
+ "criticalMechanics": {
+  "$comment": "★★★ 实现前必读。违反任何一条都会导致死循环或误判。",
+  "levelIsFloorNotTarget": {
+   "rule": "游戏搜索返回的是「等级 >= 搜索等级」的资源点，不是精确匹配。搜 5 级跳到 7 级点是正常结果。",
+   "variableName": "searchFloor",
+   "cardCheck": "卡片等级 >= searchFloor",
+   "forbidden": "卡片等级 == searchFloor —— 写成相等会在完全正常的情况下判失败并重搜，造成【无限重搜死循环】。任何代码评审都要盯这一行。",
+   "relaxSemantics": "occupiedRetryLimit 用尽后执行 searchFloor -= floorRelaxStep，这叫【放宽下限】：下限更低 ⇒ 候选点更多。它不等于「退而求其次采低级点」，放宽后照样可能采到高级点。",
+   "noUpperBound": "游戏无法搜『恰好等于某等级』的点，所以本状态机没有、也不可能有等级上界控制。要避开不想要的高级点只能靠 采集者/所属联盟/储量/行军时长 这四个维度。",
+   "acceptanceCriteria": "等级 >= searchFloor && 采集者 == 无 && 储量 >= minStorage && 所属联盟符合策略 && 行军时长 <= maxTravelSeconds && 坐标不与在途重复。等级偏高**不构成拒绝理由**，也**不计入 occupied 失败次数**。",
+   "empiricalProof": {
+    "$comment": "★真机实证（2026-09-09）：把伐木场搜索等级调到 **1**，连续搜索 6 次，返回的资源点等级依次是 8,7,7,7,7,8 —— 没有一次等于搜索值。",
+    "conclusion": "G8 的等级判据必须是 `卡片等级 >= searchFloor`。若写成 `==`，本次实验里 6 次全部会被判失败，occupiedFails 迅速打满、下限一路放宽到 minLevel 后放弃，表现为『一直在搜、永远不派兵』。",
+    "sideEffect": "也正因如此，dig_card_title 需要 0~9 全套。本轮附近只有 7/8 级伐木场，只采到 7 和 8；缺的数字请把 safety.onUnknownLevel 保持为 acceptCard（游戏已保证 >= 下限），等级读数只用于日志与优先级。"
+   }
+  },
+  "panelShiftsWithCategory": "搜索面板随选中分类左右平移（搜索按钮 x 从 454 挪到 1270）。搜索按钮、± 按钮、等级数字 ROI 全部由 tpl_btn_search 锚点推出，禁止硬编码。",
+  "reconcileNotBlindTap": "游戏内设置项（当前只有「自动采集至清空」）一律「读实际态 → 比对 → 仅不一致时点 → 复验 → 不符即中止」，禁止盲点。",
+  "captureBudget": "游戏在前台时单张截图实测约 750ms（后台 280ms）。一帧要尽量喂给多个 ROI，禁止为每个字段各截一帧。"
+ },
+ "budget": {
+  "captureMsForeground": 750,
+  "captureMsBackground": 280,
+  "expectedCapturesPerDispatch": 11,
+  "note": "单轮派兵约 9~12 帧 ≈ 8~9 秒。safety.maxCapturesPerCycle 默认 24 是熔断线。"
+ },
+ "anchors": {
+  "$comment": "锚点 = 模板匹配得到的中心点。其余控件用锚点 + 固定偏移推算。偏移值由 真机截图（用户本地，不入仓库） 量得，下阶段裁模板时必须复核并回填。",
+  "searchPanel": {
+   "template": "tpl_btn_search",
+   "roi": {
+    "x": 300,
+    "y": 996,
+    "w": 2000,
+    "h": 118
+   },
+   "measuredAt": {
+    "$comment": "真机实测（2560x1440 原生截图，非缩放图）。tpl_btn_search 模板中心 = 『搜索』二字墨迹中心。",
+    "darkspirit": [
+     464,
+     1055
+    ],
+    "gold": [
+     855,
+     1055
+    ],
+    "wood": [
+     1269,
+     1055
+    ],
+    "iron": [
+     1697,
+     1055
+    ],
+    "mana": [
+     2115,
+     1055
+    ]
+   },
+   "note": "★面板随选中分类左右平移，五个页签实测中心 x 依次为 464/855/1269/1697/2115（y 恒 1055）。相邻资源分类间距约 420，黑暗灵→金矿 391。所有按钮坐标必须由 tpl_btn_search 的命中中心加偏移推出，绝不可写死。",
+   "offsets": {
+    "$comment": "仅对 4 个资源分类面板有效。黑暗灵部队面板更宽（有子页签+说明行），±按钮跨度是 ±346 而不是 ±262，本表不适用。",
+    "levelMinus": [
+     -254,
+     -144
+    ],
+    "levelPlus": [
+     270,
+     -144
+    ],
+    "sliderTrackLeft": [
+     -180,
+     -144
+    ],
+    "sliderTrackRight": [
+     220,
+     -144
+    ],
+    "sliderOvershootRight": [
+     230,
+     -144
+    ],
+    "levelRowBandRoi": {
+     "x": -300,
+     "y": -262,
+     "w": 590,
+     "h": 66
+    },
+    "levelLabelRoiAtLevel1": {
+     "x": -235,
+     "y": -238,
+     "w": 100,
+     "h": 52
+    },
+    "levelDigitRoiAtLevel1": {
+     "x": -160,
+     "y": -238,
+     "w": 130,
+     "h": 52
+    },
+    "panelRect": {
+     "x": -340,
+     "y": -624,
+     "w": 690,
+     "h": 720
+    }
+   },
+   "measuredFromShot": {
+    "$comment": "从 「搜索面板·伐木场页签」真机帧（1280x720，即参考分辨率的 1/2）量得，精度 ±2 参考像素。该图上等级 = 1。",
+    "searchButtonRect": {
+     "x1": 1090,
+     "y1": 1002,
+     "x2": 1448,
+     "y2": 1104,
+     "center": [
+      1269,
+      1053
+     ]
+    },
+    "minusBtn": [
+     1017,
+     907
+    ],
+    "plusBtnRect": {
+     "x1": 1513,
+     "y1": 880,
+     "x2": 1567,
+     "y2": 935,
+     "center": [
+      1540,
+      907
+     ]
+    },
+    "sliderTrack": {
+     "x1": 1123,
+     "x2": 1483,
+     "y": 910
+    },
+    "handleAtLevel1": [
+     1090,
+     910
+    ],
+    "levelLabelAtLevel1": {
+     "x1": 1043,
+     "y1": 832,
+     "x2": 1097,
+     "y2": 862,
+     "text": "等级"
+    },
+    "levelDigitAtLevel1": {
+     "x1": 1120,
+     "y1": 832,
+     "x2": 1133,
+     "y2": 862,
+     "text": "1",
+     "note": "『1』字形窄（w=14），其余数字按 glyphW≈24 估。"
+    }
+   },
+   "levelLabelTracksHandle": {
+    "resolved": true,
+    "tracksHandle": true,
+    "$comment": "★★ 已在真机上定论：「等级 N」标签**随滑杆手柄一起左右移动**，不是固定左对齐。",
+    "experiment": "伐木场面板上把等级从 2 调到 5 再到 8，逐帧量『等级』二字墨迹左边界。",
+    "measured": {
+     "lv1": 147,
+     "lv2": 1093,
+     "lv3": 1148,
+     "lv4": 1204,
+     "lv5": 1259,
+     "lv6": 1314,
+     "lv7": 1369,
+     "lv8": 1425,
+     "$note": "lv1 那次是在黑暗灵面板量的（面板整体左移约 805），其余在伐木场面板。伐木场面板内 lv2..lv8 完美线性：每级右移 55.3px。"
+    },
+    "pxPerLevel": 55.3,
+    "mandatoryDesign": "实现一律用【先在整条滑杆行的宽带 ROI 里匹配 tpl_label_level，再取其命中框右侧的窄条作数字 ROI】。实测数字墨迹左边界 = 标签命中框左边界 + 75，数字 ROI 取 {x: hit.x+72, y: hit.y+4, w:30, h:44} 即可。禁止用相对搜索按钮的固定偏移。",
+    "verified": "dig_panel_level 1..8 在 8 个不同等级、以及金矿面板（另一个平移位置）上 OCR 全部读对，argmax 余量 >= 0.139。"
+   },
+   "maxLevel": {
+    "value": 8,
+    "measuredAt": "2026-09-09 真机",
+    "note": "连点 [+] 12 次后稳定在 8。资源等级上限随游戏进程增长，探测逻辑仍需保留。"
+   }
+  },
+  "resourceCard": {
+   "template": "tpl_btn_gather",
+   "roi": {
+    "x": 1240,
+    "y": 880,
+    "w": 1320,
+    "h": 320
+   },
+   "measuredAt": [
+    1840,
+    1048
+   ],
+   "note": "★真机复量（原生 2560x1440）：采集按钮矩形 x 1669..2011 / y 993..1104，**中心 (1840,1048)**，与『采集』二字墨迹中心重合。此前基于 1280x720 缩放图推出的 (1819,1045) 偏左 21px、偏上 3px，已作废。下面 offsetsRealDevice 全部相对 (1840,1048)。",
+   "offsets": {
+    "$comment": "★ 真机实测，全部相对 tpl_btn_gather 的匹配中心 (1840,1048)。卡片整体位置会随资源点在屏幕上的位置轻微漂移（实测 <25px），所以必须走锚点+偏移。",
+    "titleBandRoi": {
+     "x": -540,
+     "y": -448,
+     "w": 1000,
+     "h": 120
+    },
+    "levelDigitRoiRelResTitle": {
+     "x": -46,
+     "y": -6,
+     "w": 42,
+     "h": 50,
+     "note": "★等级数字 ROI 必须相对『资源名称模板』(tpl_res_*_title) 的命中框左上角推。实测：伐木场名左边界 1830 / 数字 1793..1817；金矿名左 1853 / 数字 1815..1839 —— 数字右边界恒为 名左-13、左边界恒为 名左-37。标题整体居中，所以名称左边界会随名称字数与等级位数变化，绝不能用固定偏移。"
+    },
+    "storageLabelRoi": {
+     "x": -296,
+     "y": -338,
+     "w": 86,
+     "h": 52
+    },
+    "storageValueRoi": {
+     "x": 90,
+     "y": -336,
+     "w": 205,
+     "h": 48
+    },
+    "gathererLabelRoi": {
+     "x": -296,
+     "y": -282,
+     "w": 124,
+     "h": 48
+    },
+    "gathererValueRoi": {
+     "x": 180,
+     "y": -280,
+     "w": 115,
+     "h": 46
+    },
+    "allianceLabelRoi": {
+     "x": -296,
+     "y": -224,
+     "w": 162,
+     "h": 50
+    },
+    "allianceValueRoi": {
+     "x": 100,
+     "y": -222,
+     "w": 145,
+     "h": 48,
+     "note": "右界特意停在 2085：2089..2130 是「⋯」更多按钮，框进去会污染匹配。"
+    },
+    "autoLabelRoi": {
+     "x": -90,
+     "y": -154,
+     "w": 225,
+     "h": 54
+    },
+    "autoCheckboxTap": [
+     -119,
+     -127
+    ],
+    "autoCheckboxProbe": [
+     -119,
+     -127
+    ],
+    "coordLabelRoi": {
+     "x": -46,
+     "y": 64,
+     "w": 80,
+     "h": 44
+    },
+    "coordValueRoi": {
+     "x": 26,
+     "y": 66,
+     "w": 124,
+     "h": 42
+    },
+    "closeByTapOutside": [
+     -1440,
+     -648
+    ]
+   },
+   "absoluteMeasured": {
+    "$comment": "实测外接框（不是建议 ROI）。x1/x2 是文字墨迹的左右边界。",
+    "cardRect": {
+     "x1": 1490,
+     "y1": 576,
+     "x2": 2126,
+     "y2": 1156
+    },
+    "titleLevelPart": {
+     "x1": 1686,
+     "y1": 644,
+     "x2": 1794,
+     "y2": 686,
+     "text": "等级8"
+    },
+    "titleNamePart": {
+     "x1": 1810,
+     "y1": 644,
+     "x2": 1938,
+     "y2": 686,
+     "text": "伐木场"
+    },
+    "storageLabel": {
+     "x1": 1542,
+     "y1": 718,
+     "x2": 1606,
+     "y2": 756,
+     "text": "储量"
+    },
+    "storageValue": {
+     "x1": 1924,
+     "y1": 718,
+     "x2": 2090,
+     "y2": 756,
+     "text": "1,260,000",
+     "align": "right"
+    },
+    "gathererLabel": {
+     "x1": 1542,
+     "y1": 774,
+     "x2": 1642,
+     "y2": 808,
+     "text": "采集者"
+    },
+    "gathererValue": {
+     "x1": 2062,
+     "y1": 774,
+     "x2": 2092,
+     "y2": 808,
+     "text": "无",
+     "align": "right"
+    },
+    "allianceLabel": {
+     "x1": 1542,
+     "y1": 834,
+     "x2": 1678,
+     "y2": 866,
+     "text": "所属联盟"
+    },
+    "allianceValue": {
+     "x1": 2062,
+     "y1": 834,
+     "x2": 2092,
+     "y2": 866,
+     "text": "无（也可能是 [XYZ1] 这类联盟缩写，会向左延伸）",
+     "align": "right"
+    },
+    "autoCheckboxCircle": {
+     "x1": 1688,
+     "y1": 904,
+     "x2": 1722,
+     "y2": 938,
+     "center": [
+      1704,
+      920
+     ]
+    },
+    "autoLabel": {
+     "x1": 1744,
+     "y1": 900,
+     "x2": 1938,
+     "y2": 946,
+     "text": "自动采集至清空"
+    },
+    "gatherButtonRect": {
+     "x1": 1656,
+     "y1": 994,
+     "x2": 1982,
+     "y2": 1096,
+     "center": [
+      1819,
+      1045
+     ]
+    },
+    "gatherTapRecorded": [
+     1764,
+     1044
+    ],
+    "coordLabel": {
+     "x1": 1782,
+     "y1": 1117,
+     "x2": 1845,
+     "y2": 1145,
+     "text": "坐标:"
+    },
+    "coordValue": {
+     "x1": 1845,
+     "y1": 1117,
+     "x2": 1955,
+     "y2": 1145,
+     "text": "607,560"
+    },
+    "resourcePointLabel": {
+     "x1": 1675,
+     "y1": 1117,
+     "x2": 1760,
+     "y2": 1145,
+     "text": "资源点"
+    }
+   },
+   "layoutNotes": [
+    "卡片内容整体居中于 x≈1808（卡片矩形 1490..2126 的中心），采集按钮中心 1819 与之基本重合。",
+    "标题「等级N 资源名」整体居中 ⇒ 等级变两位数时**整行左移**，等级数字必须以资源名模板的左边缘为右界反推，禁止固定 ROI。",
+    "储量 / 采集者 / 所属联盟三行的值都是**右对齐**到 x≈2092 ⇒ 值变长时向左生长，ROI 要往左留够（联盟缩写比「无」宽得多）。",
+    "「自动采集至清空」的圆形勾选框是实心圆，std 大概率不达标 ⇒ 用右侧的文字 tpl_label_auto_until_empty 定位，探针点 = 文字左边缘 - 56px、同一 y 中心。"
+   ],
+   "offsetsSuperseded": {
+    "$comment": "全部相对 tpl_btn_gather 的匹配中心。由 1280x720 参考图量得（参考分辨率精度 ±2px）。",
+    "titleBandRoi": {
+     "x": -159,
+     "y": -409,
+     "w": 310,
+     "h": 60
+    },
+    "storageLabelRoi": {
+     "x": -285,
+     "y": -333,
+     "w": 80,
+     "h": 50
+    },
+    "storageValueRoi": {
+     "x": 61,
+     "y": -339,
+     "w": 230,
+     "h": 54
+    },
+    "gathererLabelRoi": {
+     "x": -285,
+     "y": -279,
+     "w": 118,
+     "h": 52
+    },
+    "gathererValueRoi": {
+     "x": 201,
+     "y": -281,
+     "w": 110,
+     "h": 56
+    },
+    "allianceLabelRoi": {
+     "x": -285,
+     "y": -219,
+     "w": 156,
+     "h": 50
+    },
+    "allianceValueRoi": {
+     "x": 111,
+     "y": -223,
+     "w": 200,
+     "h": 58
+    },
+    "autoLabelRoi": {
+     "x": -81,
+     "y": -149,
+     "w": 206,
+     "h": 54
+    },
+    "autoCheckboxTap": [
+     -87,
+     -123
+    ],
+    "autoCheckboxProbe": [
+     -115,
+     -125
+    ],
+    "coordLabelRoi": {
+     "x": -49,
+     "y": 63,
+     "w": 90,
+     "h": 44
+    },
+    "coordValueRoi": {
+     "x": 21,
+     "y": 63,
+     "w": 180,
+     "h": 44
+    },
+    "closeByTapOutside": [
+     -560,
+     -400
+    ]
+   },
+   "offsetsSupersededNote": "上一版偏移，基于作废的锚点 (1819,1045)，只保留作对照，不要使用。",
+   "absoluteMeasuredRealDevice": {
+    "$comment": "真机 「8 级伐木场资源点卡片」真机帧（等级8 伐木场，储量 1,260,000，采集者 无，所属联盟 [XYZ1]，坐标 615,535）上的墨迹外接框。",
+    "gatherButtonRect": {
+     "x1": 1669,
+     "y1": 993,
+     "x2": 2011,
+     "y2": 1104,
+     "center": [
+      1840,
+      1048
+     ]
+    },
+    "titleRow": {
+     "y1": 642,
+     "y2": 686
+    },
+    "titleLevelWord": {
+     "x1": 1701,
+     "x2": 1790,
+     "text": "等级"
+    },
+    "titleLevelDigit": {
+     "x1": 1793,
+     "x2": 1817,
+     "text": "8"
+    },
+    "titleResName": {
+     "x1": 1830,
+     "x2": 1964,
+     "text": "伐木场"
+    },
+    "storageLabel": {
+     "x1": 1550,
+     "y1": 716,
+     "x2": 1622,
+     "y2": 756
+    },
+    "storageValue": {
+     "x1": 1942,
+     "y1": 719,
+     "x2": 2124,
+     "y2": 747,
+     "text": "1,260,000"
+    },
+    "gathererLabel": {
+     "x1": 1551,
+     "y1": 773,
+     "x2": 1659,
+     "y2": 808
+    },
+    "gathererValue": {
+     "x1": 2091,
+     "y1": 773,
+     "x2": 2126,
+     "y2": 808,
+     "text": "无"
+    },
+    "allianceLabel": {
+     "x1": 1550,
+     "y1": 832,
+     "x2": 1697,
+     "y2": 869
+    },
+    "allianceValue": {
+     "x1": 1958,
+     "y1": 832,
+     "x2": 2074,
+     "y2": 869,
+     "text": "[XYZ1]"
+    },
+    "allianceMoreBtn": {
+     "x1": 2089,
+     "x2": 2130,
+     "note": "「⋯」按钮，别框"
+    },
+    "autoCheckboxCircle": {
+     "x1": 1700,
+     "y1": 900,
+     "x2": 1741,
+     "y2": 941,
+     "center": [
+      1721,
+      921
+     ]
+    },
+    "autoLabel": {
+     "x1": 1759,
+     "y1": 901,
+     "x2": 1967,
+     "y2": 941,
+     "text": "自动采集至清空"
+    },
+    "coordLabel": {
+     "x1": 1801,
+     "y1": 1119,
+     "x2": 1867,
+     "y2": 1149,
+     "text": "坐标:"
+    },
+    "coordValue": {
+     "x1": 1870,
+     "y1": 1121,
+     "x2": 1978,
+     "y2": 1149,
+     "text": "615,535"
+    }
+   }
+  },
+  "createTroopPage": {
+   "template": "tpl_btn_march",
+   "roi": {
+    "x": 1800,
+    "y": 1150,
+    "w": 760,
+    "h": 230
+   },
+   "measuredAt": [
+    2088,
+    1241
+   ],
+   "anchorNote": "★锚点是「行军」两个汉字的中心 (2088,1241)（实测墨迹 x 2038..2138 / y 1214..1268），**不是按钮几何中心**。金色按钮整体是 x 1872..2306 / y 1194..1336，中心 (2089,1265)，正是文档记的点击点 (2090,1260)。按钮下半部是会变的倒计时，绝不能裁进模板。行军点击点 = 锚点 + (1,24)。",
+   "offsets": {
+    "marchTap": [
+     1,
+     24
+    ],
+    "travelTimeRoi": {
+     "x": -70,
+     "y": 43,
+     "w": 172,
+     "h": 42
+    },
+    "presetGatherBtn": [
+     -164,
+     -846
+    ],
+    "presetMaxBtn": [
+     142,
+     -846
+    ],
+    "presetBuffBtn": [
+     -570,
+     -846
+    ],
+    "loadValueRoi": {
+     "x": -500,
+     "y": 66,
+     "w": 300,
+     "h": 46
+    },
+    "troopValueRoi": {
+     "x": -500,
+     "y": 0,
+     "w": 340,
+     "h": 46
+    }
+   },
+   "absoluteMeasured": {
+    "backArrow": [
+     44,
+     64
+    ],
+    "titleCreateTroop": {
+     "x": 120,
+     "y": 40,
+     "w": 220,
+     "h": 52
+    },
+    "presetSlots": [
+     [
+      1832,
+      242
+     ],
+     [
+      1942,
+      242
+     ],
+     [
+      2054,
+      242
+     ],
+     [
+      2166,
+      242
+     ],
+     [
+      2276,
+      242
+     ]
+    ],
+    "buffBtn": [
+     1520,
+     400
+    ],
+    "gatherPresetBtn": [
+     1926,
+     400
+    ],
+    "maxBtn": [
+     2232,
+     400
+    ],
+    "packhorseCount": {
+     "x": 2140,
+     "y": 570,
+     "w": 200,
+     "h": 46,
+     "text": "36,995"
+    },
+    "troopsText": {
+     "x": 1590,
+     "y": 1246,
+     "w": 340,
+     "h": 44,
+     "text": "36,995/253,125"
+    },
+    "loadText": {
+     "x": 1590,
+     "y": 1312,
+     "w": 300,
+     "h": 44,
+     "text": "1,331,820"
+    },
+    "marchBtn": [
+     2090,
+     1260
+    ],
+    "marchTravelTime": {
+     "x": 2025,
+     "y": 1284,
+     "w": 155,
+     "h": 34,
+     "text": "00:01:04"
+    }
+   },
+   "measuredFromShot": {
+    "$comment": "从 「部队管理面板」真机帧（1280x720）量得，精度 ±2 参考像素。",
+    "goldButtonRect": {
+     "x1": 1872,
+     "y1": 1194,
+     "x2": 2306,
+     "y2": 1336,
+     "center": [
+      2089,
+      1265
+     ]
+    },
+    "marchTextRect": {
+     "x1": 2038,
+     "y1": 1214,
+     "x2": 2138,
+     "y2": 1268,
+     "text": "行军",
+     "polarity": "金底深棕字"
+    },
+    "travelTimeRect": {
+     "x1": 2025,
+     "y1": 1284,
+     "x2": 2180,
+     "y2": 1318,
+     "text": "00:01:04",
+     "polarity": "★金底【白】字"
+    },
+    "birdIconLeftOfTimer": {
+     "x1": 1989,
+     "y1": 1284,
+     "x2": 2015,
+     "y2": 1318,
+     "note": "倒计时左边有个白色小鸟/箭头图标。ROI 必须从 x=2018 起，把它排除，否则会干扰数字峰值。"
+    }
+   },
+   "measuredAtRealDevice": {
+    "$comment": "真机 「创建部队页」真机帧 实测墨迹外接框。",
+    "marchTextRect": {
+     "x1": 2064,
+     "y1": 1217,
+     "x2": 2174,
+     "y2": 1271,
+     "center": [
+      2119,
+      1244
+     ]
+    },
+    "goldButtonRect": {
+     "x1": 1895,
+     "y1": 1185,
+     "x2": 2355,
+     "y2": 1348,
+     "center": [
+      2125,
+      1266
+     ],
+     "note": "★点击点用金按钮中心 (2125,1266) = 模板中心 +(6,22)"
+    },
+    "travelTimeText": {
+     "x1": 2055,
+     "y1": 1287,
+     "x2": 2214,
+     "y2": 1314,
+     "text": "00:00:25",
+     "polarity": "金底【白】字"
+    },
+    "birdIcon": {
+     "x1": 2004,
+     "x2": 2040,
+     "note": "倒计时左边的白色小鸟图标，ROI 必须从 2050 起"
+    },
+    "pageTitle": {
+     "x1": 137,
+     "y1": 37,
+     "x2": 364,
+     "y2": 92,
+     "text": "创建部队"
+    },
+    "presetGatherButton": {
+     "x1": 1764,
+     "y1": 374,
+     "x2": 2160,
+     "y2": 428,
+     "textInk": {
+      "x1": 1892,
+      "x2": 1960
+     },
+     "iconInk": {
+      "x1": 2092,
+      "x2": 2135
+     },
+     "center": [
+      1962,
+      401
+     ]
+    },
+    "troopsLabel": {
+     "x1": 1383,
+     "y1": 1254,
+     "x2": 1446,
+     "y2": 1293,
+     "text": "兵力"
+    },
+    "loadLabel": {
+     "x1": 1384,
+     "y1": 1319,
+     "x2": 1481,
+     "y2": 1357,
+     "text": "负载量"
+    },
+    "backButton": {
+     "x1": 20,
+     "y1": 22,
+     "x2": 90,
+     "y2": 115,
+     "center": [
+      55,
+      68
+     ],
+     "template": "tpl_btn_back_generic"
+    }
+   },
+   "travelTimeRoiRelMarchTemplate": {
+    "x": -8,
+    "y": 73,
+    "w": 170,
+    "h": 40,
+    "note": "相对 tpl_btn_march 命中框左上角 (2058,1212)。实测倒计时墨迹 2055..2214 / 1287..1314。字形 19x28，白字金底，用 dig_march_btn 读（该套目前只有 0 1 2 5 9 :，不全）。"
+   }
+  },
+  "troopPanel": {
+   "template": "tpl_panel_title_troop",
+   "roi": {
+    "x": 950,
+    "y": 20,
+    "w": 500,
+    "h": 90
+   },
+   "entryTap": [
+    2522,
+    592
+   ],
+   "entryNote": "世界地图右侧边缘列表图标。★务必 x=2522；点 2468 会落到地图上把地图拖走。(2524,682) 是收起右侧栏的双箭头，别点错。",
+   "closeBy": {
+    "kind": "key",
+    "key": "BACK",
+    "fallbackTapOutside": [
+     400,
+     700
+    ]
+   },
+   "header": {
+    "queueIconTemplate": "tpl_queue_icon_panel",
+    "queueIconAt": [
+     2160,
+     60
+    ],
+    "queueIconRect": {
+     "x1": 2139,
+     "y1": 40,
+     "x2": 2181,
+     "y2": 79
+    },
+    "queueDigitRoiRelIcon": {
+     "x": 6,
+     "y": -4,
+     "w": 76,
+     "h": 48,
+     "note": "相对 tpl_queue_icon_panel 命中框左上角 (2134,36)。实测『2/5』墨迹 2188..2245 / 42..80，右边 2330+ 是「i」按钮。用 dig_dark20 读，真机 OCR 通过。"
+    },
+    "queueDigitRoiAbs": {
+     "x": 2196,
+     "y": 34,
+     "w": 80,
+     "h": 50,
+     "text": "4/5"
+    },
+    "measuredNote": "「部队管理面板（队列已满）」真机帧 是**满分辨率 2560x1440**（不是缩放图），量得：图标 2155..2197，「4/5」墨迹 2203..2258 / y 40..78，右边 2330..2388 是「i」信息按钮，别框进去。字是**浅灰**压在白底上，对比度不高 —— 数字模板 std 可能只有 25~40（不是黑白强对比那种 60~90），裁剪必须贴紧字形。"
+   },
+   "rows": {
+    "firstRowCenterY": 248,
+    "rowPitchY": 250,
+    "maxRows": 5,
+    "recallButton": [
+     1055,
+     0
+    ],
+    "troopCountRoi": {
+     "x": 1200,
+     "y": -100,
+     "w": 180,
+     "h": 46
+    },
+    "targetThumb": [
+     1243,
+     -9
+    ],
+    "coordLabelTemplate": "tpl_label_coord_row",
+    "coordValueRoi": {
+     "x": 1215,
+     "y": 48,
+     "w": 190,
+     "h": 44
+    },
+    "statusBarRoi": {
+     "x": 1461,
+     "y": 16,
+     "w": 477,
+     "h": 56
+    },
+    "statusWordTemplates": [
+     "tpl_status_gathering",
+     "tpl_status_gathering_green",
+     "tpl_status_gather_marching",
+     "tpl_status_returning"
+    ],
+    "statusTimerRoiRelWord": {
+     "x": 12,
+     "y": -22,
+     "w": 175,
+     "h": 44
+    },
+    "statusTimerRoiFallback": {
+     "x": 1655,
+     "y": 24,
+     "w": 180,
+     "h": 44
+    },
+    "commander1StamRoi": {
+     "x": 2060,
+     "y": -56,
+     "w": 200,
+     "h": 44
+    },
+    "commander2StamRoi": {
+     "x": 2060,
+     "y": 34,
+     "w": 200,
+     "h": 44
+    },
+    "note": "上表除 firstRowCenterY / rowPitchY 外，y 均是相对 rowY 的偏移；rowY = firstRowCenterY + (i-1)*rowPitchY。",
+    "rowPitchNote": "真机实测行 1 状态条 y≈282..312、行 2 状态条 y≈525..555 ⇒ 行距 ≈ 250（旧值 243 来自缩放图）。",
+    "statusVocabulary": {
+     "$comment": "★真机实测到的状态词与它们的**渲染方式**。两类背景 ⇒ 两套数字模板，绝不可互换。",
+     "onRowBackground": {
+      "$note": "行没有载重进度条时，状态词与倒计时是【深灰字】直接压在行底色上（去程=浅蓝行，返回=浅蓝行），状态词左对齐在 x≈1435，倒计时紧跟其右 +13px。倒计时用 dig_dark20 读。",
+      "words": {
+       "采集行军中": "tpl_status_gather_marching（实测，去程）",
+       "返回中": "tpl_status_returning（实测，采集完成或召回后回城）"
+      },
+      "statusWordLeftX": 1435,
+      "timerGapPx": 13,
+      "timerGlyph": "21x29 深字浅底 = dig_dark20"
+     },
+     "onProgressBar": {
+      "$note": "行在采集时会出现一条载重进度条，状态词与倒计时是【白字】压在进度条上，整体**居中**在进度条里（x 随字数变，实测『采集中』起点 1547）。进度条左段是已完成的绿色、右段是未完成的灰色，边界随采集进度右移，会先后盖过『采』『集』『中』⇒ 需要 tpl_status_gathering(全灰底) 与 tpl_status_gathering_green(采集二字落绿底) 两张模板做 anyTemplate。倒计时始终落在灰段上，用 dig_light16 读。",
+      "words": {
+       "采集中": "tpl_status_gathering / tpl_status_gathering_green"
+      },
+      "statusWordInkAt": {
+       "x1": 1547,
+       "x2": 1634
+      },
+      "timerInkAt": {
+       "x1": 1645,
+       "x2": 1780
+      },
+      "timerGlyph": "16x25 白字深底 = dig_light16"
+     },
+     "notCaptured": [
+      "驻扎中",
+      "集结中",
+      "战斗中",
+      "（可能还有别的）—— 本轮未出现，出现时补"
+     ]
+    },
+    "staminaMeasured": {
+     "dropIconRect": {
+      "x1": 2046,
+      "y1": 193,
+      "x2": 2089,
+      "y2": 227
+     },
+     "digitsInk": {
+      "x1": 2102,
+      "y1": 202,
+      "x2": 2219,
+      "y2": 225,
+      "text": "105 / 105"
+     },
+     "digitSet": "dig_stamina（白字蓝底带黑描边，20x26；目前只有 0 1 5 /）"
+    },
+    "coordMeasured": {
+     "labelInk": {
+      "x1": 1143,
+      "y1": 310,
+      "x2": 1210,
+      "y2": 339,
+      "text": "坐标:"
+     },
+     "valueInk": {
+      "x1": 1212,
+      "x2": 1321,
+      "text": "615,535"
+     },
+     "underlineNote": "★这行文字带下划线，y>=341 是下划线，模板与 ROI 都必须停在 339。",
+     "digitSet": "dig_card_coord（15x25 浅底灰字，与卡片坐标同一套，真机 OCR 三帧全对）"
+    }
+   }
+  },
+  "worldMapQueueBadge": {
+   "$comment": "世界地图右侧栏的行军队列徽章，可在不打开部队管理面板的情况下便宜地读出 N/M。半透明叠在地图上，std 可能不足 —— 只当快路，权威读数仍以部队管理面板为准。",
+   "template": "tpl_queue_icon_map",
+   "iconAt": [
+    2497,
+    630
+   ],
+   "digitRoi": {
+    "x": 2470,
+    "y": 652,
+    "w": 70,
+    "h": 40,
+    "text": "3/5"
+   },
+   "reliability": "low"
+  }
+ },
+ "fixedTaps": {
+  "$comment": "少数确认稳定、不随面板平移的坐标。除此之外一律模板定位。",
+  "cityToMap": [
+   115,
+   1330
+  ],
+  "worldSearchIcon": [
+   100,
+   1112
+  ],
+  "categoryBarY": 1310,
+  "categoryX": {
+   "darkspirit": 460,
+   "gold": 874,
+   "wood": 1276,
+   "iron": 1686,
+   "mana": 2088
+  }
+ },
+ "checkboxRule": {
+  "$comment": "「自动采集至清空」勾选态判定。★下阶段必须两态各截一帧标定后回填 on/off 的 RGB，当前 off 态未采样。",
+  "method": "像素取色 5x5 邻域 RGB 均值（与 stamina-config 的 toggle 同思路，但这是圆形勾选框不是滑动开关）。★必须取自 RawFrame：PreparedFrame 只有灰度，拿不到颜色。",
+  "probeAt": [
+   1721,
+   921
+  ],
+  "probeAtNote": "真机实测圆心。圆外接框 x 1700..1741 / y 900..941（直径 42）。★优先用 tpl_label_auto_until_empty 的命中框左边缘 - 38px 推算探针点（实测文字墨迹左边界 1759，圆心 1721）。",
+  "measured": {
+   "on": [
+    255,
+    255,
+    103
+   ],
+   "off": [
+    83,
+    83,
+    83
+   ],
+   "method": "RawFrame 上取 (1721,921) 的 7x7 RGB 均值",
+   "frames": {
+    "on": "「8 级伐木场资源点卡片」真机帧",
+    "off": "「卡片·自动采集至清空未勾选」真机帧"
+   }
+  },
+  "provisionalRule": null,
+  "calibrationTask": null,
+  "rule": "on: r>200 && b<160（实测 255,255,103）；off: r<130 && |r-g|<10 && |g-b|<10（实测 83,83,83）。两态差异极大，判据非常稳。模板 tpl_checkbox_auto_on / _off 作交叉校验（真机扫描中两者互斥、无误命中）。"
+ },
+ "allianceJudgement": {
+  "$comment": "卡片「所属联盟」实测不只有「无」，还会出现联盟缩写标签（如 [XYZ1]）。三态判定，不做通用文字识别。",
+  "roi": "resourceCard.offsets.allianceValueRoi",
+  "order": [
+   "1. tpl_value_none 命中 ⇒ neutral（中立）",
+   "2. tpl_alliance_own 命中 ⇒ own（本方领地，通常有采集加成）",
+   "3. 两者都不命中 ⇒ foreign（他方领地）"
+  ],
+  "decision": {
+   "own-only": "只接受 own",
+   "own-and-neutral": "接受 own 与 neutral（默认）",
+   "any": "全接受，不读这一项，省一次匹配"
+  },
+  "degrade": "thresholds.ownAllianceTag 为空 或 tpl_alliance_own 未裁 ⇒ 引擎降级为「只接受 neutral」并在面板告警。宁可少采也不要把队伍派进敌方领地。",
+  "note": "tpl_alliance_own 是**按账号**的模板（不同账号联盟不同），存在账号专属模板集里，不进 samo_gather 公共集。",
+  "ownAllianceMeasured": {
+   "$comment": "★真机纠正：本账号联盟是 **[ABC1]**（个人信息页读到），不是资源点卡片上常见的 [XYZ1]。",
+   "ownTag": "ABC1",
+   "wrongAssumption": "上一轮把卡片上的 [XYZ1] 当成了本方联盟并据此裁了 tpl_alliance_own —— 那是**他方**联盟，会把敌方领地误判成本方并把队伍派进去。该模板已删除。",
+   "currentState": "tpl_alliance_own 缺失（本轮附近没有落在 [ABC1] 领地内的资源点可供裁剪）。在补齐之前 allianceTerritory 必须降级为『只接受中立（所属联盟=无）』。",
+   "sampleTemplate": "tpl_alliance_tag_sample_xyz1 仅用于验证『所属联盟』字段 ROI，禁止当作本方判据。"
+  }
+ },
+ "runtimeState": {
+  "$comment": "一轮执行期间引擎持有的变量。写在这里是为了让实现者知道哪些量必须是变量而不是常量。",
+  "searchFloor": "本轮的搜索下限（integer）。初值由 levelPolicy 算出，occupiedRetryLimit 用尽后按 floorRelaxStep 减少，下探到 minLevel 为止。",
+  "maxLv": "动态探测到的等级上限（带 probeIntervalMin 的缓存）。",
+  "occupiedFails": "同一 searchFloor 下的连续失败计数。★只有真失败才 +1：等级高于下限不算失败。",
+  "queueN / queueM": "行军队列已用 / 上限。",
+  "inFlight[]": "在途队伍：{ rowIndex, coord, status, remainingSec, sampledAt, travelTimeSec, etaAt, freeAt }。",
+  "targetCoord": "本轮目标点坐标，用于 G15 校验派兵是否真的成功。",
+  "backoffIndex": "退避序列游标，派兵成功后清零。",
+  "capturesThisCycle": "本轮已截图数，触到 safety.maxCapturesPerCycle 即熔断。"
+ },
+ "states": [
+  {
+   "id": "G0",
+   "name": "确保游戏在前台且处于世界地图",
+   "pre": "实例已连接、serial 可用",
+   "detect": "foreground == com.lilithgames.samo.android.cn；模板 tpl_world_search_icon 出现在 ROI {20,1030,200,180}",
+   "success": "放大镜图标命中",
+   "fail": [
+    "前台不是游戏 → launchApp(cold=false)，等 60s 主界面",
+    "在城内（tpl_nav_map_toggle 命中）→ tap (115,1330) 切世界地图，等 3s",
+    "有弹窗（tpl_btn_close_generic 命中）→ 点关闭，最多 3 次",
+    "都不成立 → key BACK，最多 3 次；仍失败 → 中止本轮并留痕"
+   ],
+   "retry": 3,
+   "timeoutMs": 90000
+  },
+  {
+   "id": "G1",
+   "name": "读部队管理面板：队列占用 / 各队 ETA / 指挥官耐力",
+   "pre": "G0 通过",
+   "detect": "tap (2522,592) 打开 → waitFor tpl_panel_title_troop（ROI {950,20,500,90}）→ 同一帧读 队列 N/M、每行 状态词+倒计时+坐标+双指挥官耐力",
+   "success": "N/M 识别成功且 N <= M <= 5；行数 == N",
+   "fail": [
+    "面板没打开（可能点到地图）→ key BACK，重试 tap，最多 2 次",
+    "N/M 识别失败 → 重截一帧重试 3 次；仍失败 → 中止本轮，按 schedule.retryBackoffSeconds 退避",
+    "行数与 N 不符 → 记 warn，以行数为准并强制下轮校准"
+   ],
+   "retry": 2,
+   "timeoutMs": 20000,
+   "sideEffect": "把每行 etaAt = sampledAt + remaining 写进 store；freeAt = etaAt + travelTime（该队派兵时记录的值；无记录则用 safety.unknownEtaFallbackSeconds/6 估）"
+  },
+  {
+   "id": "G2",
+   "name": "判定是否要派兵（纯计算，不截图）",
+   "pre": "G1 通过",
+   "detect": "freeSlots = M - N - reserveQueues；gatherUsed = 已在途的采集队数；按 priority 挑出还欠队列的资源类型",
+   "success": "freeSlots > 0 且 存在可派资源 且 至少一名指挥官耐力 >= minCommanderStamina 且 本小时派兵次数 < maxDispatchesPerHour",
+   "fail": [
+    "freeSlots <= 0 → 关面板，按 min(所有 freeAt) + slackSeconds + rand(jitter) 排唤醒，本轮结束（成功结束，非错误）",
+    "指挥官耐力全不足 → 关面板，排 30min 后唤醒并在面板上报警告",
+    "熔断触发（maxDispatchesPerHour）→ 停止本实例的自动采集并报错"
+   ],
+   "retry": 0,
+   "timeoutMs": 0
+  },
+  {
+   "id": "G3",
+   "name": "关面板回世界地图，打开搜索面板",
+   "pre": "G2 决定要派兵",
+   "detect": "key BACK 关面板 → 确认 tpl_world_search_icon 命中 → tap (100,1112) → waitFor tpl_btn_search（全宽横带 ROI {600,980,1960,150}）",
+   "success": "tpl_btn_search 命中，记为 searchAnchor",
+   "fail": [
+    "BACK 没关掉面板 → 再 BACK 一次；仍在 → 点面板外空白 (400,700)",
+    "搜索面板没开 → 重 tap 放大镜，最多 2 次",
+    "超时 → 回 G0"
+   ],
+   "retry": 2,
+   "timeoutMs": 15000
+  },
+  {
+   "id": "G4",
+   "name": "选资源分类（对账式）",
+   "pre": "G3 拿到 searchAnchor",
+   "detect": "先判当前选中分类：若 tpl_auto_btn 命中则当前是「黑暗灵部队」；否则用 searchAnchor.x 反推（面板中心 x ≈ 选中分类 x，容差 ±40）。目标分类 x 见 fixedTaps.categoryX。",
+   "action": "仅在不一致时 tap (categoryX, 1310)，afterDelay 800ms 后复验",
+   "success": "重新匹配 tpl_btn_search 后 |anchor.x - 目标 categoryX| <= 40 且 tpl_auto_btn 未命中",
+   "fail": [
+    "复验仍不符 → 再点一次，最多 2 次；仍不符 → 中止本轮并留痕（禁止无限点）",
+    "点完面板消失 → 回 G3"
+   ],
+   "retry": 2,
+   "timeoutMs": 12000,
+   "note": "★换分类后面板会平移，后续所有坐标必须用新的 searchAnchor 重算。"
+  },
+  {
+   "id": "G5",
+   "name": "探测等级上限 maxLv",
+   "pre": "G4 通过；searchRetry.probeMaxLevel=true 且缓存已过期（probeIntervalMin）",
+   "detect": "swipe 滑杆 从 (anchor+sliderTrackLeft) 到 (anchor+sliderOvershootRight)，duration 500ms → 匹配 tpl_label_level 定位标签、取其右侧 90px 读数得 v1 → 再 swipe 一次 → 读得 v2。★sliderOvershootRight 已从 +300 改为 +230（abs 1500）：+300 会把抬手点落在 [+] 按钮（实测 1513..1567）上。",
+   "success": "v1 == v2 且 1 <= v1 <= maxLevelHardCap ⇒ maxLv = v1，写缓存。★缓存按资源分别记（state.levelByResource[type]）：每个分类的滑杆上限可以不一样（2026-09-18 实证魔水池滑杆 10、附近只有 8 级点）。★滑杆上限 ≠ 附近真有的最高等级，起步下限还要看「搜不到」的记忆（levelMemory.ts planStartFloor：上次 F 级搜不到 ⇒ 本轮从 F−1 起步）",
+   "fail": [
+    "swipe 抛 SecurityException: INJECT_EVENTS → 重试 safety.swipeRetry 次（实测重试即成功）",
+    "两次读数不等 → 再 swipe+读一次，取连续相同的两次；3 次仍不稳定 → 用 assumedMaxLevel 并记 warn",
+    "数字识别失败 → 用 assumedMaxLevel 并记 warn"
+   ],
+   "retry": 3,
+   "timeoutMs": 20000,
+   "skipWhen": "probeMaxLevel=false 或缓存未过期 ⇒ 直接用缓存/assumedMaxLevel"
+  },
+  {
+   "id": "G6",
+   "name": "把滑杆调到 searchFloor（搜索下限，不是目标等级）",
+   "pre": "已知 maxLv 与 levelPolicy",
+   "compute": "首轮：relative ⇒ searchFloor = clamp(maxLv + offset, minLevel, maxLv)；absolute ⇒ searchFloor = clamp(level, minLevel, maxLv)。重试轮：searchFloor 已被 G8 的放宽逻辑减过，直接沿用。",
+   "detect": "匹配 tpl_label_level（匹配区 levelRowBandRoi）→ 取标签右侧 90px 读 cur → 需要按 [−] (cur - searchFloor) 次或 [+] (searchFloor - cur) 次 → 点完重读复验。★禁止用固定 levelDigitRoi：标签可能随滑杆手柄移动（见 searchPanel.levelLabelTracksHandle）。",
+   "action": "★对账：读→比→只在不一致时点→复验。多次点击合并进一次 adb shell 省往返（实测 5 次分开 103ms、合并 34ms）。",
+   "success": "复验读数 == searchFloor（这里的 == 指的是**滑杆设定值**，与卡片等级判据无关）",
+   "fail": [
+    "复验不符 → 按差值再补点，最多 2 轮、累计不超过 12 次点击",
+    "仍不符或数字读不出 → 中止本轮并留痕（滑杆值读不准就不该发起搜索）"
+   ],
+   "retry": 2,
+   "timeoutMs": 20000
+  },
+  {
+   "id": "G7",
+   "name": "点搜索",
+   "pre": "G6 通过",
+   "detect": "tapTemplate tpl_btn_search（★重新匹配拿最新 anchor，因为面板可能刚平移过）→ afterDelay searchRetry.researchDelayMs",
+   "success": "点击已发出",
+   "fail": [
+    "找不到搜索按钮 → 回 G3"
+   ],
+   "retry": 2,
+   "timeoutMs": 10000
+  },
+  {
+   "id": "G8",
+   "name": "校验资源点卡片（一帧多 ROI）",
+   "pre": "G7 已点搜索",
+   "detect": "waitFor tpl_btn_gather 出现（ROI {1560,950,520,190}，waitMs 8000, pollMs 700）→ 用这一帧同时读：①标题里的资源名 tpl_res_*_title ②它左侧的等级数字（dig_card_title）③储量数字（dig_card_amount）④采集者值是否 tpl_value_none ⑤所属联盟三态（见 allianceJudgement）⑥勾选框像素探针 ⑦坐标数字（dig_card_coord）",
+   "acceptance": [
+    "资源名 == 目标类型",
+    "★等级 >= searchFloor（严禁写 ==；等级高于下限是正常且更优的结果）",
+    "采集者 == 无（requireGathererNone 时）",
+    "储量 >= minStorage",
+    "所属联盟符合 allianceTerritory 策略",
+    "坐标不与 inFlight[] 中任一目标重复（avoidDuplicateTarget 时）"
+   ],
+   "fail": [
+    "卡片没出现 → 这个下限附近没有点：★立刻放宽下限（不重试、不计入 occupiedFails），并在后续搜到卡片或本次放弃时把「下限 F 搜不到」记进 state.levelByResource[type].noResultFloor，下一轮直接从 F−1 起步（记忆寿命 = probeIntervalMin，上限探测值变了即作废）。以前把它当成 occupiedFails 在同一下限重试 4 次，每次白等 8 秒 + 约 9 张截图，截图熔断先到 → 魔水池永远派不出去（2026-09-18）",
+    "采集者非「无」/ 储量不足 / 联盟不符 / 坐标重复 → occupiedFails += 1 → 回 G7 重搜（游戏会跳到下一个点）",
+    "★等级 < searchFloor（理论上不会发生，游戏保证 >=）→ 记 error 级日志并留痕（说明滑杆没设对或等级数字识别错了），occupiedFails += 1 回 G7",
+    "occupiedFails >= occupiedRetryLimit → searchFloor -= floorRelaxStep（放宽下限）；若 searchFloor < minLevel 则本轮放弃（按 schedule.giveUpCooldownMin 冷却后重试），否则 occupiedFails = 0 回 G6 重设滑杆",
+    "资源名与目标不符 → 说明分类选错，回 G4",
+    "等级数字读不出 → 按 safety.onUnknownLevel 处理（默认 abort；acceptCard 时按「游戏只返回 >= 下限的点」直接视为满足下限，继续走其余校验）",
+    "储量读不出 → 按 safety.onUnknownStorage 处理（默认换点）"
+   ],
+   "retry": 1,
+   "timeoutMs": 12000,
+   "antiPattern": "【必须在代码评审时检查】任何形式的 `cardLevel === searchFloor` / `cardLevel != floor 就重搜` 都是 bug：正常游戏行为会被判成失败，occupiedFails 迅速打满，下限一路放宽到 minLevel 后本轮放弃，表现为「一直在搜、永远不派兵」。"
+  },
+  {
+   "id": "G9",
+   "name": "对账「自动采集至清空」",
+   "pre": "G8 通过；复用 G8 那一帧的 RawFrame 像素",
+   "detect": "先匹配 tpl_label_auto_until_empty 定位「自动采集至清空」文字 → 探针点 = 文字左边缘 - 56px、同 y 中心（等级=当前卡片时实测落在 (1704,920)）→ 取 5x5 RGB 均值 → 按 checkboxRule 判定实际态。★勾选框是实心圆，std 不达标，不能用模板匹配它本身。",
+   "success": "实际态 == config.autoGatherUntilEmpty",
+   "action": "不一致时 tap 圆心（探针点，实测 (1704,920)；文档记的 (1732,922) 落在文字上、实测也能切换，两者取其一即可）一次 → 重截一帧复验",
+   "fail": [
+    "复验仍不符 → 按 safety.abortOnReconcileFail 处理（默认中止本轮并报错，禁止再点）",
+    "checkboxRule.measured 尚未标定 → 跳过本步、只把实际像素值记进日志（不点击）"
+   ],
+   "retry": 1,
+   "timeoutMs": 8000
+  },
+  {
+   "id": "G10",
+   "name": "点采集",
+   "pre": "G9 通过",
+   "detect": "tapTemplate tpl_btn_gather → waitFor tpl_btn_create_troop（ROI {1800,240,600,140}，waitMs 6000）",
+   "success": "「创建部队」按钮出现",
+   "fail": [
+    "没出现 → 可能弹了「队列已满」或「体力不足」提示（tpl_toast_queue_full）→ 截图留痕、key BACK 退出、回 G1 重读队列",
+    "超时 → 回 G0"
+   ],
+   "retry": 1,
+   "timeoutMs": 12000
+  },
+  {
+   "id": "G11",
+   "name": "进创建部队页",
+   "pre": "G10 通过",
+   "detect": "tapTemplate tpl_btn_create_troop → waitFor tpl_btn_march（ROI {1850,1170,520,200}，waitMs 8000）",
+   "success": "金色「行军」按钮出现，记为 marchAnchor",
+   "fail": [
+    "没进页 → 重点一次；仍失败 → key BACK 回世界地图，occupiedFails += 1 回 G7"
+   ],
+   "retry": 1,
+   "timeoutMs": 14000
+  },
+  {
+   "id": "G12",
+   "name": "一键采集编成",
+   "pre": "G11 拿到 marchAnchor",
+   "detect": "tapTemplate tpl_btn_preset_gather（(1926,400)，用模板定位）→ afterDelay 600ms",
+   "success": "点击已发出（编成结果在 G13 一并校验）",
+   "fail": [
+    "找不到「采集」预设按钮 → 记 warn 继续（部分编队槽可能已预设好），由 G13 的兵力>0 兜底"
+   ],
+   "retry": 1,
+   "timeoutMs": 8000
+  },
+  {
+   "id": "G13",
+   "name": "读 travelTime 与编成结果（一帧多 ROI）",
+   "pre": "G12 之后",
+   "detect": "截一帧，读：①行军按钮上的 HH:MM:SS（dig_march_btn）②兵力 a/b ③负载量",
+   "success": "travelTime 解析成功且 <= maxTravelSeconds；兵力 a > 0；（preferLoadCoversStorage 时 负载量 >= 储量）",
+   "fail": [
+    "travelTime 超阈 → key BACK 退出创建部队页与卡片，occupiedFails += 1 回 G7",
+    "兵力 a == 0 → 编成失败，重点一次 tpl_btn_preset_gather；仍为 0 → 中止本轮并报错「无可用部队」",
+    "负载量 < 储量 且 preferLoadCoversStorage → occupiedFails += 1 回 G7",
+    "travelTime 读不出 → 记 warn，用 safety.unknownEtaFallbackSeconds/6 作为估计值继续（不因识别失败放弃派兵）"
+   ],
+   "retry": 1,
+   "timeoutMs": 10000,
+   "note": "travelTime 是 freeAt 计算的关键输入，必须随本次派兵一起记进 inFlight[]。"
+  },
+  {
+   "id": "G14",
+   "name": "行军",
+   "pre": "G13 通过",
+   "detect": "tapTemplate tpl_btn_march（点击点 = 锚点 + offsets.marchTap）→ afterDelay 1500ms",
+   "success": "点击已发出",
+   "fail": [
+    "找不到行军按钮 → 重截重找一次；仍无 → 中止本轮"
+   ],
+   "retry": 1,
+   "timeoutMs": 8000
+  },
+  {
+   "id": "G15",
+   "name": "确认派兵成功",
+   "pre": "G14 之后",
+   "detect": "waitFor tpl_world_search_icon 重新出现（已回到世界地图，waitMs 8000）；随后回 G1 重读部队管理面板确认 N 增加了 1",
+   "success": "N_new == N_old + 1，且新增行的坐标 == targetCoord",
+   "fail": [
+    "N 没变 → 派兵实际失败（队列被别的功能块抢了 / 弹了错误提示）→ 留痕、回 G2 重新决策，本轮不计成功",
+    "回不到世界地图 → key BACK 最多 3 次 → 回 G0"
+   ],
+   "retry": 1,
+   "timeoutMs": 20000
+  },
+  {
+   "id": "G16",
+   "name": "记账并排下一轮唤醒",
+   "pre": "G15 成功",
+   "compute": "gatherDoneAt = sampledAt + remaining（G15 复读到的该行倒计时）；freeAt = gatherDoneAt + travelTime；wakeAt = freeAt + slackSeconds + rand(0, jitterSeconds)。backoffIndex = 0。",
+   "success": "定时器已注册；inFlight[] 已写入 store 供 UI 每秒本地递推",
+   "fail": [
+    "无"
+   ],
+   "next": "若 freeSlots 仍 > 0 且还有欠队列的资源 ⇒ 不关面板，直接回 G3 继续派下一支（searchFloor 重置为 levelPolicy 首轮值，occupiedFails 清零）；否则本轮结束"
+  }
+ ],
+ "wakeupLoop": {
+  "$comment": "唤醒后的短流程（不是完整派兵，先确认真的有空位）",
+  "steps": [
+   "W1 唤醒（wakeAt 到期）→ 执行 G0、G1",
+   "W2 若 N < M - reserveQueues ⇒ 进 G2 正常派兵，backoffIndex 清零",
+   "W3 否则 ⇒ 取 retryBackoffSeconds[backoffIndex++]（用完取最后一项、封顶 maxBackoffSeconds）重排唤醒，记 info 日志",
+   "W4 距上次采样 > calibrateIntervalMin ⇒ 无论如何强制走一次 G1 校准"
+  ]
+ },
+ "digitContexts": {
+  "$comment": "★ TM_CCOEFF_NORMED 没有尺度不变性，也对黑白极性敏感。字号或前景/背景极性不同的数字，必须是不同的模板集，绝不可复用。glyphH 是实测字形高度（参考分辨率像素）。",
+  "dig_panel_level": {
+   "where": "搜索面板「等级 N」（滑杆当前值 = searchFloor）",
+   "polarity": "浅底黑字",
+   "glyphH": 30,
+   "glyphW": 24,
+   "chars": "0123456789",
+   "roi": "★以 tpl_label_level 的匹配右边缘为左界、向右取 90px（匹配区用 searchPanel.offsets.levelRowBandRoi）。禁止用固定偏移——标签可能随滑杆手柄移动，见 searchPanel.levelLabelTracksHandle。",
+   "align": "left",
+   "measured": "「搜索面板·伐木场页签」真机帧（等级=1）：「等级」墨迹 1043..1097 / y 832..862，数字『1』1120..1133（w=14，1 是窄字形）。数字与标签之间空 23px。"
+  },
+  "dig_card_title": {
+   "where": "资源点卡片标题「等级8 伐木场」",
+   "polarity": "浅粉底黑字",
+   "glyphH": 31,
+   "glyphW": 25,
+   "chars": "0123456789",
+   "roi": "以 tpl_res_*_title 的左边缘为右界，向左取 90px",
+   "align": "right",
+   "note": "★标题整体居中，等级变成两位数（10+）时会整体左移 ⇒ 必须以资源名模板为锚，禁止固定 ROI。也正因为下限策略允许采到更高等级，这里必须支持两位数。"
+  },
+  "dig_card_amount": {
+   "where": "资源点卡片「储量」值",
+   "polarity": "浅粉底黑字",
+   "glyphH": 28,
+   "glyphW": 21,
+   "chars": "0123456789,",
+   "roi": "resourceCard.offsets.storageValueRoi",
+   "align": "right"
+  },
+  "dig_card_coord": {
+   "where": "资源点卡片底部「坐标:607,560」",
+   "polarity": "浅底灰字",
+   "glyphH": 24,
+   "glyphW": 18,
+   "chars": "0123456789,",
+   "roi": "resourceCard.offsets.coordValueRoi",
+   "align": "left",
+   "note": "字号比储量小，需独立一套。若实测字高差 <8% 可与 dig_card_amount 合并。"
+  },
+  "dig_march_btn": {
+   "where": "创建部队页 行军按钮上的行军耗时",
+   "polarity": "★金底【白】字",
+   "polarityWarning": "早期文档写成「金底黑字」是错的：实测「00:01:04」是**白字**，只有上面的「行军」二字才是深棕字。TM_CCOEFF_NORMED 跨极性会给出强负相关，用黑字模板去匹配白字**一个都匹配不上**。裁模板前先看一眼 「部队管理面板」真机帧。",
+   "glyphH": 33,
+   "glyphW": 21,
+   "chars": "0123456789:",
+   "roi": "createTroopPage.offsets.travelTimeRoi（已排除左侧的白色小鸟图标，从 x=2018 起）",
+   "align": "left",
+   "measured": "「部队管理面板」真机帧：数字墨迹 2025..2180 / y 1284..1318，8 个字形共 155px ⇒ 数字约 21px、冒号约 10px。"
+  },
+  "dig_status_timer": {
+   "where": "部队管理 状态条「采集中 09:06:17」",
+   "polarity": "深灰底白字",
+   "glyphH": 26,
+   "glyphW": 18,
+   "chars": "0123456789:",
+   "roi": "以状态词模板的右边缘为左界，向右取 175px",
+   "align": "left",
+   "measured": "「部队管理面板（队列已满）」真机帧（满分辨率）第 1 行：「采集中」墨迹 1582..1662，「09:06:17」1675..1807 / y 285..307。灰底白字，对比度好。"
+  },
+  "dig_queue": {
+   "where": "部队管理表头「4/5」",
+   "polarity": "白底灰字",
+   "glyphH": 33,
+   "glyphW": 24,
+   "chars": "0123456789/",
+   "roi": "troopPanel.header.queueDigitRoiAbs",
+   "align": "left",
+   "measured": "「4/5」墨迹 2203..2258 / y 40..78。★白底**浅灰**字，对比度弱，模板 std 预计 25~40；仍高于 12 的守卫线，但裁剪必须贴紧字形，多留一点白底就会掉到 12 以下被拒。"
+  },
+  "dig_stamina": {
+   "where": "部队管理 指挥官耐力「105/105」",
+   "polarity": "白底深蓝字",
+   "glyphH": 26,
+   "glyphW": 18,
+   "chars": "0123456789/",
+   "roi": "troopPanel.rows.commander1StamRoi / commander2StamRoi",
+   "align": "center"
+  }
+ },
+ "digitRecognition": {
+  "method": "0-9 数字模板匹配（不引入中文 OCR）",
+  "why": "游戏字体固定且等宽，模板匹配比 tesseract 快一到两个数量级且更准；中文 OCR 只为了认几个数字不值得引入。",
+  "pipeline": [
+   "1. 从当前帧按 ROI 裁一块，★以 shrink=1 做灰度（不降采样）。数字只有 18~25px 宽，shrink=2 会掉到 9~12px，1/7、3/8 极易混。ROI 面积极小（最大约 230x52），全尺寸匹配成本 <1ms，不值得省。",
+   "2. 对该上下文模板集的每个字形做一次 matchAll（多峰值），阈值 0.78（低于全局 0.85：数字模板小、纹理少）。",
+   "3. 收集所有 (x, char, score)，按 score 降序贪心做水平 NMS，抑制半径 = 0.55 * glyphW。",
+   "4. 按 x 升序拼串。相邻峰值 x 间距 > 1.6*glyphW ⇒ 中间漏识别，插入 '?'。",
+   "5. 按字段的正则做整串校验，不通过则判失败（走 validation.retry）。"
+  ],
+  "ligatureAndSeparators": {
+   "$comment": "连字/分隔符处理。",
+   "rule": "逗号、冒号、斜杠一律**当作字形入模板集**（chars 里已列出），不要靠间距推断。它们宽度只有数字的 0.4~0.6 倍，NMS 半径按各自 glyphW 算，不要用统一半径。",
+   "kerning": "实测「105/105」「00:01:04」列对齐良好，属等宽字体；但 '1' 的字形墨迹窄于字宽，峰值 x 会略偏左，所以拼串按峰值 x 排序即可，不要按固定步长切格子。",
+   "twoDigit": "等级可能是两位数（下限策略允许采到更高等级，且版本上限会到 10）。两位数时整行居中会左移 ⇒ 必须以资源名模板为锚反推 ROI。"
+  },
+  "confidence": {
+   "perGlyphMinScore": 0.78,
+   "acceptStringIf": "所有字形分数 >= 0.78 且整串通过正则；任一字形落在 [0.70, 0.78) ⇒ 标记为低置信，触发重截一帧复核，两帧读数一致才采信。",
+   "rejectIf": "存在 '?' 占位、或整串正则不过、或两帧读数不一致三次。"
+  },
+  "requiredVisionCapability": {
+   "$comment": "这些是通用视觉能力（模块 c），不是游戏特化，符合『不要为某个游戏往 DSL 里加特化 step』。",
+   "matchAll": {
+    "signature": "matchAll(frame, tpl, opts?: MatchOptions & { minScore?: number; maxCount?: number; nmsRadius?: number }): Promise<MatchResult[]>",
+    "why": "现有 matchIn 只用 minMaxLoc 返回单峰，无法在一个 ROI 里同时定位同一字形的多次出现（如 '00:01:04' 里的三个 0）。",
+    "how": "matchTemplate 得到 dst 后不用 minMaxLoc，改为遍历 dst 取所有 >= minScore 的点，按分数排序做 NMS。dst 尺寸 =(roiW-tplW+1)x(roiH-tplH+1)，本场景最大约 210x25 = 5250 个 float，遍历成本可忽略。★仍要在 try/finally 里 delete 三个 Mat。"
+   },
+   "shrink1Frame": {
+    "why": "matchIn 强制 tpl.shrink === frame.shrink（见 src/vision/matcher.ts）。数字模板必须按 shrink=1 编译，所以要有一份 shrink=1 的帧或 ROI 灰度块。",
+    "how": "优选新增 grayCrop(raw: RawFrame, rect: Rect, refW, refH): PreparedFrame —— 只对 ROI 区域做 shrink=1 灰度（最大 230x52 ≈ 12k 像素，微秒级），而不是为了读几个数字把整帧 3.7M 像素重新预处理一遍。",
+    "pitfall": "别图省事直接 prepareFrame(raw, {shrink:1})：全屏 shrink=1 灰度约 8ms，还要为每个模板重复拷贝 ROI，一轮下来白白多花几十毫秒。"
+   },
+   "sampleRgb": {
+    "signature": "sampleRgb(raw: RawFrame, at: Point, radius = 2): { r: number; g: number; b: number }",
+    "why": "勾选框/开关判定必须用彩色（checkboxRule、stamina 的 toggle 规则都是靠绿/金色分量），而 PreparedFrame 只有灰度。★引擎必须把 RawFrame 留到本步结束，不能拿到 PreparedFrame 就丢。"
+   }
+  },
+  "fallbackSegmentation": {
+   "when": "主路径拼串失败或含 '?'",
+   "method": "等宽切分：ROI 内按前景极性二值化（浅底黑字取暗于均值-25 的像素，深底白字取亮于均值+25），做垂直投影，按列空隙切字符盒；盒宽 < 0.6*glyphW 的判为分隔符（, : /），其余逐盒与 0-9 模板取 argmax。",
+   "note": "游戏是等宽数字字体（实测「105/105」「00:01:04」列对齐良好），此法可靠；仅作兜底是因为它需要按背景调二值化阈值。"
+  },
+  "validation": {
+   "level": "^\\d{1,2}$ 且 1 <= v <= levelPolicy.maxLevelHardCap",
+   "storage": "^\\d{1,3}(,\\d{3})*$ 且 v <= 100000000",
+   "coord": "^\\d{1,4},\\d{1,4}$",
+   "timer": "^\\d{2}:\\d{2}:\\d{2}$ 且 分/秒 < 60",
+   "queue": "^(\\d{1,2})/(\\d{1,2})$ 且 N <= M <= 5",
+   "stamina": "^(\\d{1,3})/(\\d{1,3})$ 且 cur <= max",
+   "retry": "整串校验失败 ⇒ 间隔 400ms 重截一帧重试，最多 3 次（可能截到了动画中间帧）。",
+   "onExhausted": "按字段落到 safety.onUnknownLevel / onUnknownStorage / unknownEtaFallbackSeconds 的兜底策略，绝不「猜一个值」继续。"
+  },
+  "wordJudgement": {
+   "$comment": "「采集者 无」这类状态判定不做字符识别，直接用整词模板。",
+   "items": [
+    "采集者值 == 无 ⇒ tpl_value_none 在 gathererValueRoi 内命中（阈值 0.85）；未命中即视为已被占用",
+    "所属联盟 ⇒ 三态，见 allianceJudgement（tpl_value_none / tpl_alliance_own / 都不中）",
+    "状态词 ⇒ tpl_status_* 在 statusBarRoi 内取分数最高者",
+    "资源类型 ⇒ tpl_res_wood_title / gold / iron / mana 在 titleBandRoi 内取分数最高者"
+   ],
+   "lowStdFallback": "「无」笔画少，若裁出来 std < 12 被守卫拒绝，改用启发式：对 gathererValueRoi 二值化，暗像素数落在标定区间且连通域数 == 1 ⇒ 判为「无」。标定值下阶段实测回填。"
+  }
+ },
+ "dslMapping": {
+  "$comment": "本状态机与现有 ScriptStep DSL（src/shared/script.ts）的对应关系。",
+  "expressibleInDsl": [
+   "G0 / G3 / G7 / G10 / G11 / G12 / G14 / G15 的界面跳转与等待：launchApp / tapTemplate / waitFor / key / sleep 全部够用",
+   "条件判断：template / anyTemplate / foreground / and / or / not 够用"
+  ],
+  "notExpressibleInDsl": [
+   "读数字并存成变量（等级、储量、travelTime、N/M、耐力）—— DSL 无变量、无算术",
+   "G5 的『推到底读数、再推一次比对』",
+   "G6 的『按差值点 N 次并复验』",
+   "G8 的 `等级 >= searchFloor` 比较与 occupiedFails 计数、searchFloor 放宽",
+   "G16 的 ETA 记账与定时器注册"
+  ],
+  "recommendation": {
+   "primary": "把自动采集实现为 worker 侧的**原生流程模块** src/worker/flows/gather.ts，直接依赖 RunContext 的 DeviceIo / VisionIo，由 gather-config 驱动。它天然能表达变量、算术、退避与定时器，且不必污染已冻结的 ScriptStep 契约。",
+   "dslRole": "ScriptDef 继续负责用户自建的简单脚本；原生流程作为一种新的『内置任务类型』并列存在，共用同一套模板库、日志与留痕管线。",
+   "ifDslMustBeExtended": "若坚持走 DSL，需要新增 3 个**通用**（非游戏特化）step：readNumber（ROI+数字集→写入变量）、setVar（表达式求值）、assert（变量条件），并把 Condition 扩展出 { kind:'compare', left, op, right }（op 必须包含 gte —— 本流程的核心判据就是 >=）。改动会波及 shared/script.ts + shared/schemas.ts + worker/actions.ts + worker/conditions.ts，属于契约层变更，需上游批准。"
+  }
+ },
+ "openItems": [
+  "【已定论】「等级 N」标签**随滑杆手柄移动**（每级 55.3px），见 anchors.searchPanel.levelLabelTracksHandle。实现必须先用 tpl_label_level 在宽带 ROI 里定位、再取其右侧窄条作数字 ROI。",
+  "【已定论】「自动采集至清空」两态像素已标定：ON (255,255,103) / OFF (83,83,83) @ (1721,921) 7x7。G9 可以对账并点击了。",
+  "【已定论】搜索等级是下限：伐木场搜索值设为 1，连续 6 次返回的都是 7/8 级点。G8 判据必须 >=。",
+  "【已纠正】本账号联盟是 [ABC1]，不是卡片上的 [XYZ1]。上一轮的 tpl_alliance_own 是他方联盟，已删除。补齐前 allianceTerritory 只能取『只接受中立』。",
+  "【已纠正】卡片锚点中心 1819,1045 → **1840,1048**（真机原生分辨率复量）。anchors.resourceCard.offsets 已整套重算，旧值挪到 offsetsSuperseded。",
+  "【已纠正】部队管理行距 243 → 250。",
+  "【新发现】状态词是「采集行军中」不是「行军中」；且采集态的状态词与倒计时是**白字压在载重进度条上**，与行军/返回态的**深字压行底色**极性相反 —— 必须两套数字模板（dig_light16 / dig_dark20）。",
+  "【仍缺】dig_card_title 只有 7、8（附近没有别的等级的伐木场）。因等级判据是 >=，safety.onUnknownLevel 保持 acceptCard 即可，不阻塞。",
+  "【仍缺】dig_march_btn 缺 3,4,6,7,8；dig_stamina 缺 2,3,4,6,7,8,9；dig_card_coord 缺 0,4。都要等对应数字在真机上出现时补采。行军耗时也可改从部队管理面板读『采集行军中』倒计时（dig_dark20 完整）绕开。",
+  "【仍缺】「驻扎中/集结中/战斗中」状态词模板未出现；队列已满/体力不足/无可用部队等错误弹窗未出现 —— G10 仍靠超时兜底。",
+  "【仍缺】tpl_alliance_own（本方 [ABC1] 在资源卡上的渲染）。",
+  "【待验】tpl_queue_icon_map（世界地图右侧队列徽章）只在有队伍在外时出现，本轮只采到一帧、只在一种地形上验过，std=31.6。要用它省一次开面板，先在三种地形上复验。",
+  "【已知】tpl_label_coord_row 打在资源卡的『坐标:』上会得 0.957（>阈值），反向只有 0.640。两者必须靠各自的 ROI 区分（行内的在 x 1080..1480，卡片的在 x 1600..2400），禁止全屏匹配。",
+  "【已知】tpl_res_gold_title 与 tpl_res_iron_title 互打 0.789/0.792，是全库最紧的一对（阈值 0.85 尚有 0.06 余量）。若以后误判，把两张模板各自往左右多带 10px 的同色底重裁。",
+  "卡片右下「18 km」距离标签的可识别性未验证 —— 默认走 maxTravelSeconds，km 阈值默认关闭",
+  "两位数等级（10+）的卡片标题实际排版未见过 —— 等级数字 ROI 已改成相对『资源名称模板左边界』推算，两位数时会自动往左扩，但版本上限到 10 后仍需复核",
+  "状态条绿色填充疑似表示载重量而非时间进度，若成立可用于预判满载提前返回"
+ ],
+ "templateLibrary": {
+  "$comment": "★ 模板已在真机上裁完并自检，见 docs/wanlong/模板库说明.md。",
+  "setName": "万龙觉醒",
+  "setId": "<模板集ID>",
+  "dir": "~/.avdm/automation/templates/wanlong/<模板集ID>",
+  "count": 93,
+  "uiTemplates": 40,
+  "digitSets": {
+   "dig_dark20": {
+    "glyph": "21x29 深字浅底",
+    "chars": "0123456789:/,",
+    "complete": true,
+    "covers": [
+     "卡片储量",
+     "部队管理表头队列 N/M",
+     "采集行军中/返回中 倒计时",
+     "创建部队页兵力/负载量"
+    ]
+   },
+   "dig_light16": {
+    "glyph": "16x25 白字深底",
+    "chars": "0123456789:",
+    "complete": true,
+    "covers": [
+     "部队管理『采集中』进度条上的倒计时（ETA 数据源）"
+    ]
+   },
+   "dig_panel_level": {
+    "glyph": "18x27 浅底黑字",
+    "chars": "12345678",
+    "complete": false,
+    "missing": "0,9（版本上限 8，游戏里不会出现）",
+    "covers": [
+     "搜索面板『等级 N』"
+    ]
+   },
+   "dig_card_coord": {
+    "glyph": "15x25 浅底灰字",
+    "chars": "1235678 9 ,",
+    "complete": false,
+    "missing": "0,4",
+    "covers": [
+     "资源点卡片坐标",
+     "部队管理行内坐标"
+    ]
+   },
+   "dig_card_title": {
+    "glyph": "25x38 浅粉底黑字",
+    "chars": "78",
+    "complete": false,
+    "missing": "0,1,2,3,4,5,6,9",
+    "covers": [
+     "资源点卡片标题里的等级数字"
+    ]
+   },
+   "dig_march_btn": {
+    "glyph": "19x28 白字金底",
+    "chars": "01259:",
+    "complete": false,
+    "missing": "3,4,6,7,8",
+    "covers": [
+     "创建部队页行军按钮上的行军耗时"
+    ]
+   },
+   "dig_stamina": {
+    "glyph": "20x26 白字蓝底黑描边",
+    "chars": "015/",
+    "complete": false,
+    "missing": "2,3,4,6,7,8,9",
+    "covers": [
+     "部队管理指挥官耐力 N/M"
+    ]
+   }
+  },
+  "readingRule": "★逐字位 argmax，不是阈值优先。实测同套内非同类最高分可达 0.87（6↔8），但自匹配在 shrink=1 下是 1.00，argmax 余量 >= 0.139。识别必须用 shrink=1（字形只有 16~25px 高，shrink=2 会把 1/7、3/8 打糊）。"
+ }
+}

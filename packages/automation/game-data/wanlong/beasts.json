@@ -1,0 +1,183 @@
+{
+ "$schema": "./beasts.schema.json",
+ "game": "万龙觉醒",
+ "package": "com.lilithgames.samo.android.cn",
+ "source": "世界地图 → 搜索(放大镜) → 黑暗灵部队 → 野兽 → 宠物选择器",
+ "capturedAt": "2026-09-09",
+ "gameVersionNote": "本表为实测快照。新版本新增野兽时只需往 beasts 数组追加条目并补一张 nameTemplate 图，无需改代码。",
+ "selector": {
+  "wildcardLabel": "任意",
+  "listColumns": 2,
+  "rowHeightPx": 150,
+  "panelRegion": {
+   "x": 850,
+   "y": 420,
+   "w": 1270,
+   "h": 790
+  },
+  "iconCenterX": {
+   "col1": 950,
+   "col2": 1550
+  },
+  "scrollNote": "快速 swipe 有惯性会跳行，必须用长时程(>=1200ms)慢速滑动并按名称模板校验当前可见行，禁止按固定步长盲翻。",
+  "knownIssue": "adb input swipe 偶发 SecurityException: INJECT_EVENTS，需重试(实测重试即可成功)。"
+ },
+ "beasts": [
+  {
+   "id": "lizard_ice",
+   "name": "寒冰巨蜥",
+   "family": "巨蜥",
+   "order": 1
+  },
+  {
+   "id": "lizard_sand",
+   "name": "砂石巨蜥",
+   "family": "巨蜥",
+   "order": 2
+  },
+  {
+   "id": "lizard_thunder",
+   "name": "雷电巨蜥",
+   "family": "巨蜥",
+   "order": 3
+  },
+  {
+   "id": "lizard_plague",
+   "name": "瘴巨蜥",
+   "family": "巨蜥",
+   "order": 4
+  },
+  {
+   "id": "fairy_rage",
+   "name": "狂暴仙女龙",
+   "family": "仙女龙",
+   "order": 5
+  },
+  {
+   "id": "fairy_angel",
+   "name": "天使仙女龙",
+   "family": "仙女龙",
+   "order": 6
+  },
+  {
+   "id": "fairy_blue",
+   "name": "蓝闪仙女龙",
+   "family": "仙女龙",
+   "order": 7
+  },
+  {
+   "id": "fairy_shadow",
+   "name": "堕影仙女龙",
+   "family": "仙女龙",
+   "order": 8
+  },
+  {
+   "id": "roc_gold",
+   "name": "金翅鹏鸟",
+   "family": "鹏鸟",
+   "order": 9
+  },
+  {
+   "id": "roc_snow",
+   "name": "雪顶鹏鸟",
+   "family": "鹏鸟",
+   "order": 10
+  },
+  {
+   "id": "roc_night",
+   "name": "暗夜鹏鸟",
+   "family": "鹏鸟",
+   "order": 11
+  },
+  {
+   "id": "bear_frost",
+   "name": "白霜巨熊",
+   "family": "巨熊",
+   "order": 12
+  },
+  {
+   "id": "bear_ring",
+   "name": "环纹巨熊",
+   "family": "巨熊",
+   "order": 13
+  },
+  {
+   "id": "bear_brown",
+   "name": "棕背巨熊",
+   "family": "巨熊",
+   "order": 14
+  },
+  {
+   "id": "bear_blackmoon",
+   "name": "黑月巨熊",
+   "family": "巨熊",
+   "order": 15
+  },
+  {
+   "id": "manti_shadow",
+   "name": "幽影狮蝎",
+   "family": "狮蝎",
+   "order": 16
+  },
+  {
+   "id": "manti_blade",
+   "name": "刀锋狮蝎",
+   "family": "狮蝎",
+   "order": 17
+  },
+  {
+   "id": "manti_thorn",
+   "name": "棘刺狮蝎",
+   "family": "狮蝎",
+   "order": 18
+  },
+  {
+   "id": "dog_goldeater",
+   "name": "噬金犬",
+   "family": "独立",
+   "order": 19
+  },
+  {
+   "id": "ox_forestrock",
+   "name": "森岩石化牛",
+   "family": "石化牛",
+   "order": 20
+  },
+  {
+   "id": "manti_inferno",
+   "name": "炼狱狮蝎",
+   "family": "狮蝎",
+   "order": 21
+  },
+  {
+   "id": "weasel_wind",
+   "name": "风鼬",
+   "family": "独立",
+   "order": 22
+  },
+  {
+   "id": "beast_goldgulp",
+   "name": "吞金兽",
+   "family": "独立",
+   "order": 23
+  },
+  {
+   "id": "ox_burst",
+   "name": "爆气石化牛",
+   "family": "石化牛",
+   "order": 24
+  },
+  {
+   "id": "fox_firefly",
+   "name": "萤火狐狸",
+   "family": "独立",
+   "order": 25
+  },
+  {
+   "id": "dino_venom",
+   "name": "剧毒恐龙",
+   "family": "独立",
+   "order": 26
+  }
+ ]
+}
