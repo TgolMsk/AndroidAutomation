@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MatchResult } from '@avdm/automation';
 import {
-  buildTemplateDraft, clampTolerance, describeCoverage, importSummary, lowVarianceGuidance, maskBadge, overwriteTarget,
+  buildTemplateDraft, clampTolerance, describeCoverage, importSummary, importTouchesSet, lowVarianceGuidance, maskBadge, overwriteTarget,
   parseTags, quickPicks, resolutionWarning, saveSuccessDetail, stdBadge, templateIdProblem, templateSummary, testVerdict, validCrop,
 } from '../src/renderer/views/templates/template-editor';
 import type { TemplateCoverage } from '../src/shared/ipc';
@@ -30,7 +30,13 @@ describe('template page helpers', () => {
     expect(std!.paragraphs.join('')).toContain('有图标、有文字、有明显边缘');
     const mask = lowVarianceGuidance('TEMPLATE_LOW_VARIANCE', '模板「x」透明底抠得太狠：降采样后只剩 30 个不透明像素（4%），低于下限……');
     expect(mask).toMatchObject({ kind: 'mask' });
-    expect(mask!.paragraphs[0]).toContain('30 个不透明像素（4%）');
+    expect(mask!.paragraphs[0]).toContain('30 个不透明像素（4%），低于下限 64 个 / 10%');
+    // The template name may contain any words: a plain low-std template named 「透明底…」 still gets the std guidance.
+    const named = lowVarianceGuidance('TEMPLATE_LOW_VARIANCE', '模板「透明底按钮」方差过低 std=3.02 < 12：TM_CCOEFF_NORMED 会……');
+    expect(named).toMatchObject({ kind: 'std' });
+    expect(named!.paragraphs[0]).toContain('只有 3.0（下限 12）');
+    const tricky = lowVarianceGuidance('TEMPLATE_LOW_VARIANCE', '模板「透明底抠得太狠：只剩 1 个不透明像素（1%）」方差过低 std=5.0 < 12：……');
+    expect(tricky).toMatchObject({ kind: 'std' });
     expect(lowVarianceGuidance('IO_ERROR', 'std=1')).toBeNull();
     expect(lowVarianceGuidance(undefined, 'std=1')).toBeNull();
   });
@@ -99,9 +105,17 @@ describe('template page helpers', () => {
     expect(picks[3]).toMatchObject({ name: 'dig_panel_level 字形 9', tags: ['digit', 'dig_panel_level'], threshold: 0.78 });
     expect(quickPicks(null)).toEqual([]);
 
-    const summary = importSummary({ copiedSets: { tset_a: 128 }, addedTemplates: { tset_b: ['tpl_x', 'tpl_y'] }, skipped: { tset_c: '源 manifest 不合法' } });
+    const summary = importSummary({ found: 3, copiedSets: { tset_a: 128 }, addedTemplates: { tset_b: ['tpl_x', 'tpl_y'] }, skipped: { tset_c: '源 manifest 不合法' } }, [1, 4]);
     expect(summary.changed).toBe(true);
-    expect(summary.lines).toEqual(['新增模板集 tset_a（128 个文件）', 'tset_b 补进 2 张：tpl_x、tpl_y', '跳过 tset_c：源 manifest 不合法']);
-    expect(importSummary({ copiedSets: {}, addedTemplates: {}, skipped: {} })).toMatchObject({ changed: false, title: expect.stringContaining('没有新模板') });
+    expect(summary.lines).toEqual(['新增模板集 tset_a（128 个文件）', 'tset_b 补进 2 张：tpl_x、tpl_y', '跳过 tset_c：源 manifest 不合法',
+      '实例 #1、#4 用的模板集变了，已关闭自动续跑；重新校准画面后再开启。']);
+    expect(importSummary({ found: 1, copiedSets: {}, addedTemplates: {}, skipped: {} })).toMatchObject({ changed: false, title: expect.stringContaining('没有新模板') });
+    // A folder with no set at all (e.g. the old .wl-data instead of .wl-data/templates) is not "already up to date".
+    const empty = importSummary({ found: 0, copiedSets: {}, addedTemplates: {}, skipped: {} });
+    expect(empty).toMatchObject({ changed: false, title: '所选文件夹里没有模板集' });
+    expect(empty.lines[0]).toContain('.wl-data/templates');
+    expect(importTouchesSet({ changedDirectories: ['/a/tset_1'] }, '/a/tset_1')).toBe(true);
+    expect(importTouchesSet({ changedDirectories: ['/a/tset_1'] }, '/a/tset_2')).toBe(false);
+    expect(importTouchesSet({ changedDirectories: [] }, undefined)).toBe(false);
   });
 });

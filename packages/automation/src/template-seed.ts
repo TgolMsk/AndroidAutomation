@@ -17,7 +17,8 @@ import { loadTemplateSet, parseTemplateDefinition, parseTemplateSetHeader } from
  *   - a corrupt user manifest → skip the set with a reason, never overwrite it;
  *   - unsafe set/file names, invalid source manifests, missing or non-regular source PNGs → skipped with a warning
  *     and left out of the manifest.
- * Idempotent: a second run copies nothing.
+ * Idempotent: a second run copies nothing. `dryRun` reports the same result without writing (the host uses it to
+ * find the instances bound to sets that would change before it takes their locks).
  */
 
 const MAX_TEMPLATE_BYTES = 10 * 1024 * 1024;
@@ -27,6 +28,11 @@ const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 export type SeedLog = (level: 'info' | 'warn', message: string) => void;
 
 export interface SeedResult {
+  /**
+   * Template-set folders (with a manifest.json) found in the source, whatever became of them. 0 means the chosen
+   * folder holds no set at all (e.g. the old data directory itself instead of its `templates/`).
+   */
+  found: number;
   /** Sets copied whole: setId → files copied (including the manifest). */
   copiedSets: Record<string, number>;
   /** Template ids added to sets the user already had. */
@@ -45,6 +51,8 @@ export interface MergeTemplateSetsOptions {
   log?: SeedLog;
   /** Serializes writes per target set folder with the library's own writer. */
   lock?: <T>(directory: string, action: () => Promise<T>) => Promise<T>;
+  /** Report what would be copied / added without writing anything (no lock is taken). */
+  dryRun?: boolean;
 }
 
 function isSafeSegment(segment: string): boolean {
@@ -140,7 +148,8 @@ async function usableTemplates(src: string, rawTemplates: unknown[], log: SeedLo
 export async function mergeTemplateSets(options: MergeTemplateSetsOptions): Promise<SeedResult> {
   const log: SeedLog = options.log ?? (() => undefined);
   const lock = options.lock ?? (<T>(_directory: string, action: () => Promise<T>) => action());
-  const result: SeedResult = { copiedSets: {}, addedTemplates: {}, skipped: {} };
+  const dryRun = options.dryRun === true;
+  const result: SeedResult = { found: 0, copiedSets: {}, addedTemplates: {}, skipped: {} };
 
   let candidates: Array<{ setId: string; src: string }>;
   if (await isRegularFile(join(options.sourceDir, MANIFEST))) {
@@ -166,6 +175,7 @@ export async function mergeTemplateSets(options: MergeTemplateSetsOptions): Prom
       candidates.push({ setId: entry.name, src });
     }
   }
+  result.found = candidates.length;
 
   for (const { setId, src } of candidates) {
     if (!isSafeSegment(setId)) {
@@ -190,20 +200,21 @@ export async function mergeTemplateSets(options: MergeTemplateSetsOptions): Prom
     }
 
     const dst = join(options.targetRoot, setId);
-    try {
-      await lock(dst, async () => {
-        if (!(await exists(join(dst, MANIFEST)))) {
-          const count = await copyWholeSet(src, dst, rawManifest, header.templates, log);
-          result.copiedSets[setId] = count;
-          log('info', `已导入模板集「${header.name}」（${setId}）：${count} 个文件。`);
-        } else {
-          const added = await mergeMissing(src, dst, header.templates, setId, log);
-          if (added.length > 0) {
-            result.addedTemplates[setId] = added;
-            log('info', `模板集「${header.name}」（${setId}）补进 ${added.length} 张模板：${added.join('、')}。`);
-          }
+    const mergeOne = async (): Promise<void> => {
+      if (!(await exists(join(dst, MANIFEST)))) {
+        const count = await copyWholeSet(src, dst, rawManifest, header.templates, log, dryRun);
+        result.copiedSets[setId] = count;
+        if (!dryRun) log('info', `已导入模板集「${header.name}」（${setId}）：${count} 个文件。`);
+      } else {
+        const added = await mergeMissing(src, dst, header.templates, setId, log, dryRun);
+        if (added.length > 0) {
+          result.addedTemplates[setId] = added;
+          if (!dryRun) log('info', `模板集「${header.name}」（${setId}）补进 ${added.length} 张模板：${added.join('、')}。`);
         }
-      });
+      }
+    };
+    try {
+      await (dryRun ? mergeOne() : lock(dst, mergeOne));
     } catch (error) {
       // A corrupt user manifest, a full disk, a permission problem: record the reason, never overwrite.
       result.skipped[setId] = errMsg(error);
@@ -214,11 +225,18 @@ export async function mergeTemplateSets(options: MergeTemplateSetsOptions): Prom
 }
 
 /** Copy a whole set: PNGs first, the manifest last. Returns the number of files copied (including the manifest). */
-async function copyWholeSet(src: string, dst: string, rawManifest: Record<string, unknown>, rawTemplates: unknown[], log: SeedLog): Promise<number> {
+async function copyWholeSet(src: string, dst: string, rawManifest: Record<string, unknown>, rawTemplates: unknown[], log: SeedLog,
+  dryRun = false): Promise<number> {
+  const usable = await usableTemplates(src, rawTemplates, log);
+  if (dryRun) {
+    let wouldCopy = 1;
+    for (const template of usable) if (!(await exists(join(dst, template.file)))) wouldCopy += 1;
+    return wouldCopy;
+  }
   await mkdir(dst, { recursive: true, mode: 0o700 });
   let copied = 0;
   const kept: Record<string, unknown>[] = [];
-  for (const template of await usableTemplates(src, rawTemplates, log)) {
+  for (const template of usable) {
     if (await copyIfMissing(join(src, template.file), join(dst, template.file))) copied += 1;
     kept.push(template.raw);
   }
@@ -226,14 +244,15 @@ async function copyWholeSet(src: string, dst: string, rawManifest: Record<string
   return copied + 1;
 }
 
-/** An existing set: add only ids missing from the user manifest. Returns the added ids. */
-async function mergeMissing(src: string, dst: string, rawTemplates: unknown[], setId: string, log: SeedLog): Promise<string[]> {
+/** An existing set: add only ids missing from the user manifest. Returns the added ids (`dryRun`: the ids it would add). */
+async function mergeMissing(src: string, dst: string, rawTemplates: unknown[], setId: string, log: SeedLog, dryRun = false): Promise<string[]> {
   // Strict read: a corrupt or unsafe user manifest throws here and the set is skipped untouched.
   const user = await loadTemplateSet(dst).catch((error: unknown) => {
     throw new Error(`模板集「${setId}」的现有 manifest 无法读取：${errMsg(error)}`);
   });
   const userRaw = JSON.parse(await readFile(join(dst, MANIFEST), 'utf8')) as Record<string, unknown>;
   const have = new Set(user.templates.map((item) => item.id));
+  if (dryRun) return (await usableTemplates(src, rawTemplates, log)).filter((template) => !have.has(template.id)).map((template) => template.id);
   const usedFiles = new Set(user.templates.map((item) => item.file.toLowerCase()));
   const added: Record<string, unknown>[] = [];
   for (const template of await usableTemplates(src, rawTemplates, log)) {

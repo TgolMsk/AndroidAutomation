@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { withFileLock } from '@avdm/core';
-import { AppError, buildTemplateAlpha, TemplateLibrary, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
+import { AppError, canonicalDirectory, TemplateLibrary, type RawFrame, type Rect, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
 import { normalizeGatherConfig, type GatherCycleResult } from '@avdm/automation/wanlong';
 import type { AutomationGameSummary, AutomationProbeReport, AutomationRun, AutomationSchedule, AutomationSettings, TemplateAlphaPreview, TemplateCapture, TemplateCoverage, TemplateImportResult, TemplatesChange, TemplateTestOptions, TemplateTestResult } from '../../shared/ipc';
 import { broadcast } from '../events';
@@ -15,12 +15,15 @@ import { WanlongGatherRunner, type GatherManager } from './gather-runner';
 import { inspectGatherProbe } from './gather-probe-guard';
 import { gamePlugin, gameSummaries, gameTask } from './games';
 import type { ProbeWorkerInput, ProbeWorkerOutput } from './probe-worker';
-import type { TemplateJob, TemplateJobOutput } from './template-jobs';
+import { transferableJob, type TemplateJob, type TemplateJobOutput } from './template-jobs';
 import { buildTemplateCoverage, rawFrameToPng, TemplateChangeFeed, workerError, type TemplatesChangeListener } from './template-tools';
 import { AutomationScheduler, SchedulePauseError, type ScheduledRunContext } from './scheduler';
 import { AutomationSettingsStore } from './store';
 
 const PROBE_TIMEOUT_MS = 120_000;
+const TEMPLATE_JOB_TIMEOUT_MESSAGES: Record<TemplateJob['kind'], string> = {
+  test: '模板测试超时', compile: '模板编译检查超时', alphaPreview: '去底预览超时', diffAlpha: '透明底计算超时',
+};
 const MAX_RUN_HISTORY = 100;
 const RUN_HISTORY_VERSION = 1;
 const MAX_RUN_HISTORY_BYTES = 256 * 1024;
@@ -75,6 +78,8 @@ export class AutomationHost {
   private readonly activeByIndex = new Map<number, string>();
   private readonly controlQueues = new Map<number, Promise<void>>();
   private readonly templateChanges = new TemplateChangeFeed();
+  /** Replaces the one-shot template worker (tests run `runTemplateJob` in-process); unset in the app. */
+  templateJobRunner?: (job: TemplateJob) => Promise<TemplateJobOutput>;
   private readonly historyFile: string;
   private readonly historyReady: Promise<void>;
   private historyWrite: Promise<void> = Promise.resolve();
@@ -177,24 +182,44 @@ export class AutomationHost {
     return { png, width: frame.width, height: frame.height, capturedAt: frame.capturedAt, foregroundPackage };
   }
 
-  /** `frames`: the main frame plus 1–3 diff frames of the same size. Pure computation, never touches the device. */
+  /**
+   * `frames`: the main frame plus 1–3 diff frames of the same size. Pure computation in a worker (PNG decodes and
+   * per-pixel loops), never touches the device.
+   */
   async previewTemplateAlpha(gameId: string, index: number, frames: Uint8Array[], crop: Rect, tolerance: number, previewWidth?: number): Promise<TemplateAlphaPreview> {
     const set = await this.templateSet(gameId, index);
     if (!set) throw new Error('请先选择或创建模板集');
-    return buildTemplateAlpha(frames, crop, { tolerance, previewWidth });
+    const output = await this.runTemplateJob({ kind: 'alphaPreview', frames, crop, tolerance, previewWidth });
+    if (output.kind !== 'alphaPreview') throw new Error('去底预览未返回结果');
+    return output.preview;
   }
 
   async saveTemplate(gameId: string, index: number, draft: TemplateDraft): Promise<TemplateSaveResult> {
     const i = asIndex(index);
+    // The diff mask is pure computation: done in a worker before any lock is taken.
+    const { draft: ready, diffCoverage } = await this.resolveDiffAlpha(draft);
     const result = await this.withControlLock(i, async () => {
       this.assertTemplateEditable(i);
       const set = await this.templateSet(gameId, i);
       if (!set) throw new Error('请先选择或创建模板集');
       if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
-      return this.withDeviceLease(i, () => this.templates.save(set.directory, draft));
+      return this.withDeviceLease(i, () => this.templates.save(set.directory, ready));
     });
     this.emitTemplatesChanged(gameId, result.directory, 'save', [result.definition.id]);
-    return result;
+    return diffCoverage === undefined ? result : { ...result, diffCoverage };
+  }
+
+  /**
+   * A draft with `diffFrames` (and no caller alpha): compute the mask in the template worker with the preview's
+   * algorithm and hand it to the library as `alpha`, so the main thread never decodes whole frames.
+   */
+  private async resolveDiffAlpha(draft: TemplateDraft): Promise<{ draft: TemplateDraft; diffCoverage?: number }> {
+    const { diffFrames, diffTolerance, ...rest } = draft;
+    if (!diffFrames?.length || (draft.alpha && draft.alpha.byteLength > 0)) return { draft: rest };
+    if (!draft.crop) throw new AppError('INVALID_ARGUMENT', `模板「${draft.name}」要做差分去底必须给裁剪区域（差分帧是整帧，得知道裁哪一块）`);
+    const output = await this.runTemplateJob({ kind: 'diffAlpha', frames: [draft.image, ...diffFrames], crop: draft.crop, tolerance: diffTolerance });
+    if (output.kind !== 'diffAlpha') throw new Error('透明底计算未返回结果');
+    return { draft: { ...rest, alpha: output.alphaPng }, diffCoverage: output.coverage };
   }
 
   async deleteTemplate(gameId: string, index: number, id: string): Promise<void> {
@@ -241,19 +266,71 @@ export class AutomationHost {
   /**
    * Only-add merge of legacy template sets (e.g. wanlong-panel's `.wl-data/templates` or `<dataDir>/templates`)
    * into this game's managed library. Sets of another game package are skipped; existing ids are never touched.
-   * Instance bindings do not change, so no schedule is affected; caches of the touched sets are invalidated.
+   *
+   * A set that gains templates is a template change for every instance bound to it, so the import follows the same
+   * rule as save / delete (a changed template needs a fresh probe before the next automatic write): a dry run finds
+   * the sets that would change, then for each bound instance (in index order) no automation may be running, its
+   * auto-resume is switched off, and its device lease is held while the sets are written. Sets copied whole are new
+   * and bound to no instance. Change events and lock keys use the canonical (realpath) set folders.
    */
   async importTemplateSets(gameId: string, sourceDir: string): Promise<TemplateImportResult> {
     const plugin = gamePlugin(gameId);
     if (this.disposed) throw new Error('应用正在退出');
-    const result = await this.templates.importSets(gameId, sourceDir, {
+    const root = await this.templates.canonicalGameRoot(gameId);
+    const setDirectories = (ids: string[]) => Promise.all(ids.map((setId) => canonicalDirectory(join(root, setId))));
+    const plan = await this.templates.importSets(gameId, sourceDir, { packageName: plugin.packageName, dryRun: true });
+    const bound = await this.instancesBoundTo(gameId, await setDirectories(Object.keys(plan.addedTemplates)));
+    for (const i of bound) this.assertTemplateEditable(i);
+    const paused: number[] = [];
+    const result = await this.withTemplateWriters(gameId, bound, paused, () => this.templates.importSets(gameId, sourceDir, {
       packageName: plugin.packageName,
       log: (level, message) => { if (level === 'warn') console.warn('[wanlong] 模板导入：', message); },
+    }));
+
+    const addedIds = Object.keys(result.addedTemplates);
+    const added = await setDirectories(addedIds);
+    const copied = await setDirectories(Object.keys(result.copiedSets));
+    // A set that changed between the dry run and the merge (another writer in between): switch those schedules off too.
+    for (const i of (await this.instancesBoundTo(gameId, added)).filter((index) => !bound.includes(index))) {
+      await this.withControlLock(i, async () => {
+        if ((await this.scheduler.get(gameId, i)).enabled) { await this.scheduler.disable(gameId, i); paused.push(i); }
+      });
+    }
+    added.forEach((directory, n) => this.emitTemplatesChanged(gameId, directory, 'import', result.addedTemplates[addedIds[n]!] ?? []));
+    for (const directory of copied) this.emitTemplatesChanged(gameId, directory, 'import', []);
+    return {
+      result, sets: await this.templates.managedSets(gameId),
+      changedDirectories: [...added, ...copied], pausedSchedules: [...new Set(paused)].sort((a, b) => a - b),
+    };
+  }
+
+  /** Instances of this game whose template set is one of `directories` (canonical spellings, as the store keeps them). */
+  private async instancesBoundTo(gameId: string, directories: readonly string[]): Promise<number[]> {
+    if (directories.length === 0) return [];
+    const wanted = new Set(directories);
+    const bound: number[] = [];
+    for (const index of await this.store.indexes(gameId)) {
+      const settings = await this.store.get(gameId, index).catch(() => null);
+      if (settings?.templateDir && wanted.has(settings.templateDir)) bound.push(index);
+    }
+    return bound;
+  }
+
+  /**
+   * Runs `action` as a template write for every instance in `indexes` (ascending, like the account mutations): no
+   * automation running, auto-resume off first (recorded in `paused`), the device lease held for the write.
+   */
+  private withTemplateWriters<T>(gameId: string, indexes: readonly number[], paused: number[], action: () => Promise<T>): Promise<T> {
+    const [first, ...rest] = indexes;
+    if (first === undefined) return action();
+    return this.withControlLock(first, async () => {
+      this.assertTemplateEditable(first);
+      if ((await this.scheduler.get(gameId, first)).enabled) {
+        await this.scheduler.disable(gameId, first);
+        paused.push(first);
+      }
+      return this.withDeviceLease(first, () => this.withTemplateWriters(gameId, rest, paused, action));
     });
-    const root = this.templates.gameRoot(gameId);
-    for (const [setId, ids] of Object.entries(result.addedTemplates)) this.emitTemplatesChanged(gameId, join(root, setId), 'import', ids);
-    for (const setId of Object.keys(result.copiedSets)) this.emitTemplatesChanged(gameId, join(root, setId), 'import', []);
-    return { result, sets: await this.templates.managedSets(gameId) };
   }
 
   /**
@@ -264,9 +341,10 @@ export class AutomationHost {
   async saveTemplateToSet(gameId: string, directory: string, draft: TemplateDraft): Promise<TemplateSaveResult> {
     gamePlugin(gameId);
     if (this.disposed) throw new Error('应用正在退出');
-    const result = await this.templates.save(directory, draft);
+    const { draft: ready, diffCoverage } = await this.resolveDiffAlpha(draft);
+    const result = await this.templates.save(directory, ready);
     this.emitTemplatesChanged(gameId, result.directory, 'save', [result.definition.id]);
-    return result;
+    return diffCoverage === undefined ? result : { ...result, diffCoverage };
   }
 
   /** Subscribe to template-content changes (save / delete / import). Returns the unsubscribe function. */
@@ -654,19 +732,22 @@ export class AutomationHost {
     });
   }
 
-  /** One template job in a fresh worker (match test or full compile check); a failure keeps its error code. */
+  /**
+   * One template job in a fresh worker (match test, full compile check, 透明底 preview or a save's diff mask);
+   * a failure keeps its error code. `templateJobRunner` replaces the worker in tests.
+   */
   private runTemplateJob(job: TemplateJob): Promise<Extract<TemplateJobOutput, { ok: true }>> {
+    if (this.disposed) return Promise.reject(new Error('应用正在退出'));
+    if (this.templateJobRunner) {
+      return this.templateJobRunner(job).then((output) => {
+        if (output.ok) return output;
+        throw workerError(output.error);
+      });
+    }
     const entry = join(dirname(fileURLToPath(import.meta.url)), 'template-test-worker.js');
     const worker = new Worker(entry);
     this.workers.add(worker);
-    const transfer: ArrayBuffer[] = [];
-    let message: TemplateJob = job;
-    if (job.kind === 'test') {
-      const pixels = Uint8Array.from(job.frame.data);
-      const image = Uint8Array.from(job.image);
-      message = { ...job, frame: { ...job.frame, data: pixels }, image };
-      transfer.push(pixels.buffer, image.buffer);
-    }
+    const { message, transfer } = transferableJob(job);
     return new Promise((resolve, reject) => {
       let settled = false;
       const finish = (error?: Error, output?: Extract<TemplateJobOutput, { ok: true }>) => {
@@ -679,7 +760,7 @@ export class AutomationHost {
         else if (output) resolve(output);
         else reject(new Error('模板任务未返回结果'));
       };
-      const timer = setTimeout(() => finish(new Error(job.kind === 'test' ? '模板测试超时' : '模板编译检查超时')), PROBE_TIMEOUT_MS);
+      const timer = setTimeout(() => finish(new Error(TEMPLATE_JOB_TIMEOUT_MESSAGES[job.kind])), PROBE_TIMEOUT_MS);
       worker.once('message', (output: TemplateJobOutput) => {
         if (output.ok) finish(undefined, output);
         else finish(workerError(output.error));

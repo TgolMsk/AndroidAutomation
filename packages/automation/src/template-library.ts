@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import sharp, { type Metadata } from 'sharp';
 import type { Rect, TemplateDefinition, TemplateSet } from './contracts.js';
 import { DEFAULT_SHRINK } from './constants.js';
@@ -109,6 +109,20 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * One spelling per directory: the realpath (AVDM_HOME may sit behind a symlink, e.g. macOS /var → /private/var).
+ * A folder that does not exist yet (a set an import is about to copy) is canonicalized through its parent.
+ * `TemplateSet.directory`, the per-directory writer and the templates-changed events all use this form.
+ */
+export async function canonicalDirectory(directory: string): Promise<string> {
+  const resolved = resolve(directory);
+  try { return await realpath(resolved); }
+  catch {
+    try { return join(await realpath(dirname(resolved)), basename(resolved)); }
+    catch { return resolved; }
+  }
+}
+
 /** One writer per template directory; an atomic manifest remains the source of truth. */
 export class TemplateLibrary {
   private readonly managedRoot: string;
@@ -123,6 +137,13 @@ export class TemplateLibrary {
   gameRoot(gameId: string): string {
     if (!GAME_ID.test(gameId)) throw new AppError('INVALID_ARGUMENT', '游戏包 ID 无效');
     return join(this.managedRoot, gameId);
+  }
+
+  /** The managed root, created if needed, in its canonical (realpath) spelling. */
+  async canonicalGameRoot(gameId: string): Promise<string> {
+    const root = this.gameRoot(gameId);
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    return realpath(root);
   }
 
   async managedSets(gameId: string): Promise<TemplateSet[]> {
@@ -308,24 +329,27 @@ export class TemplateLibrary {
   /**
    * Only-add merge of template sets from `sourceDir` (a legacy templates root, or one set folder) into this game's
    * managed root. Existing ids are never touched; a corrupt managed manifest is skipped, never overwritten.
+   * The target is `canonicalGameRoot(gameId)`, so `<that root>/<setId>` matches `TemplateSet.directory` of the sets
+   * it reports. `dryRun` only reports what would change.
    */
-  async importSets(gameId: string, sourceDir: string, options: { packageName?: string; log?: SeedLog } = {}): Promise<SeedResult> {
+  async importSets(gameId: string, sourceDir: string, options: { packageName?: string; log?: SeedLog; dryRun?: boolean } = {}):
+    Promise<SeedResult> {
     if (!isAbsolute(sourceDir)) throw new AppError('INVALID_ARGUMENT', '导入目录必须是绝对路径');
-    const targetRoot = this.gameRoot(gameId);
     const source = await realpath(sourceDir).catch(() => { throw new AppError('NOT_FOUND', `导入目录不存在：${sourceDir}`); });
+    const targetRoot = await this.canonicalGameRoot(gameId);
     if (source === targetRoot || source.startsWith(targetRoot + sep)) {
       throw new AppError('INVALID_ARGUMENT', '不能从助手自己的模板目录导入');
     }
-    await mkdir(targetRoot, { recursive: true, mode: 0o700 });
     return mergeTemplateSets({
-      sourceDir: source, targetRoot, packageName: options.packageName, log: options.log,
+      sourceDir: source, targetRoot, packageName: options.packageName, log: options.log, dryRun: options.dryRun,
       lock: (dir, action) => this.withWrite(dir, () => action()),
     });
   }
 
   private async withWrite<T>(directory: string, action: (root: string) => Promise<T>): Promise<T> {
     if (!isAbsolute(directory)) throw new AppError('INVALID_ARGUMENT', '模板目录必须是绝对路径');
-    const root = resolve(directory);
+    // Keyed by the canonical spelling: a save through a symlinked path and an import into the same set serialize.
+    const root = await canonicalDirectory(directory);
     const previous = this.writes.get(root) ?? Promise.resolve();
     let release!: () => void;
     const next = new Promise<void>((done) => { release = done; });

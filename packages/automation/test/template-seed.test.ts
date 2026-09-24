@@ -79,7 +79,7 @@ describe('only-add template set merge (templates-seed offline check)', () => {
 
   it('① copies a whole set into an empty library and ignores folders without a manifest', async () => {
     const r = await merge();
-    expect(r).toEqual({ copiedSets: { [SET]: 4 }, addedTemplates: {}, skipped: {} });
+    expect(r).toEqual({ found: 1, copiedSets: { [SET]: 4 }, addedTemplates: {}, skipped: {} });
     expect(await readFile(join(user, SET, 'tpl_b.png'), 'utf8')).toBe('PNG:tpl_b');
     expect((await readSet(join(user, SET))).templates).toHaveLength(3);
     expect(await exists(join(user, 'junk-dir'))).toBe(false);
@@ -87,7 +87,7 @@ describe('only-add template set merge (templates-seed offline check)', () => {
   });
 
   it('② is idempotent', async () => {
-    expect(await merge()).toEqual({ copiedSets: {}, addedTemplates: {}, skipped: {} });
+    expect(await merge()).toEqual({ found: 1, copiedSets: {}, addedTemplates: {}, skipped: {} });
   });
 
   it('③ adds only missing ids and keeps every user edit and user template', async () => {
@@ -128,7 +128,13 @@ describe('only-add template set merge (templates-seed offline check)', () => {
 
   it('⑤ returns an empty result when the source folder does not exist', async () => {
     expect(await mergeTemplateSets({ sourceDir: join(root, 'nope'), targetRoot: user, log }))
-      .toEqual({ copiedSets: {}, addedTemplates: {}, skipped: {} });
+      .toEqual({ found: 0, copiedSets: {}, addedTemplates: {}, skipped: {} });
+  });
+
+  it('⑤b reports found: 0 for a folder that holds no set (e.g. the old data dir instead of its templates/)', async () => {
+    expect(await mergeTemplateSets({ sourceDir: join(root, 'data'), targetRoot: join(root, 'elsewhere'), log }))
+      .toEqual({ found: 0, copiedSets: {}, addedTemplates: {}, skipped: {} });
+    expect(await exists(join(root, 'elsewhere'))).toBe(false);
   });
 
   it('⑥ skips an invalid source manifest and leaves nothing behind', async () => {
@@ -170,5 +176,20 @@ describe('only-add template set merge (templates-seed offline check)', () => {
     const filtered = await mergeTemplateSets({ sourceDir: foreign, targetRoot: user, log, packageName: 'com.example.game' });
     expect(filtered.skipped['tset_foreign']).toContain('org.other');
     expect(await exists(join(user, 'tset_foreign'))).toBe(false);
+  });
+
+  it('a dry run reports exactly what the real merge does, without writing or locking', async () => {
+    const src = join(root, 'dry');
+    await writeSet(join(src, SET), set(SET, [def('tpl_a'), def('tpl_new1')]), (id) => `PNG:${id}`);
+    await writeSet(join(src, 'tset_dry_new'), set('tset_dry_new', [def('tpl_n')]), (id) => `PNG:${id}`);
+    const before = await readFile(join(user, SET, 'manifest.json'), 'utf8');
+    const planned = await mergeTemplateSets({
+      sourceDir: src, targetRoot: user, dryRun: true, lock: () => { throw new Error('dry run must not lock'); },
+    });
+    expect(planned).toEqual({ found: 2, copiedSets: { tset_dry_new: 2 }, addedTemplates: { [SET]: ['tpl_new1'] }, skipped: {} });
+    expect(await readFile(join(user, SET, 'manifest.json'), 'utf8')).toBe(before);
+    expect(await exists(join(user, 'tset_dry_new'))).toBe(false);
+    expect(await exists(join(user, SET, 'tpl_new1.png'))).toBe(false);
+    expect(await mergeTemplateSets({ sourceDir: src, targetRoot: user, log })).toEqual(planned);
   });
 });

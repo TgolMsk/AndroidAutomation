@@ -56,6 +56,10 @@ export interface TemplateImportResult {
   result: SeedResult;
   /** The game's managed sets after the import. */
   sets: TemplateSet[];
+  /** Canonical folders of the sets that were created or gained templates (compare with `TemplateSet.directory`). */
+  changedDirectories: string[];
+  /** Instances bound to a changed set whose auto-resume was switched off (a changed template needs a fresh probe). */
+  pausedSchedules: number[];
 }
 
 /** A template set's content changed: compiled-template caches for `directory` are stale. */

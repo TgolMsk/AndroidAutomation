@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { afterEach, describe, expect, it } from 'vitest';
-import { TemplateLibrary } from '../src/template-library.js';
+import { canonicalDirectory, TemplateLibrary } from '../src/template-library.js';
 import { loadTemplateSet } from '../src/templates.js';
 
 const homes: string[] = [];
@@ -189,14 +189,38 @@ describe('TemplateLibrary', () => {
         bounds: { x: 0, y: 0, w: 32, h: 32 }, createdAt: 1, updatedAt: 1 }],
     }));
     const result = await library.importSets('wanlong', join(home, 'legacy', 'templates'), { packageName: 'com.example.game' });
-    expect(result).toEqual({ copiedSets: { tset_legacy: 2 }, addedTemplates: {}, skipped: {} });
+    expect(result).toEqual({ found: 1, copiedSets: { tset_legacy: 2 }, addedTemplates: {}, skipped: {} });
     const [imported] = await library.managedSets('wanlong');
     expect(imported).toMatchObject({ id: 'tset_legacy', name: '旧模板集' });
-    expect(await library.importSets('wanlong', legacy)).toEqual({ copiedSets: {}, addedTemplates: {}, skipped: {} });
+    expect(await library.importSets('wanlong', legacy)).toEqual({ found: 1, copiedSets: {}, addedTemplates: {}, skipped: {} });
     await expect(library.importSets('wanlong', imported!.directory)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
 
     await expect(library.deleteSet('wanlong', legacy)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
     await library.deleteSet('wanlong', imported!.directory);
     expect(await library.managedSets('wanlong')).toEqual([]);
+  });
+
+  it('uses one canonical spelling for set folders when the home sits behind a symlink', async () => {
+    const real = await tempHome();
+    const linkParent = await tempHome();
+    const home = join(linkParent, 'home-link');
+    await symlink(real, home);
+    const library = new TemplateLibrary(home);
+    const root = await library.canonicalGameRoot('wanlong');
+    expect(root).toBe(join(await realpath(real), 'automation', 'templates', 'wanlong'));
+    const set = await library.createSet('wanlong', '链接', 'com.example.game', 256, 256);
+    expect(set.directory).toBe(join(root, set.id));
+    // An existing folder and a folder an import is about to create both resolve through the real path.
+    expect(await canonicalDirectory(join(home, 'automation', 'templates', 'wanlong', set.id))).toBe(set.directory);
+    expect(await canonicalDirectory(join(home, 'automation', 'templates', 'wanlong', 'tset_new'))).toBe(join(root, 'tset_new'));
+
+    // Saves through the symlinked spelling and the real one share the per-directory writer: nothing is lost.
+    const image = await checker();
+    const linked = join(home, 'automation', 'templates', 'wanlong', set.id);
+    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => library.save(i % 2 ? linked : set.directory, {
+      id: `tpl_${i}`, name: `模板 ${i}`, image, authoredWidth: 64, authoredHeight: 64, crop: { x: 4 * i, y: 8, w: 24, h: 24 },
+    })));
+    expect(new Set(results.map((item) => item.directory))).toEqual(new Set([set.directory]));
+    expect((await library.load(set.directory)).templates.map((item) => item.id).sort()).toEqual(['tpl_0', 'tpl_1', 'tpl_2', 'tpl_3', 'tpl_4', 'tpl_5']);
   });
 });

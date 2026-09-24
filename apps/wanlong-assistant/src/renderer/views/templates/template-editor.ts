@@ -5,10 +5,10 @@
  */
 import type { MatchResult, Rect, SeedResult, TemplateDefinition, TemplateDraft } from '@avdm/automation';
 import {
-  ALPHA_TOLERANCE_RANGE, DEFAULT_ALPHA_DIFF_TOLERANCE, LOW_TEMPLATE_STD_WARNING, MIN_TEMPLATE_CROP, MIN_TEMPLATE_STD,
-  TEMPLATE_ID_PATTERN,
+  ALPHA_TOLERANCE_RANGE, DEFAULT_ALPHA_DIFF_TOLERANCE, LOW_TEMPLATE_STD_WARNING, MIN_MASK_COVERAGE, MIN_MASK_PIXELS, MIN_TEMPLATE_CROP,
+  MIN_TEMPLATE_STD, TEMPLATE_ID_PATTERN,
 } from '@avdm/automation/constants';
-import type { TemplateCoverage } from '../../../shared/ipc';
+import type { TemplateCoverage, TemplateImportResult } from '../../../shared/ipc';
 
 export type Tone = 'danger' | 'warning' | 'success' | 'info';
 
@@ -73,20 +73,27 @@ export interface LowVarianceGuidance {
   paragraphs: string[];
 }
 
+/**
+ * The two TEMPLATE_LOW_VARIANCE messages of the vision engine differ after the template name (「…」), which may itself
+ * contain any words, so the variant is chosen by the engine's own wording right after the closing quote.
+ */
+const STD_MESSAGE = /」方差过低 std=([\d.]+)/;
+const MASK_MESSAGE = /」透明底抠得太狠：降采样后只剩 (\d+) 个不透明像素（(\d+)%）/;
+
 export function lowVarianceGuidance(code: string | undefined, message: string): LowVarianceGuidance | null {
   if (code !== 'TEMPLATE_LOW_VARIANCE') return null;
-  if (message.includes('透明底')) {
-    const opaque = /只剩 (\d+) 个不透明像素（(\d+)%）/.exec(message);
+  const opaque = STD_MESSAGE.test(message) ? null : MASK_MESSAGE.exec(message);
+  if (opaque) {
     return {
       kind: 'mask',
       title: '透明底抠得太狠，剩下的像素不够匹配',
       paragraphs: [
-        opaque ? `去底后只剩 ${opaque[1]} 个不透明像素（${opaque[2]}%），低于下限 64 个 / 10%。` : '去底后剩下的不透明像素太少。',
+        `去底后只剩 ${opaque[1]} 个不透明像素（${opaque[2]}%），低于下限 ${MIN_MASK_PIXELS} 个 / ${Math.round(MIN_MASK_COVERAGE * 100)}%。`,
         '请调大容差、重抓一帧背景差异更明显的画面，或把框收紧到图标里不透明的那一块。',
       ],
     };
   }
-  const std = /std=([\d.]+)/.exec(message);
+  const std = STD_MESSAGE.exec(message);
   return {
     kind: 'std',
     title: '这块区域纹理太单调，不能当模板',
@@ -222,13 +229,26 @@ export function quickPicks(coverage: TemplateCoverage | null): QuickPick[] {
   return picks;
 }
 
+export const IMPORT_FOLDER_HINT = '请选择旧面板的 .wl-data/templates、<旧数据目录>/templates，或单个模板集文件夹（里面直接有 manifest.json）。';
+
 /** The import result as Chinese lines for the page. */
-export function importSummary(result: SeedResult): { title: string; lines: string[]; changed: boolean } {
+export function importSummary(result: SeedResult, pausedSchedules: readonly number[] = []): { title: string; lines: string[]; changed: boolean } {
   const lines: string[] = [];
   for (const [setId, count] of Object.entries(result.copiedSets)) lines.push(`新增模板集 ${setId}（${count} 个文件）`);
   for (const [setId, ids] of Object.entries(result.addedTemplates)) lines.push(`${setId} 补进 ${ids.length} 张：${ids.join('、')}`);
   for (const [setId, reason] of Object.entries(result.skipped)) lines.push(`跳过 ${setId}：${reason}`);
+  if (pausedSchedules.length > 0) {
+    lines.push(`实例 ${pausedSchedules.map((index) => `#${index}`).join('、')} 用的模板集变了，已关闭自动续跑；重新校准画面后再开启。`);
+  }
   const changed = Object.keys(result.copiedSets).length + Object.keys(result.addedTemplates).length > 0;
+  if (result.found === 0) {
+    return { title: '所选文件夹里没有模板集', lines: [`没有找到含 manifest.json 的模板集。${IMPORT_FOLDER_HINT}`], changed: false };
+  }
   const title = changed ? '导入完成（只增不改，已有模板一个字节都没动）' : Object.keys(result.skipped).length ? '没有可导入的模板' : '没有新模板：已有的模板集都已包含这些模板';
   return { title, lines, changed };
+}
+
+/** Whether an import created or extended `directory` (the active set): the page then announces it like a save. */
+export function importTouchesSet(imported: Pick<TemplateImportResult, 'changedDirectories'>, directory: string | undefined): boolean {
+  return Boolean(directory && imported.changedDirectories.includes(directory));
 }

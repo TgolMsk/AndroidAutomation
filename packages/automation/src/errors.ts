@@ -22,8 +22,13 @@ export const VISION_ERROR_CODES = [
 
 export type VisionErrorCode = (typeof VISION_ERROR_CODES)[number];
 
-/** Plain-data form for worker and IPC boundaries (structured clone drops custom error fields). */
+/**
+ * Plain-data form for worker and IPC boundaries (structured clone drops custom error fields).
+ * `__wlError` is the original panel's marker: only a value carrying it is a serialized AppError whose `code` is kept by
+ * `AppError.from`. It is optional in the type so hand-built results (`{ code, message }`) stay valid.
+ */
 export interface SerializedError {
+  readonly __wlError?: true;
   code: string;
   message: string;
   detail?: Record<string, unknown>;
@@ -35,7 +40,11 @@ export class AppError extends Error {
     this.name = 'AppError';
   }
 
-  /** Keeps an existing code (also from serialized or duck-typed errors); otherwise wraps with `fallback`. */
+  /**
+   * Keeps the code of an AppError or a serialized one (`__wlError` marker); anything else — a plain Error, a Node
+   * system error (ENOENT, EPIPE, …) or a core AvdmError (LOCK_TIMEOUT, …) — is wrapped with `fallback`, as in the
+   * original panel, so failure classification sees STEP_FAILED / ADB_COMMAND_FAILED instead of OS codes.
+   */
   static from(error: unknown, fallback = 'UNKNOWN'): AppError {
     if (error instanceof AppError) return error;
     if (isSerializedError(error)) return new AppError(error.code, error.message, error.detail);
@@ -44,22 +53,23 @@ export class AppError extends Error {
   }
 }
 
-/** Any object with a string `code` and `message` (an `AppError`, a serialized one, or a coded Node error). */
+/** A serialized AppError: carries the explicit `__wlError` marker (duck-typed `{ code, message }` does not count). */
 export function isSerializedError(value: unknown): value is SerializedError {
-  if (!value || typeof value !== 'object') return false;
-  const { code, message } = value as { code?: unknown; message?: unknown };
-  return typeof code === 'string' && typeof message === 'string';
+  return typeof value === 'object' && value !== null
+    && (value as { __wlError?: unknown }).__wlError === true
+    && typeof (value as { code?: unknown }).code === 'string'
+    && typeof (value as { message?: unknown }).message === 'string';
 }
 
-export function serializeError(error: unknown): SerializedError {
-  if (error instanceof AppError) {
-    return error.detail ? { code: error.code, message: error.message, detail: error.detail } : { code: error.code, message: error.message };
-  }
-  if (isSerializedError(error)) return { code: error.code, message: error.message };
-  return { code: 'UNKNOWN', message: error instanceof Error ? error.message : String(error) };
+/** Any thrown value → plain data for a worker / IPC boundary; uncoded values get `fallback` (original semantics). */
+export function serializeError(error: unknown, fallback = 'UNKNOWN'): SerializedError {
+  const app = AppError.from(error, fallback);
+  return app.detail
+    ? { __wlError: true, code: app.code, message: app.message, detail: app.detail }
+    : { __wlError: true, code: app.code, message: app.message };
 }
 
-/** The code of any thrown value, if it carries one. */
+/** The code of any thrown value, if it carries one (for display / diagnostics only, never for classification). */
 export function errorCodeOf(error: unknown): string | undefined {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === 'string' ? code : undefined;

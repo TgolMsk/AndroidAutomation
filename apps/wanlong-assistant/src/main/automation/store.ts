@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { withFileLock } from '@avdm/core';
 import type { AutomationSettings } from '../../shared/ipc';
@@ -61,6 +61,17 @@ export class AutomationSettingsStore {
       await writePrivateJson(file, json);
       return { templateDir, config };
     });
+  }
+
+  /** Instance indexes that have a settings file for this game (for example to find every instance bound to a set). */
+  async indexes(gameId: string): Promise<number[]> {
+    const directory = path.dirname(this.fileFor(gameId, 0));
+    const names = await readdir(directory).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') return [] as string[];
+      throw err;
+    });
+    return names.map((name) => /^(\d{1,2})\.json$/.exec(name)?.[1]).filter((value): value is string => value !== undefined)
+      .map(Number).filter((index) => index <= 63).sort((a, b) => a - b);
   }
 }
 

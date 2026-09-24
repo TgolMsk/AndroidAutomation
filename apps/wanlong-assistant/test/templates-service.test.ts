@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -7,7 +7,8 @@ import { AppError, TemplateLibrary, type RawFrame } from '@avdm/automation';
 import { errorCode } from '@avdm/emulator-shell/main/util';
 import { GATHER_CRITICAL_TEMPLATES, wanlongPlugin } from '@avdm/automation/wanlong';
 import { AutomationHost } from '../src/main/automation/host';
-import { runTemplateJob } from '../src/main/automation/template-jobs';
+import { AutomationSettingsStore } from '../src/main/automation/store';
+import { runTemplateJob, transferableJob } from '../src/main/automation/template-jobs';
 import { rawFrameToPng, TemplateChangeFeed } from '../src/main/automation/template-tools';
 import { templateDraft, templatesHandlers } from '../src/main/ipc/templates';
 import type { ManagerHost } from '../src/main/manager-host';
@@ -127,10 +128,84 @@ describe('AutomationHost template library', () => {
     expect(imported.result.skipped.tset_other).toContain('org.other.game');
     expect(imported.sets.map((item) => item.id)).toEqual(['tset_mtugr5sx0iwc']);
     expect(imported.sets[0]!.templates[0]).toMatchObject({ std: 40.1 });
-    expect(changes).toEqual([expect.objectContaining({ reason: 'import', directory: path.join(home, 'automation', 'templates', 'wanlong', 'tset_mtugr5sx0iwc') })]);
+    const importedDir = await realpath(path.join(home, 'automation', 'templates', 'wanlong', 'tset_mtugr5sx0iwc'));
+    expect(changes).toEqual([expect.objectContaining({ reason: 'import', directory: importedDir })]);
+    expect(imported).toMatchObject({ changedDirectories: [importedDir], pausedSchedules: [] });
+    expect(imported.sets[0]!.directory).toBe(importedDir);
     const again = await host.importTemplateSets('wanlong', legacy);
     expect(again.result.copiedSets).toEqual({});
     expect(again.result.addedTemplates).toEqual({});
+    expect(again.changedDirectories).toEqual([]);
+  });
+
+  it('treats an import that extends a bound set as a template change: running blocks it, auto-resume is switched off', async () => {
+    const png = await sharp(Buffer.from(frame(32, 32).data), { raw: { width: 32, height: 32, channels: 4 } }).png().toBuffer();
+    // Sets bound through the stores directly: the host's own helpers would switch the schedules off already.
+    const library = new TemplateLibrary(home);
+    const settings = new AutomationSettingsStore(home);
+    const bound = await library.createSet('wanlong', '实例 1 的模板集', wanlongPlugin.packageName, 2560, 1440);
+    const other = await library.createSet('wanlong', '实例 2 的模板集', wanlongPlugin.packageName, 2560, 1440);
+    await settings.save('wanlong', 1, { templateDir: bound.directory });
+    await settings.save('wanlong', 2, { templateDir: other.directory });
+    const legacy = path.join(home, 'old-panel', 'templates');
+    await mkdir(path.join(legacy, bound.id), { recursive: true });
+    await writeFile(path.join(legacy, bound.id, 'tpl_new.png'), png);
+    await writeFile(path.join(legacy, bound.id, 'manifest.json'), JSON.stringify({
+      id: bound.id, name: '旧版同名集', packageName: wanlongPlugin.packageName, refWidth: 2560, refHeight: 1440, updatedAt: 1,
+      templates: [{ id: 'tpl_new', name: '新', file: 'tpl_new.png', authoredWidth: 2560, authoredHeight: 1440,
+        bounds: { x: 0, y: 0, w: 32, h: 32 }, createdAt: 1, updatedAt: 1 }],
+    }));
+    // Both instances have auto-resume on (restored from disk, next wake far away).
+    for (const index of [1, 2]) {
+      const file = path.join(home, 'automation', 'scheduler', 'wanlong', `${index}.json`);
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, JSON.stringify({ version: 1, gameId: 'wanlong', index, enabled: true, nextWakeAt: Date.now() + 3_600_000, failureCount: 0 }));
+    }
+    await host.restoreSchedules();
+
+    // A running cycle on the bound instance: refused before a byte is written.
+    runner.isRunning.mockImplementation((index: number) => index === 1);
+    await expect(host.importTemplateSets('wanlong', legacy)).rejects.toThrow('正在运行自动化');
+    expect((await host.templateSet('wanlong', 1))!.templates).toEqual([]);
+    runner.isRunning.mockImplementation(() => false);
+
+    const changes: TemplatesChange[] = [];
+    host.onTemplatesChanged((change) => changes.push(change));
+    const imported = await host.importTemplateSets('wanlong', legacy);
+    expect(imported.result.addedTemplates).toEqual({ [bound.id]: ['tpl_new'] });
+    expect(imported).toMatchObject({ changedDirectories: [bound.directory], pausedSchedules: [1] });
+    expect(changes).toEqual([expect.objectContaining({ reason: 'import', directory: bound.directory, templateIds: ['tpl_new'] })]);
+    const schedules = await host.schedules();
+    expect(schedules.find((item) => item.index === 1)?.enabled).toBe(false);
+    expect(schedules.find((item) => item.index === 2)?.enabled).toBe(true);
+    expect((await host.templateSet('wanlong', 2))!.directory).toBe(other.directory);
+  });
+
+  it('computes 透明底 previews and a save\'s diff mask in the template job (never on the main thread)', async () => {
+    host.templateJobRunner = runTemplateJob;
+    await host.createTemplateSet('wanlong', 1, '去底');
+    const main = await smoothFrame(256, 144, 5);
+    const moved = { ...main, data: Uint8Array.from(main.data) };
+    for (let y = 30; y < 60; y++) {
+      for (let x = 60; x < 80; x++) {
+        for (let c = 0; c < 3; c++) moved.data[(y * 256 + x) * 4 + c] = 255 - moved.data[(y * 256 + x) * 4 + c]!;
+      }
+    }
+    const [mainPng, movedPng] = await Promise.all([rawFrameToPng(main), rawFrameToPng(moved)]);
+    const crop = { x: 40, y: 30, w: 40, h: 30 };
+    const preview = await host.previewTemplateAlpha('wanlong', 1, [mainPng, movedPng], crop, 24, 160);
+    expect(preview.coverage).toBeGreaterThan(0.3);
+    expect(preview.coverage).toBeLessThan(0.7);
+    expect((await sharp(preview.previewPng).metadata()).width).toBe(160);
+
+    const saved = await host.saveTemplate('wanlong', 1, { id: 'tpl_ring', name: '圆环', image: mainPng, authoredWidth: 256, authoredHeight: 144,
+      crop, diffFrames: [movedPng], diffTolerance: 24 });
+    expect(saved.diffCoverage).toBeCloseTo(preview.coverage, 5);
+    expect(saved.maskCoverage).toBeGreaterThan(0);
+    const manifest = JSON.parse(await readFile(path.join(saved.directory, 'manifest.json'), 'utf8')) as { templates: Array<{ id: string; maskCoverage?: number }> };
+    expect(manifest.templates.find((item) => item.id === 'tpl_ring')?.maskCoverage).toBe(saved.maskCoverage);
+    await expect(host.saveTemplate('wanlong', 1, { id: 'tpl_nocrop', name: '无裁剪', image: mainPng, authoredWidth: 256, authoredHeight: 144,
+      diffFrames: [movedPng] })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
   });
 });
 
@@ -159,6 +234,18 @@ describe('template worker jobs', () => {
     expect(check).toMatchObject({ ok: true, kind: 'compile', compiled: 0, failed: [{ id: 'tpl_a', code: 'TEMPLATE_LOW_VARIANCE' }] });
     const broken = await runTemplateJob({ kind: 'compile', directory: path.join(home, 'nope') });
     expect(broken).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+  });
+
+  it('runs alpha jobs and keeps their error codes; transferable copies leave the caller\'s bytes intact', async () => {
+    const png = await rawFrameToPng(await smoothFrame(64, 48, 3));
+    const same = await runTemplateJob({ kind: 'diffAlpha', frames: [png, png], crop: { x: 8, y: 8, w: 24, h: 24 } });
+    expect(same).toMatchObject({ ok: true, kind: 'diffAlpha' });
+    expect(same.ok && same.kind === 'diffAlpha' && same.coverage).toBeGreaterThan(0.95); // only the 3×3 majority erodes the corners
+    const tooFew = await runTemplateJob({ kind: 'alphaPreview', frames: [png], crop: { x: 8, y: 8, w: 24, h: 24 }, tolerance: 24 });
+    expect(tooFew).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    const { message, transfer } = transferableJob({ kind: 'alphaPreview', frames: [png, png], crop: { x: 0, y: 0, w: 8, h: 8 }, tolerance: 24 });
+    expect(transfer).toHaveLength(2);
+    expect(message.kind === 'alphaPreview' && message.frames[0] !== png && message.frames[0]!.byteLength === png.byteLength).toBe(true);
   });
 });
 

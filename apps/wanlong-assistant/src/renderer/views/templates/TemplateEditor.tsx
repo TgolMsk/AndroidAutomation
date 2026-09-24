@@ -12,9 +12,9 @@ import { useAvdmEvent } from '../../hooks/useAvdmEvent';
 import { useSelectionLock } from '../../state/selection';
 import type { TemplateInsertRequest, TemplateSavedForScript } from '../automation/script-template-flow';
 import {
-  buildTemplateDraft, clampTolerance, DELETE_WARNING, describeCoverage, importSummary, lowVarianceGuidance, maskBadge,
-  overwriteTarget, quickPicks, rectText, resolutionWarning, ROI_ADVICE, saveSuccessDetail, stdBadge, templateIdProblem,
-  templateSummary, testVerdict, validCrop, type LowVarianceGuidance, type QuickPick,
+  buildTemplateDraft, clampTolerance, DELETE_WARNING, describeCoverage, importSummary, importTouchesSet, lowVarianceGuidance,
+  maskBadge, overwriteTarget, quickPicks, rectText, resolutionWarning, ROI_ADVICE, saveSuccessDetail, stdBadge,
+  templateIdProblem, templateSummary, testVerdict, validCrop, type LowVarianceGuidance, type QuickPick,
 } from './template-editor';
 import './TemplatesView.css';
 
@@ -37,6 +37,7 @@ const BUSY_LOCK: Partial<Record<Exclude<BusyAction, null>, string>> = {
   test: '正在验证模板，完成后再切换实例',
   save: '正在保存模板，完成后再切换实例',
   delete: '正在删除模板，完成后再切换实例',
+  coverage: '正在检查模板覆盖，完成后再切换实例',
 };
 
 function usePngUrl(bytes: Uint8Array | null): string | null {
@@ -118,8 +119,12 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
   const [proposalReviewed, setProposalReviewed] = useState(false);
   const [coverage, setCoverage] = useState<TemplateCoverage | null>(null);
   const [coverageError, setCoverageError] = useState<string | null>(null);
-  const [importResult, setImportResult] = useState<SeedResult | null>(null);
+  const [importResult, setImportResult] = useState<{ result: SeedResult; pausedSchedules: number[] } | null>(null);
+  /** TEMPLATE_EXISTS from the main process for an id this page did not know about yet (another writer added it). */
+  const [overwriteConflict, setOverwriteConflict] = useState<string | null>(null);
   const drawStart = useRef<{ x: number; y: number; mode: DrawMode } | null>(null);
+  /** Drops coverage responses of an earlier instance / request (a full check can outlive an instance switch). */
+  const coverageSeq = useRef(0);
   const startedScriptInsert = useRef<string | null>(null);
   const busyRef = useRef<BusyAction>(busy);
   busyRef.current = busy;
@@ -135,14 +140,20 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
   const picks = useMemo(() => quickPicks(coverage), [coverage]);
 
   const loadCoverage = useCallback(async (compile: boolean) => {
-    if (index === null) { setCoverage(null); return; }
+    const seq = ++coverageSeq.current;
+    if (index === null) { setCoverage(null); setCoverageError(null); return; }
     try {
-      setCoverage(await avdm.automationTemplateCoverage(gameId, index, compile));
+      const next = await avdm.automationTemplateCoverage(gameId, index, compile);
+      if (seq !== coverageSeq.current) return;
+      setCoverage(next);
       setCoverageError(null);
-    } catch (cause) { setCoverageError(errMsg(cause)); }
+    } catch (cause) {
+      if (seq === coverageSeq.current) setCoverageError(errMsg(cause));
+    }
   }, [gameId, index]);
 
-  const refresh = useCallback(async (preferId?: string | null) => {
+  /** `keepNew`: a background reload keeps the 「新建模板」 form instead of jumping to the first template. */
+  const refresh = useCallback(async (preferId?: string | null, keepNew = false) => {
     if (!gameId) { setSets([]); setActiveSet(null); setBusy(null); return; }
     const [managed, current] = await Promise.all([
       avdm.automationTemplateSets(gameId),
@@ -152,6 +163,7 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
     setActiveSet(current);
     setSelectedId((previous) => {
       const candidate = preferId === undefined ? previous : preferId;
+      if (keepNew && candidate === null) return null;
       return current?.templates.some((item) => item.id === candidate) ? candidate : current?.templates[0]?.id ?? null;
     });
     setError(null);
@@ -166,6 +178,7 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
     let alive = true;
     setBusy('load'); setError(null); setFrame(null); clearDiffShots(); setTestResult(null);
     setSelectedId(null); setUsingProposal(false); setProposalReviewed(false); setGuidance(null); setImportResult(null);
+    setCoverage(null); setCoverageError(null); setOverwriteConflict(null);
     void refresh().catch((cause) => { if (alive) setError(errMsg(cause)); }).finally(() => { if (alive) setBusy(null); });
     return () => { alive = false; };
   }, [refresh]);
@@ -173,7 +186,7 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
   // Another writer (AI harvest, tplkit-free save paths, an import) changed this set: reload it.
   useAvdmEvent('templates-changed', (change) => {
     if (change.gameId !== gameId || busyRef.current !== null) return;
-    if (activeSet && change.directory === activeSet.directory) void refresh().catch((cause) => setError(errMsg(cause)));
+    if (activeSet && change.directory === activeSet.directory) void refresh(undefined, true).catch((cause) => setError(errMsg(cause)));
     else if (change.reason === 'import') void avdm.automationTemplateSets(gameId).then(setSets).catch(() => undefined);
   });
 
@@ -210,7 +223,7 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
     setProposalReviewed(false);
   }, [matchingProposal?.sourceRecordId, gameId, index]);
 
-  useEffect(() => { setConfirmOverwrite(false); }, [templateId, selectedId]);
+  useEffect(() => { setConfirmOverwrite(false); setOverwriteConflict(null); }, [templateId, selectedId]);
 
   // Diff frames, crop or tolerance changed: recompute the 透明底 preview (debounced; frames are MB-sized).
   useEffect(() => {
@@ -291,10 +304,13 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
       if (!directory) return;
       const imported = await avdm.importAutomationTemplateSets(gameId, directory);
       setSets(imported.sets);
-      setImportResult(imported.result);
-      const summary = importSummary(imported.result);
-      toast.push({ kind: summary.changed ? 'success' : 'info', title: summary.title, detail: summary.lines.slice(0, 3).join('；') || undefined });
-      if (summary.changed && index !== null) await refresh(selectedId);
+      setImportResult({ result: imported.result, pausedSchedules: imported.pausedSchedules });
+      const summary = importSummary(imported.result, imported.pausedSchedules);
+      toast.push({ kind: summary.changed ? 'success' : imported.result.found === 0 ? 'warn' : 'info', title: summary.title,
+        detail: summary.lines.slice(0, 3).join('；') || undefined });
+      // The active set gained templates: the same notification as a save (the gather page drops its probe).
+      if (activeSet && importTouchesSet(imported, activeSet.directory)) onChanged?.(activeSet.directory);
+      if (summary.changed && index !== null) await refresh(selectedId, true);
     } catch (cause) { toast.error('无法导入模板集', errMsg(cause)); }
     finally { setBusy(null); }
   }
@@ -361,7 +377,7 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
         templateId, selectedId, name, frame, crop, roi, threshold, note, tags, tolerance,
         diffFrames: diffShots.map((shot) => shot.png), confirmOverwrite: confirmed,
       }));
-      setConfirmOverwrite(false);
+      setConfirmOverwrite(false); setOverwriteConflict(null);
       clearDiffShots();
       await refresh(result.definition.id);
       setSelectedId(result.definition.id);
@@ -375,8 +391,12 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
       const code = errorCodeOf(cause);
       const lowVariance = lowVarianceGuidance(code, errMsg(cause));
       if (lowVariance) setGuidance(lowVariance);
-      else if (code === 'TEMPLATE_EXISTS') setConfirmOverwrite(true);
-      else toast.error('无法保存模板', errMsg(cause));
+      else if (code === 'TEMPLATE_EXISTS') {
+        // Another writer added this id after the page loaded the set: reload it (without touching the form) and ask.
+        setOverwriteConflict(errMsg(cause));
+        setConfirmOverwrite(true);
+        void avdm.automationTemplateSet(gameId, index).then((current) => { if (current) setActiveSet(current); }).catch(() => undefined);
+      } else toast.error('无法保存模板', errMsg(cause));
     } finally { setBusy(null); }
   }
 
@@ -462,7 +482,7 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
   const lowResolution = frame && activeSet ? resolutionWarning(frame, activeSet) : null;
   const coverageHint = alphaPreview ? describeCoverage(alphaPreview.coverage) : null;
   const verdict = testResult ? testVerdict(testResult.match) : null;
-  const importView = importResult ? importSummary(importResult) : null;
+  const importView = importResult ? importSummary(importResult.result, importResult.pausedSchedules) : null;
   const missingGlyphSets = coverage?.glyphs.filter((glyph) => glyph.present.length === 0) ?? [];
   const partialGlyphSets = coverage?.glyphs.filter((glyph) => glyph.present.length > 0 && glyph.missingDigits.length > 0) ?? [];
 
@@ -496,6 +516,7 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
 
         <div className="template-create-set"><label><span>新建模板集</span><input type="text" value={newSetName} onChange={(event) => setNewSetName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createSet(); }} placeholder="例如：万龙觉醒 1440p" maxLength={100} disabled={busy !== null} /></label><button className="btn" type="button" onClick={() => void createSet()} disabled={busy !== null || !newSetName.trim()}>{busy === 'create' ? <Spinner size={14} /> : <Icon name="plus" />}创建并使用</button></div>
 
+        {activeSet && !coverage && coverageError && <div className="template-panel-error" role="alert"><Icon name="alert" />模板覆盖检查失败：{coverageError}<button className="btn xs" type="button" onClick={() => void loadCoverage(false)} disabled={busy !== null}>重试</button></div>}
         {activeSet && coverage && <details className="template-coverage" open={!coverage.ready}>
           <summary>
             <span className={`tag ${coverage.ready ? 'ok' : 'warn'}`}>{coverage.ready ? '关键模板齐全' : `缺 ${coverage.critical.length} 张关键模板`}</span>
@@ -601,10 +622,10 @@ export function TemplateEditor({ gameId, index, onChanged, proposal, scriptInser
               <div><strong>{guidance.title}</strong>{guidance.paragraphs.map((text) => <p key={text}>{text}</p>)}</div>
               <button className="icon-btn small" type="button" aria-label="关闭提示" onClick={() => setGuidance(null)}><Icon name="close" size={14} /></button>
             </div>}
-            {confirmOverwrite && replaces && <div className="notice warn template-overwrite" role="alert">
+            {confirmOverwrite && (replaces || overwriteConflict) && <div className="notice warn template-overwrite" role="alert">
               <Icon name="alert" />
-              <span>模板 ID「{replaces.id}」已被「{replaces.name}」使用。保存会覆盖它（清单里的位置与创建时间保留），流程按这个 ID 引用的就是新图。</span>
-              <div><button className="btn sm" type="button" onClick={() => setConfirmOverwrite(false)} disabled={busy !== null}>取消</button><button className="btn sm danger" type="button" onClick={() => void save(true)} disabled={!canSave}>确认覆盖</button></div>
+              <span>{replaces ? `模板 ID「${replaces.id}」已被「${replaces.name}」使用。` : `${overwriteConflict} `}保存会覆盖它（清单里的位置与创建时间保留），流程按这个 ID 引用的就是新图。</span>
+              <div><button className="btn sm" type="button" onClick={() => { setConfirmOverwrite(false); setOverwriteConflict(null); }} disabled={busy !== null}>取消</button><button className="btn sm danger" type="button" onClick={() => void save(true)} disabled={!canSave}>确认覆盖</button></div>
             </div>}
 
             {usingProposal && matchingProposal && <label className="template-review-check"><input type="checkbox" checked={proposalReviewed} onChange={(event) => setProposalReviewed(event.target.checked)} disabled={!frame || !frameReady || frame.capturedAt <= matchingProposal.sourceCapturedAt || busy !== null} /><span>我已在新截图中核对裁剪区域，确认保存为本地模板</span></label>}
