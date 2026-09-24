@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRuntimeState, wanlongPlugin, type GatherCycleResult } from '@avdm/automation/wanlong';
+import { defaultSchedulerConfig } from '@avdm/automation/wanlong/pure';
 import type { ProbeReport, RawFrame } from '@avdm/automation';
 import {
   GatherRuntimeStore,
@@ -13,6 +14,12 @@ import {
 } from '../src/main/automation/gather-runner';
 import { inspectGatherProbe } from '../src/main/automation/gather-probe-guard';
 import type { MainToWorker, VisionJobSpec, VisionRequest, WorkerToMain } from '../src/main/scheduler/vision-protocol';
+import { AutomationHost } from '../src/main/automation/host';
+import { codeOf } from '../src/main/scheduler/errors';
+import { InstanceLocks } from '../src/main/scheduler/instance-lock';
+import type { ManagerHost } from '../src/main/manager-host';
+
+vi.mock('../src/main/events', () => ({ broadcast: vi.fn() }));
 
 const PACKAGE = wanlongPlugin.packageName;
 const CREATED_AT = '2026-09-23T00:00:00.000Z';
@@ -532,6 +539,67 @@ describe('WanlongGatherRunner', () => {
     const outcome = await runner.runOnce(1, options({ timeoutMs: 1000 }));
     expect(outcome.outcome).toBe('cancelled');
     expect((await new GatherRuntimeStore(home).load(1, CREATED_AT)).backoffIndex).toBe(2);
+  });
+
+  it('reports a device that cannot be resolved to onCaptureFailed before any frame (freeze watchdog)', async () => {
+    const failures: unknown[] = [];
+    manager.getState = async () => { throw Object.assign(new Error('adb 命令超时'), { code: 'ADB_TIMEOUT' }); };
+    const created: FakeWorker[] = [];
+    const runner = runnerWith(() => undefined, created);
+    await expect(runner.sample(1, {
+      templateDir, config: defaultSchedulerConfig(), deadlineAt: Date.now() + 60_000, signal: new AbortController().signal,
+      allowColdStart: false, onCaptureFailed: (error) => { failures.push(error); },
+    })).rejects.toThrow('adb 命令超时');
+    expect(failures.map(codeOf)).toEqual(['ADB_TIMEOUT']);
+    expect(created).toHaveLength(0);
+  });
+
+  it('refuses a scheduled cycle\'s device requests once auto scheduling is switched off (reliability check)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const locks = new InstanceLocks(home, { fileLock: async (_path, fn) => fn() });
+    let approved!: () => void;
+    const gatherApproved = new Promise<void>((resolve) => { approved = resolve; });
+    let lateTap: { ok: boolean } | null = null;
+    let tapId = -1;
+    const runner = new WanlongGatherRunner(manager, home, {
+      locks,
+      workerFactory: () => new FakeWorker((message, worker) => {
+        if (message.type === 'job' && message.spec.kind === 'sample') {
+          worker.emit('message', { type: 'result', jobId: worker.jobId, result: { kind: 'sample', sample: {
+            sampledAt: Date.now(), queueUsed: 2, queueTotal: 5, rows: [], warnings: [],
+          } } } satisfies WorkerToMain);
+        } else if (message.type === 'job') {
+          worker.ready();
+        } else if (message.type === 'approved') {
+          approved();
+        } else if (message.type === 'abort') {
+          // The session keeps going for a moment after the stop: its next tap must be refused by main.
+          tapId = worker.request({ op: 'tap', args: [20, 30] });
+        } else if (message.type === 'response' && message.id === tapId) {
+          lateTap = { ok: message.ok };
+          worker.finish(result('cancelled'));
+        }
+      }),
+    });
+    const host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner, undefined, {}, {
+      locks, scheduler: { ownerLease: false, random: () => 0 },
+    });
+    vi.spyOn(host, 'probe').mockResolvedValue({ launchReady: true, launchReason: '已确认世界地图画面' } as never);
+    try {
+      await host.saveSettings('wanlong', 1, { templateDir, config: { version: 2, enabled: true } });
+      expect((await host.setSchedule('wanlong', 1, true)).enabled).toBe(true);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await gatherApproved;
+      expect((await host.setSchedule('wanlong', 1, false)).enabled).toBe(false);
+      await vi.waitFor(() => expect(lateTap).not.toBeNull());
+      expect(lateTap).toEqual({ ok: false });
+      expect(taps).toEqual([]);
+      await vi.waitFor(async () => expect((await host.runs())[0]?.status).toBe('cancelled'));
+      expect(host.eta.listWakes()).toEqual([]);
+    } finally {
+      await host.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it('rejects corrupted persisted state before starting a worker', async () => {

@@ -88,6 +88,24 @@ describe('automation insights', () => {
     });
   });
 
+  it('counts a circuit breaker apart without calling it a failure or raising an alert (original alerts rule 1)', async () => {
+    const service = new InsightsService(home);
+    await service.recordCycle(run('breaker', 1, Date.now()), result('circuitBroken'), 'scheduled');
+    await service.dispose();
+    expect((await service.days('wanlong', 1, 1))[0]).toMatchObject({ cycles: 1, failed: 0, succeeded: 1, circuitBreaks: 1, alerts: 0 });
+    expect(await service.alerts('wanlong', 1)).toEqual([]);
+  });
+
+  it('raises one human-needed pause alert per instance, code and day', async () => {
+    const service = new InsightsService(home);
+    await service.recordAttentionPause('wanlong', 2, { code: 'GAME_UPDATE_REQUIRED', message: '游戏需要更新资源' });
+    await service.recordAttentionPause('wanlong', 2, { code: 'GAME_UPDATE_REQUIRED', message: '游戏需要更新资源' });
+    await service.dispose();
+    expect(await service.alerts('wanlong', 2)).toMatchObject([
+      { kind: 'schedulePaused', severity: 'critical', message: expect.stringContaining('需要人工处理') },
+    ]);
+  });
+
   it('persists a read-only monitor finding with evidence only once', async () => {
     const service = new InsightsService(home);
     const finding = {

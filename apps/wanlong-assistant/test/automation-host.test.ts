@@ -7,6 +7,7 @@ import { AutomationHost, type AutomationHostHooks } from '../src/main/automation
 import type { TemplateJob, TemplateJobOutput } from '../src/main/automation/template-jobs';
 import { InstanceLocks } from '../src/main/scheduler/instance-lock';
 import type { ManagerHost } from '../src/main/manager-host';
+import type { AutomationProbeReport } from '../src/shared/ipc';
 
 const { broadcast } = vi.hoisted(() => ({ broadcast: vi.fn() }));
 vi.mock('../src/main/events', () => ({ broadcast }));
@@ -20,6 +21,20 @@ function result(outcome: GatherCycleResult['outcome'], message: string): GatherC
 
 function panel(used: number, total: number): PanelSample {
   return { sampledAt: Date.now(), queueUsed: used, queueTotal: total, rows: [], warnings: [] };
+}
+
+function probeReport(launchReady = true): AutomationProbeReport {
+  return {
+    gameId: 'wanlong', packageName: wanlongPlugin.packageName, foregroundPackage: wanlongPlugin.packageName,
+    deviceWidth: 2560, deviceHeight: 1440, capturedAt: Date.now(), matches: [],
+    launchReady, launchReason: launchReady ? '已确认世界地图画面，匹配分数 0.950' : '没有命中任何已知场景锚点',
+    timingsMs: { adb: 1, prepare: 1, match: 1, worker: 1, total: 4 },
+  };
+}
+
+/** The first user enable runs the read-only probe (a real worker in production); tests answer it directly. */
+function allowProbe(host: AutomationHost, launchReady = true) {
+  return vi.spyOn(host, 'probe').mockImplementation(async () => probeReport(launchReady));
 }
 
 function controlledRunner() {
@@ -169,6 +184,7 @@ describe('AutomationHost single-cycle gathering', () => {
         locks: new InstanceLocks(home, { fileLock: async (_path, fn) => fn() }),
         scheduler: { ownerLease: false, random: () => 0 },
       });
+      allowProbe(host);
       await enable();
       foreground = 'com.android.launcher3';
       const enabled = await host.setSchedule('wanlong', 1, true);
@@ -210,6 +226,7 @@ describe('AutomationHost single-cycle gathering', () => {
         locks: new InstanceLocks(home, { fileLock: async (_path, fn) => fn() }),
         scheduler: { ownerLease: false, random: () => 0 },
       });
+      allowProbe(host);
       host.eta.setHooks({ log: (_level, message) => { if (message.includes('派遣流程报错')) order.push('scheduler'); } });
       await enable();
       await host.setSchedule('wanlong', 1, true);
@@ -233,6 +250,7 @@ describe('AutomationHost single-cycle gathering', () => {
         locks: new InstanceLocks(home, { fileLock: async (_path, fn) => fn() }),
         scheduler: { ownerLease: false, random: () => 0 },
       });
+      allowProbe(host);
       await enable();
       await host.setSchedule('wanlong', 1, true);
       await vi.advanceTimersByTimeAsync(30_000);
@@ -268,6 +286,7 @@ describe('AutomationHost single-cycle gathering', () => {
   });
 
   it('serializes a slow first sample with a following configuration edit', async () => {
+    allowProbe(host);
     await enable();
     let releaseSample!: (sample: PanelSample) => void;
     runner.sample.mockReturnValueOnce(new Promise<PanelSample>((resolve) => { releaseSample = resolve; }));
@@ -281,7 +300,118 @@ describe('AutomationHost single-cycle gathering', () => {
     expect((await host.settings('wanlong', 1)).config['enabled']).toBe(false);
   });
 
+  it('requires a passing read-only probe for the first enable and again after a template or policy edit', async () => {
+    await enable();
+    const probe = allowProbe(host, false);
+    await expect(host.setSchedule('wanlong', 1, true)).rejects.toThrow('只读探针通过');
+    expect(runner.sample).not.toHaveBeenCalled();
+    expect(host.eta.list()).toEqual([]);
+    probe.mockImplementation(async () => probeReport(true));
+    expect((await host.setSchedule('wanlong', 1, true)).enabled).toBe(true);
+    await host.setSchedule('wanlong', 1, false);
+    // Same AVD, same templates: re-enabling needs no new probe (samples may cold-start the game).
+    foreground = 'com.android.launcher3';
+    expect((await host.setSchedule('wanlong', 1, true)).enabled).toBe(true);
+    expect(probe).toHaveBeenCalledTimes(2);
+    await host.saveSettings('wanlong', 1, { config: { version: 2, enabled: true } });
+    expect((await host.schedules())[0]?.enabled).toBe(false);
+    await host.setSchedule('wanlong', 1, true);
+    expect(probe).toHaveBeenCalledTimes(3);
+  });
+
+  it('lets a disable supersede an enable still cold-starting in its first sample', async () => {
+    allowProbe(host);
+    await enable();
+    let sampleSignal: AbortSignal | undefined;
+    runner.sample.mockImplementationOnce((_index: number, options: { signal: AbortSignal }) => new Promise<PanelSample>((_resolve, reject) => {
+      sampleSignal = options.signal;
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    }) as never);
+    const enabling = host.setSchedule('wanlong', 1, true);
+    await vi.waitFor(() => expect(sampleSignal).toBeDefined());
+    expect((await host.setSchedule('wanlong', 1, false)).enabled).toBe(false);
+    expect(sampleSignal!.aborted).toBe(true);
+    expect((await enabling).enabled).toBe(false);
+    expect(host.eta.listWakes()).toEqual([]);
+  });
+
+  it('lets a disable supersede an enable still in its probe', async () => {
+    await enable();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const probe = allowProbe(host).mockImplementation(async () => { await gate; return probeReport(true); });
+    const enabling = host.setSchedule('wanlong', 1, true);
+    await vi.waitFor(() => expect(probe).toHaveBeenCalled());
+    expect((await host.setSchedule('wanlong', 1, false)).enabled).toBe(false);
+    release();
+    expect((await enabling).enabled).toBe(false);
+    expect(runner.sample).not.toHaveBeenCalled();
+  });
+
+  it('does not hang shutdown behind a manual cycle that holds the instance lock', async () => {
+    await host.dispose();
+    const locks = new InstanceLocks(home, { fileLock: async (_path, fn) => fn() });
+    let holding!: () => void;
+    const held = new Promise<void>((resolve) => { holding = resolve; });
+    const lockRunner = {
+      ...controlledRunner(),
+      // Like the real runner: the cycle holds the shared instance lock until it is aborted.
+      runOnce: vi.fn((index: number, options: { signal?: AbortSignal }) => locks.run(index, '自动采集', () =>
+        new Promise<GatherCycleResult>((resolve) => {
+          holding();
+          options.signal!.addEventListener('abort', () => resolve(result('cancelled', '采集已取消')), { once: true });
+        }))),
+      dispose: vi.fn(async () => undefined),
+    };
+    host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, lockRunner as never, undefined, {}, {
+      locks, scheduler: { ownerLease: false },
+    });
+    await enable();
+    // The instance is a known scheduler runtime (its lock is drained on shutdown).
+    await host.eta.noteDispatch(1, { travelTimeMs: 1000 }, { resample: false });
+    const started = await host.run('wanlong', 'gather-once', 1);
+    await held;
+    const t0 = performance.now();
+    await host.dispose();
+    expect(performance.now() - t0).toBeLessThan(2_000);
+    host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, controlledRunner());
+    expect((await host.runs())[0]).toMatchObject({ runId: started.runId, status: 'cancelled' });
+  });
+
+  it('treats a scheduled circuitBroken cycle as a designed stop, not a failure', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await host.dispose();
+      const failures = vi.fn();
+      runner = controlledRunner();
+      host = new AutomationHost({ get: async () => manager } as unknown as ManagerHost, home, runner, undefined, { onFailure: failures }, {
+        locks: new InstanceLocks(home, { fileLock: async (_path, fn) => fn() }),
+        scheduler: { ownerLease: false, random: () => 0 },
+      });
+      allowProbe(host);
+      await enable();
+      await host.setSchedule('wanlong', 1, true);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(runner.runOnce).toHaveBeenCalledTimes(1));
+      const tripped = Date.now();
+      runner.resolve(result('circuitBroken', '最近一小时已派兵 12 次，达到熔断上限'));
+      await vi.waitFor(async () => {
+        expect((await host.runs())[0]).toMatchObject({ status: 'succeeded' });
+        expect(host.eta.getState(1).operating).toBe(false);
+        expect(host.eta.getState(1).nextWakeAt).not.toBeNull();
+      });
+      expect(failures).not.toHaveBeenCalled();
+      expect(host.eta.getState(1)).toMatchObject({ auto: true, failureCount: 0 });
+      // Within the 10-minute cooldown only the health probe may wake.
+      const wake = host.eta.listWakes()[0]!;
+      expect(wake.reason === '健康探针' || wake.dueAt >= tripped + 10 * 60_000).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not enable automatic scheduling while a manual start is in preflight', async () => {
+    allowProbe(host);
     await enable();
     let releaseState!: () => void;
     const gate = new Promise<void>((resolve) => { releaseState = resolve; });

@@ -33,6 +33,8 @@ const TEMPLATE_JOB_TIMEOUT_MESSAGES: Record<TemplateJob['kind'], string> = {
   test: '模板测试超时', compile: '模板编译检查超时', alphaPreview: '去底预览超时', diffAlpha: '透明底计算超时',
 };
 const NOT_READY = '该实例暂不能运行自动任务，请在账号管理中检查账号登录状态';
+/** DECISIONS B: a tripped circuit breaker is not a failure; the scheduler looks again after this (probes continue). */
+const CIRCUIT_BREAKER_COOLDOWN_MS = 10 * 60_000;
 const MAX_RUN_HISTORY = 100;
 const RUN_HISTORY_VERSION = 1;
 const MAX_RUN_HISTORY_BYTES = 256 * 1024;
@@ -85,6 +87,11 @@ export interface AutomationHostHooks {
   onCycleResult?: (index: number, fact: GatherCycleFact, source: 'manual' | 'scheduled') => Promise<void>;
   /** Every dispatch of a cycle (statistics: storage ≈ amount gathered), even when the cycle ended in an error. */
   onDispatched?: (index: number, records: DispatchRecord[], at: number) => Promise<void> | void;
+  /**
+   * The scheduler paused the instance because a human must look (GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED) and no module
+   * has set the scheduler's own `onNeedsAttention` hook yet (the fallback alert path).
+   */
+  onNeedsAttention?: (gameId: string, index: number, info: { code: string; message: string }) => Promise<void>;
 }
 
 /**
@@ -108,7 +115,7 @@ export interface AutomationHostPorts {
 
 export interface AutomationHostOptions {
   locks?: InstanceLocks;
-  scheduler?: Omit<EtaSchedulerOptions, 'locks' | 'publish' | 'publishConfig' | 'log' | 'onSafetyPause'>;
+  scheduler?: Omit<EtaSchedulerOptions, 'locks' | 'publish' | 'publishConfig' | 'log' | 'onSafetyPause' | 'onAttentionPause'>;
   shots?: ShotStore;
 }
 
@@ -149,6 +156,10 @@ export class AutomationHost {
   private readonly templateChanges = new TemplateChangeFeed();
   /** Replaces the one-shot template worker (tests run `runTemplateJob` in-process); unset in the app. */
   templateJobRunner?: (job: TemplateJob) => Promise<TemplateJobOutput>;
+  /** Per-instance generation of schedule requests: a later disable supersedes an enable still probing. */
+  private readonly scheduleRequests = new Map<number, number>();
+  /** Instances whose first enable passed the read-only probe (this AVD, this template set) since the last edit. */
+  private readonly probeConfirmed = new Map<number, { createdAt: string; templateDir: string }>();
   private readonly historyFile: string;
   private readonly historyReady: Promise<void>;
   private historyWrite: Promise<void> = Promise.resolve();
@@ -190,6 +201,10 @@ export class AutomationHost {
         void this.hooks.onScheduleStop?.(GATHER_GAME_ID, index, failureCount).catch((error: unknown) =>
           console.error('[avdm] 调度暂停告警无法保存', error));
       },
+      onAttentionPause: (index, info) => {
+        void this.hooks.onNeedsAttention?.(GATHER_GAME_ID, index, info).catch((error: unknown) =>
+          console.error('[avdm] 需要人工处理的告警无法保存', error));
+      },
     });
     this.eta.setQueueFreeHook((state, ctx) => this.gatherForScheduler(state.instanceIndex, ctx.signal));
     this.scheduler = new ScheduleCompat(this.eta);
@@ -219,6 +234,7 @@ export class AutomationHost {
     const i = asIndex(index);
     return this.withControlLock(i, async () => {
       this.assertTemplateEditable(i);
+      this.probeConfirmed.delete(i);
       if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
       return this.withDeviceLease(i, async () => {
       const size = plugin.referenceSize ?? { width: 2560, height: 1440 };
@@ -289,6 +305,7 @@ export class AutomationHost {
       this.assertTemplateEditable(i);
       const set = await this.templateSet(gameId, i);
       if (!set) throw new Error('请先选择或创建模板集');
+      this.probeConfirmed.delete(i);
       if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
       return this.withDeviceLease(i, () => this.templates.save(set.directory, ready));
     });
@@ -315,6 +332,7 @@ export class AutomationHost {
       this.assertTemplateEditable(i);
       const set = await this.templateSet(gameId, i);
       if (!set) throw new Error('请先选择或创建模板集');
+      this.probeConfirmed.delete(i);
       if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
       await this.withDeviceLease(i, () => this.templates.delete(set.directory, id));
       return set.directory;
@@ -386,6 +404,7 @@ export class AutomationHost {
     // A set that changed between the dry run and the merge (another writer in between): switch those schedules off too.
     for (const i of (await this.instancesBoundTo(gameId, added)).filter((index) => !bound.includes(index))) {
       await this.withControlLock(i, async () => {
+        this.probeConfirmed.delete(i);
         if ((await this.scheduler.get(gameId, i)).enabled) { await this.scheduler.disable(gameId, i); paused.push(i); }
       });
     }
@@ -418,6 +437,7 @@ export class AutomationHost {
     if (first === undefined) return action();
     return this.withControlLock(first, async () => {
       this.assertTemplateEditable(first);
+      this.probeConfirmed.delete(first);
       if ((await this.scheduler.get(gameId, first)).enabled) {
         await this.scheduler.disable(gameId, first);
         paused.push(first);
@@ -472,8 +492,9 @@ export class AutomationHost {
         patch = { ...patch, config: normalizeGatherConfig(config as Parameters<typeof normalizeGatherConfig>[0]) as unknown as Record<string, unknown> };
       }
       // A changed template or policy needs a fresh scene probe before the next automatic write.
-      if ((patch.templateDir !== undefined || patch.config !== undefined) && (await this.scheduler.get(gameId, i)).enabled) {
-        await this.scheduler.disable(gameId, i);
+      if (patch.templateDir !== undefined || patch.config !== undefined) {
+        this.probeConfirmed.delete(i);
+        if ((await this.scheduler.get(gameId, i)).enabled) await this.scheduler.disable(gameId, i);
       }
       this.assertTemplateEditable(i);
       return this.withDeviceLease(i, () => this.store.save(gameId, i, patch));
@@ -488,19 +509,49 @@ export class AutomationHost {
     return this.scheduler.list();
   }
 
+  /**
+   * The user's schedule switch (IPC). Enabling: busy checks, then the first-enable probe gate (`confirmProbe`), then the
+   * ETA scheduler's readiness gate and one read-only sample. ★ Disabling never queues behind an enable that is still
+   * probing or cold-starting the game (conventions §6.6): it supersedes it and aborts its sample right away.
+   * Resume paths (alerts, bot) call `eta.setAuto(i, true)` directly and skip the probe gate.
+   */
   async setSchedule(gameId: string, index: number, enabled: boolean): Promise<AutomationSchedule> {
-    if (this.disposed) throw new Error('应用正在退出');
+    if (enabled && this.disposed) throw new Error('应用正在退出');
     gamePlugin(gameId);
     if (gameId !== 'wanlong') throw new Error('该游戏尚未接入自动续跑');
     const i = asIndex(index);
+    const request = (this.scheduleRequests.get(i) ?? 0) + 1;
+    this.scheduleRequests.set(i, request);
+    if (!enabled) return this.scheduler.disable(gameId, i);
+    const superseded = () => this.scheduleRequests.get(i) !== request || this.disposed;
     return this.withControlLock(i, async () => {
-      if (!enabled) return this.scheduler.disable(gameId, i);
+      if (superseded()) return this.scheduler.get(gameId, i);
       if (this.activeByIndex.has(i) || this.gatherRunner.isRunning(i)) throw new Error(`实例 #${i} 已有自动化任务在运行`);
+      await this.confirmProbe(gameId, i);
+      if (superseded()) return this.scheduler.get(gameId, i);
       // Readiness (instance running, template set, config enabled, account) is the ETA scheduler's gate
-      // (ensureAutomationReady). ★ The game need not be in front (DECISIONS C): the first read-only sample cold-starts
-      // it and every write still passes the probe gate inside the vision worker.
+      // (ensureAutomationReady). The game need not stay in front afterwards (DECISIONS C): samples and cycles
+      // cold-start it and every write still passes the probe gate inside the vision worker.
       return this.scheduler.enable(gameId, i);
     });
+  }
+
+  /**
+   * DECISIONS C「首次启用自动调度仍需只读探针 + 用户确认」, enforced fail-closed here (the renderer adds the
+   * confirmation): a pass is remembered for this AVD and template set until a template or policy edit, so re-enabling
+   * later may cold-start a game that is not running. The memory is per process: after a restart the probe is due again.
+   */
+  private async confirmProbe(gameId: string, index: number): Promise<void> {
+    const [instance, settings] = await Promise.all([this.instanceIdentity(index), this.store.get(gameId, index)]);
+    if (!instance) throw new Error(`实例 #${index} 不存在`);
+    if (!settings.templateDir) throw new Error('请先选择本地模板集目录');
+    const confirmed = this.probeConfirmed.get(index);
+    if (confirmed?.createdAt === instance.createdAt && confirmed.templateDir === settings.templateDir) return;
+    const report = await this.probe(gameId, index);
+    if (!report.launchReady) {
+      throw new Error(`首次开启自动续跑前需要只读探针通过：${report.launchReason}。请把游戏停在城内或世界地图后重新探测`);
+    }
+    this.probeConfirmed.set(index, { createdAt: instance.createdAt, templateDir: settings.templateDir });
   }
 
   async probe(gameId: string, index: number): Promise<AutomationProbeReport> {
@@ -577,7 +628,7 @@ export class AutomationHost {
    * The ETA scheduler's QueueFreeHook: one gather cycle, run inside the scheduler's instance lock. Reports the
    * cycle's facts (and a start-up failure) before throwing, records every dispatch with the scheduler (travel time,
    * coordinate, resource — then one re-sample), and only a failed cycle throws; queueFull / noResourceWanted / giveUp
-   * / staminaLow / circuitBroken return normally (not failures; circuitBroken and giveUp set the earliest next wake).
+   * / staminaLow / circuitBroken return normally (not failures; circuitBroken asks for a 10-minute cooldown).
    */
   private async gatherForScheduler(index: number, signal: AbortSignal): Promise<QueueFreeResult> {
     let started: { run: AutomationRun; active: ActiveAutomationRun };
@@ -621,12 +672,14 @@ export class AutomationHost {
       throw new SchedulerError('STEP_FAILED', result.message, { step: result.fact?.step ?? null });
     }
     this.logLine(result.dispatched.length > 0 ? 'info' : 'debug', `[实例 #${index}] 自动采集本轮结束：${result.message}`);
-    const cooldown = result.outcome === 'circuitBroken' || result.outcome === 'giveUp';
-    return {
-      dispatched: result.dispatched.length,
-      notBefore: cooldown ? result.nextWakeAt : null,
-      ...(cooldown ? { reason: result.nextWakeReason } : {}),
-    };
+    if (result.outcome === 'circuitBroken') {
+      // DECISIONS B: not a failure; look again in 10 minutes (the flow's early return does no device I/O). Health
+      // probes keep running meanwhile.
+      return { dispatched: result.dispatched.length, notBefore: Date.now() + CIRCUIT_BREAKER_COOLDOWN_MS, reason: '熔断中，10 分钟后复查' };
+    }
+    // giveUp and the rest follow the original: the scheduler ignores the flow's own wake and backs off (≤ 5 min);
+    // the flow's cooldown check returns early without touching the device.
+    return { dispatched: result.dispatched.length };
   }
 
   private async reportFact(index: number, fact: GatherCycleFact, source: 'manual' | 'scheduled'): Promise<void> {
@@ -677,6 +730,8 @@ export class AutomationHost {
     if (!this.gatherRunner.sample) throw new SchedulerError('UNKNOWN', '采集运行器不支持读取部队管理面板');
     const settings = await this.store.get(GATHER_GAME_ID, index);
     if (!settings.templateDir) throw new SchedulerError('TEMPLATE_NOT_FOUND', '请先选择本地模板集目录');
+    // Original resolveDevice → assertInstanceAutomationReady: an unready account or a base instance is never driven.
+    await this.ports.ensureAccountReady?.(index);
     return this.gatherRunner.sample(index, {
       templateDir: settings.templateDir,
       config: request.config,
@@ -737,6 +792,7 @@ export class AutomationHost {
     const templateDir = settings.templateDir;
     const config = normalizeGatherConfig((await this.gatherConfig(i, settings.config)) as Parameters<typeof normalizeGatherConfig>[0]);
     if (!config.enabled) throw new Error('请先启用并保存自动采集配置');
+    await this.ports.ensureAccountReady?.(i);
     // ★ No foreground requirement: a game that is not running is cold-started (monkey + look-only wait) by the cycle.
     if (this.disposed) throw new Error('应用正在退出');
     if (externalSignal?.aborted) throw externalSignal.reason ?? new Error('调度已停止');
@@ -803,7 +859,7 @@ export class AutomationHost {
     const active = this.activeRuns.get(runId);
     if (!active) return;
     if (active.source === 'scheduled') {
-      await this.scheduler.disable(run.gameId, active.index);
+      await this.setSchedule(run.gameId, active.index, false);
       return;
     }
     active.controller.abort(new Error('采集已取消'));
@@ -820,11 +876,15 @@ export class AutomationHost {
     return [...this.runHistory.values()].sort((a, b) => b.startedAt - a.startedAt).map((run) => ({ ...run }));
   }
 
+  /**
+   * Abort in-flight work, then await it (conventions §2.1). ★ Manual cycles hold the same instance lock the scheduler
+   * drains, so every cycle is aborted first and the scheduler and runner wind down together; waiting for the scheduler
+   * before aborting a manual cycle would hang shutdown until that cycle ended.
+   */
   async dispose(): Promise<void> {
     this.disposed = true;
-    await this.scheduler.dispose();
-    for (const run of this.activeRuns.values()) run.controller.abort(new Error('采集已取消'));
-    await this.gatherRunner.dispose();
+    for (const run of this.activeRuns.values()) run.controller.abort(new Error('助手正在退出'));
+    await Promise.allSettled([this.scheduler.dispose(), this.gatherRunner.dispose()]);
     await Promise.allSettled([...this.activeRuns.values()].map((run) => run.done));
     await Promise.allSettled([...this.workers].map((worker) => worker.terminate()));
     this.workers.clear();
@@ -833,8 +893,9 @@ export class AutomationHost {
   }
 
   private async completeCycle(runId: string, result: GatherCycleResult): Promise<void> {
+    // ★ circuitBroken is a designed stop, not a failure (original alerts iron rule 1); statistics count it apart.
     const status: AutomationRun['status'] = result.outcome === 'cancelled' ? 'cancelled' :
-      result.outcome === 'error' || result.outcome === 'circuitBroken' ? 'failed' : 'succeeded';
+      result.outcome === 'error' ? 'failed' : 'succeeded';
     const run = this.runHistory.get(runId);
     // The Runner has already persisted its state. A future scheduler must durably store a wake
     // before returning it here; without that service, the engine's nextWakeAt is only advice.

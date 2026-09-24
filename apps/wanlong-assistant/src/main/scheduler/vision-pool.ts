@@ -1,3 +1,4 @@
+import { AsyncResource } from 'node:async_hooks';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
@@ -194,12 +195,19 @@ class Job {
     this.deadline = Date.now() + ctx.timeoutMs;
   }
 
+  /**
+   * ★ Must be called in the caller's async context (inside the instance lock for samples and cycles). Worker messages
+   * arrive on the worker's MessagePort, whose context is wherever the long-lived worker was first created, so every
+   * worker-originated callback (hooks, device RPC, shots) is re-entered in the job's own context: a hook that calls
+   * `exclusive()` then re-enters the lock the job holds instead of queueing behind it.
+   */
   start(): Promise<VisionJobResult> {
+    const scope = new AsyncResource('wanlong.vision-job');
     return new Promise<VisionJobResult>((resolve, reject) => {
       this.resolve = resolve;
       this.reject = reject;
-      this.slot.job = (message) => this.onMessage(message);
-      this.slot.onExit = (error) => this.finish(error, undefined, true);
+      this.slot.job = (message) => scope.runInAsyncScope(() => this.onMessage(message));
+      this.slot.onExit = (error) => scope.runInAsyncScope(() => this.finish(error, undefined, true));
       this.ctx.signal.addEventListener('abort', this.onAbort, { once: true });
       this.armTimer();
       const post: MainToWorker = { type: 'job', jobId: this.jobId, spec: this.spec };

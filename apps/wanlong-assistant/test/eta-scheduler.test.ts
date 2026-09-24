@@ -231,6 +231,37 @@ describe('EtaScheduler', () => {
     expect(scheduler.getState(1).nextWakeReason).toContain('最早');
   });
 
+  it('keeps health probes running through the 10-minute circuit-breaker cooldown, then looks again', async () => {
+    const scheduler = make();
+    await scheduler.restore();
+    const probes: number[] = [];
+    scheduler.setHooks({ onHealthProbe: async () => { probes.push(Date.now()); } });
+    let rounds = 0;
+    scheduler.setQueueFreeHook(async () => {
+      rounds++;
+      return { dispatched: 0, notBefore: Date.now() + 10 * 60_000, reason: '熔断中，10 分钟后复查' };
+    });
+    samples.push(async () => panel(2, 5));
+    await scheduler.setAuto(1, true);
+    samples.push(async () => panel(2, 5));
+    await vi.advanceTimersByTimeAsync(30_000);
+    const cooldownEnd = START + 30_000 + 10 * 60_000;
+    await until(() => rounds === 1 && scheduler.getState(1).nextWakeReason === '健康探针', '熔断后先排健康探针');
+    expect(scheduler.getState(1)).toMatchObject({ auto: true, failureCount: 0, nextWakeAt: START + 30_000 + 3 * 60_000 });
+    for (const [n, next] of [[1, START + 30_000 + 6 * 60_000], [2, START + 30_000 + 9 * 60_000], [3, cooldownEnd]] as const) {
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      await until(() => probes.length === n && scheduler.getState(1).nextWakeAt === next, `冷却期内第 ${n} 次健康探针`);
+    }
+    // No panel read and no dispatch hand-off inside the cooldown; the wake at its end is a normal sample.
+    expect(sampleCalls).toHaveLength(2);
+    expect(scheduler.getState(1).nextWakeReason).toContain('最早');
+    samples.push(async () => panel(2, 5));
+    await vi.advanceTimersByTimeAsync(60_000);
+    await until(() => rounds === 2, '冷却结束后复查');
+    expect(sampleCalls).toHaveLength(3);
+    expect(scheduler.getState(1).failureCount).toBe(0);
+  });
+
   it('pauses without counting a failure when the cycle needs a human', async () => {
     const attention = vi.fn();
     const scheduler = await ready();
@@ -243,6 +274,130 @@ describe('EtaScheduler', () => {
     await until(() => !scheduler.getState(1).auto, '人工处理暂停');
     expect(attention).toHaveBeenCalledWith(1, { code: 'GAME_UPDATE_REQUIRED', message: '游戏需要更新' });
     expect(scheduler.getState(1).failureCount).toBe(0);
+  });
+
+  it('raises the host fallback alert for a human-needed pause while no module handles it', async () => {
+    const fallback = vi.fn();
+    const scheduler = await ready({ onAttentionPause: fallback });
+    scheduler.setQueueFreeHook(async () => { throw new SchedulerError('AI_RISK_BLOCKED', '确认框风险过高'); });
+    samples.push(async () => panel(2, 5));
+    await scheduler.setAuto(1, true);
+    samples.push(async () => panel(2, 5));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await until(() => !scheduler.getState(1).auto, '人工处理暂停');
+    expect(fallback).toHaveBeenCalledWith(1, { code: 'AI_RISK_BLOCKED', message: '确认框风险过高' });
+  });
+
+  // ── original reliability-offline-check (scheduler parts) ──
+
+  it('keeps the old wake cancelled when auto is re-enabled while its sample is in flight; a new wake dispatches once', async () => {
+    const scheduler = await ready();
+    let dispatches = 0;
+    scheduler.setQueueFreeHook(async () => { dispatches++; return { dispatched: 0 }; });
+    samples.push(async () => panel(4, 5));
+    await scheduler.setAuto(1, true);
+    let entered = false;
+    let releaseOld!: () => void;
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+    // The old sample ignores the abort (ADB already in flight) and then reports a free slot.
+    samples.push(async () => { entered = true; await oldGate; return panel(0, 5); });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await until(() => entered, '旧唤醒的采样开始');
+    await scheduler.setAuto(1, false);
+    samples.push(async () => panel(0, 5));
+    const reenabling = scheduler.setAuto(1, true);
+    await settle();
+    releaseOld();
+    expect(await reenabling).toMatchObject({ auto: true, queueUsed: 0 });
+    await settle();
+    expect(dispatches).toBe(0);
+    samples.push(async () => panel(0, 5));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await until(() => dispatches === 1, '新唤醒派遣');
+    await settle();
+    expect(dispatches).toBe(1);
+  });
+
+  it('never dispatches when paused while the dispatch hand-off waits for the instance lock', async () => {
+    const scheduler = await ready();
+    let dispatches = 0;
+    scheduler.setQueueFreeHook(async () => { dispatches++; return { dispatched: 1 }; });
+    samples.push(async () => panel(4, 5));
+    await scheduler.setAuto(1, true);
+    let sampling = false;
+    let finishSample!: () => void;
+    const sampleGate = new Promise<void>((resolve) => { finishSample = resolve; });
+    samples.push(async () => { sampling = true; await sampleGate; return panel(0, 5); });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await until(() => sampling, '唤醒采样开始');
+    // Another holder queues while the sample runs, so the hand-off after it queues behind this holder.
+    let holderIn = false;
+    let releaseHolder!: () => void;
+    const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    const holder = scheduler.locks.run(1, '测试占用', async () => { holderIn = true; await holderGate; });
+    finishSample();
+    await until(() => holderIn, '占用方拿到实例锁');
+    await scheduler.setAuto(1, false);
+    releaseHolder();
+    await holder;
+    await until(() => !scheduler.locks.busy(1), '实例锁排空');
+    expect(dispatches).toBe(0);
+    expect(scheduler.listWakes()).toEqual([]);
+  });
+
+  // ── original freeze-offline-check section 4 (wiring to the real scheduler) ──
+
+  it('reports a device failure to onCaptureFailed with its code and awaits a re-entrant onSampleResult', async () => {
+    const captureFailures: string[] = [];
+    const results: Array<{ ok: boolean; hasSignal: boolean }> = [];
+    let exclusiveRan = false;
+    let awaited = false;
+    let calls = 0;
+    const scheduler = await ready({}, {
+      // Ready for the enable gate, then the device cannot be resolved inside the sample (original resolveDevice).
+      instance: async () => {
+        if (++calls > 1) throw new SchedulerError('ADB_TIMEOUT', '离线自检：adb 命令超时');
+        return instance;
+      },
+    });
+    scheduler.setHooks({
+      onCaptureFailed: (_index, error) => { captureFailures.push(error.code); },
+      onSampleResult: async (index, ok, _message, ctx) => {
+        results.push({ ok, hasSignal: ctx.signal instanceof AbortSignal });
+        if (ok) return;
+        // Freeze recovery calls exclusive() from here, inside the lock: it must re-enter, not deadlock.
+        await scheduler.exclusive(index, '卡死重启', async () => { exclusiveRan = scheduler.locks.held(index); });
+        awaited = true;
+      },
+    });
+    await scheduler.setAuto(1, true);
+    expect(captureFailures).toContain('ADB_TIMEOUT');
+    expect(results).toEqual([{ ok: false, hasSignal: true }]);
+    expect(awaited).toBe(true);
+    expect(exclusiveRan).toBe(true);
+    expect(ports.sample).not.toHaveBeenCalled();
+    // Failed first sample: still a backoff wake, never auto without a timer.
+    expect(scheduler.listWakes().map((wake) => wake.instanceIndex)).toEqual([1]);
+  });
+
+  it('never registers an instance on a read and ignores a disable of an unknown one', async () => {
+    const scheduler = await ready();
+    expect(scheduler.getState(7)).toMatchObject({ instanceIndex: 7, auto: false, queueUsed: null });
+    expect((await scheduler.setAuto(7, false)).auto).toBe(false);
+    expect(scheduler.list()).toEqual([]);
+    await expect(stat(path.join(home, 'automation', 'games', 'wanlong', 'scheduler', 'instances', '7.json'))).rejects.toThrow();
+    expect(() => scheduler.getState(64)).toThrow('实例编号非法');
+  });
+
+  it('re-arms a restored auto instance on the backoff ladder when its state cannot be read at startup', async () => {
+    const first = await ready();
+    samples.push(async () => panel(5, 5));
+    await first.setAuto(1, true);
+    await first.dispose();
+    const second = make({}, { instance: async () => { throw new Error('模拟器管理器还没就绪'); } });
+    await second.restore();
+    expect(second.getState(1)).toMatchObject({ auto: true, nextWakeAt: Date.now() + 30_000 });
+    expect(second.getState(1).nextWakeReason).toContain('退避重试（第 1 次');
   });
 
   it('awaits onSampleResult inside the lock with the run signal', async () => {
@@ -401,14 +556,27 @@ describe('EtaScheduler', () => {
     expect(reloaded.getConfig()).toMatchObject({ slackSeconds: 3600, retryBackoffSeconds: [10, 20] });
   });
 
-  it('keeps a second process read-only through the owner lease', async () => {
+  it('keeps a second process read-only through the owner lease: it never writes the owner\'s files', async () => {
     vi.useRealTimers();
     const owner = make({ ownerLease: true });
     await owner.restore();
+    samples.push(async () => panel(5, 5));
+    await owner.setAuto(1, true);
+    const file = path.join(home, 'automation', 'games', 'wanlong', 'scheduler', 'instances', '1.json');
+    const before = await readFile(file, 'utf8');
     const viewer = make({ ownerLease: true });
     await viewer.restore();
-    await expect(viewer.setAuto(1, true)).rejects.toMatchObject({ code: 'CONCURRENCY_LIMIT' });
-    expect(viewer.getState(1).readOnly).toBe(true);
+    expect(viewer.getState(1)).toMatchObject({ auto: true, readOnly: true, nextWakeAt: null });
+    expect(viewer.listWakes()).toEqual([]);
+    await expect(viewer.setAuto(2, true)).rejects.toMatchObject({ code: 'CONCURRENCY_LIMIT' });
+    await expect(viewer.setAuto(1, false)).rejects.toMatchObject({ code: 'CONCURRENCY_LIMIT' });
+    await expect(viewer.forget(1)).rejects.toMatchObject({ code: 'CONCURRENCY_LIMIT' });
+    await expect(viewer.saveConfig({ slackSeconds: 5 })).rejects.toMatchObject({ code: 'CONCURRENCY_LIMIT' });
+    await expect(viewer.sampleNow(1)).rejects.toMatchObject({ code: 'CONCURRENCY_LIMIT' });
+    expect((await viewer.setAuto(3, false)).auto).toBe(false);
+    await viewer.noteDispatches(1, [{ travelTimeMs: 1000 }], { resample: false });
+    await viewer.dispose();
+    expect(await readFile(file, 'utf8')).toBe(before);
     expect(owner.getState(1).readOnly).toBeUndefined();
     await owner.dispose();
   });

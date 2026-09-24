@@ -91,6 +91,8 @@ bootstrapApp({
       onSchedulePause: (gameId, index, reason) => insights.recordSchedulePause(gameId, index, reason),
       // 「测试模板」 hits or misses exactly as a script run would (same threshold / shrink as the script worker).
       matchDefaults,
+      // Fallback「需要人处理」alert until the alerts module sets the scheduler's own onNeedsAttention hook.
+      onNeedsAttention: (gameId, index, info) => insights.recordAttentionPause(gameId, index, info),
     });
     // Template edits (save / delete / import) make compiled templates stale: tell the renderer; cache owners
     // (vision workers, sampler, resources, AI harvest) subscribe through automation.onTemplatesChanged too.
@@ -163,8 +165,16 @@ bootstrapApp({
     }, scriptRunner);
 
     // ── scheduler (ETA queue scheduler: ports and hooks; see src/main/scheduler/README.md) ──
+    /** The account bound to this AVD: same index AND same instance identity (a replaced AVD inherits nothing). */
+    const boundAccount = async (index: number) => {
+      const [list, state] = await Promise.all([accounts.list('wanlong'), (await services.host.get()).getState(index)]);
+      return list.find((account) => account.binding?.index === index &&
+        account.binding.instanceCreatedAt === state.record.createdAt) ?? null;
+    };
     automation.setPorts({
-      accountIdOf: async (index) => (await accounts.list('wanlong')).find((account) => account.binding?.index === index)?.id ?? null,
+      accountIdOf: async (index) => (await boundAccount(index))?.id ?? null,
+      // The readiness gate (original assertInstanceAutomationReady: base instance, active login, bound account not
+      // checked or pointing at a replaced AVD) is the accounts module's `automationReadiness` hook above.
       externalBusy: (index) => {
         if (plans.isActiveForInstance(index)) return '脚本计划';
         const login = accounts.loginSession(index);

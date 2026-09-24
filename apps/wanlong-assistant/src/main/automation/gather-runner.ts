@@ -301,7 +301,13 @@ export class WanlongGatherRunner {
   sample(index: number, options: SampleOnceOptions): Promise<PanelSample> {
     assertIndex(index);
     return this.locks.run(index, '读取部队管理面板', async () => {
-      const { device, createdAt, templateDir } = await this.prepare(index, options.templateDir, options.signal);
+      // No device at all counts as "no frame" for the freeze watchdog (original resolveDevice → onCaptureFailed).
+      const onDeviceError = (error: unknown): void => {
+        if (!options.signal.aborted) {
+          try { options.onCaptureFailed?.(error); } catch { /* observers never break a sample */ }
+        }
+      };
+      const { device, createdAt, templateDir } = await this.prepare(index, options.templateDir, options.signal, onDeviceError);
       const timeoutMs = Math.max(1000, options.deadlineAt - Date.now()) + SAMPLE_TIMEOUT_EXTRA_MS;
       const result = await this.pool.run(index, {
         kind: 'sample', instanceIndex: index, templateDir, config: options.config, deadlineAt: options.deadlineAt,
@@ -344,16 +350,23 @@ export class WanlongGatherRunner {
     return result.kind === 'recognize' && result.recognized;
   }
 
-  private async prepare(index: number, templateDir: string, signal: AbortSignal): Promise<{ device: GatherAdbDevice; createdAt: string; templateDir: string }> {
+  private async prepare(
+    index: number, templateDir: string, signal: AbortSignal, onDeviceError?: (error: unknown) => void,
+  ): Promise<{ device: GatherAdbDevice; createdAt: string; templateDir: string }> {
     checkAbort(signal);
     if (!templateDir || !path.isAbsolute(templateDir)) throw new Error('模板集目录必须是绝对路径');
     const dir = await realpath(templateDir);
     if (!(await stat(dir)).isDirectory()) throw new Error('模板路径不是目录');
-    const instance = await this.manager.getState(index);
-    if (instance.status !== 'running') throw new SchedulerError('DEVICE_NOT_READY', `实例 #${index} 尚未就绪`);
-    const device = await this.manager.device(index);
-    checkAbort(signal);
-    return { device, createdAt: instance.record.createdAt, templateDir: dir };
+    try {
+      const instance = await this.manager.getState(index);
+      if (instance.status !== 'running') throw new SchedulerError('DEVICE_NOT_READY', `实例 #${index} 尚未就绪`);
+      const device = await this.manager.device(index);
+      checkAbort(signal);
+      return { device, createdAt: instance.record.createdAt, templateDir: dir };
+    } catch (error) {
+      if (!signal.aborted) onDeviceError?.(error);
+      throw error;
+    }
   }
 
   /** Main-side gate shared by every job: the probe decision, the game in front, the same AVD. */

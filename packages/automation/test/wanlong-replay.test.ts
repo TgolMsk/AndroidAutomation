@@ -8,9 +8,11 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
-import type { RawFrame } from '../src/contracts.js';
+import type { RawFrame, TemplateDefinition, TemplateSet } from '../src/contracts.js';
+import { buildTemplateAlpha, matchTemplate, prepareFrame, prepareTemplate } from '../src/index.js';
 import {
-  buildSchedulerTemplates, loadGatherTemplates, sampleTroopPanel, type SampleIo, type SchedulerTemplates,
+  applySample, buildSchedulerTemplates, defaultSchedulerConfig, emptyInstanceState, loadGatherTemplates, planNextWake,
+  sampleTroopPanel, type GatherTemplates, type SampleIo, type SchedulerTemplates,
 } from '../src/wanlong/index.js';
 
 const FRAMES = process.env.WL_FRAMES_DIR;
@@ -31,7 +33,15 @@ function readOnlyIo(raw: RawFrame): SampleIo {
   };
 }
 
+/** 不透明像素占比（掩码 255 = 参与匹配）。 */
+function coverage(mask: Uint8Array): number {
+  let on = 0
+  for (const v of mask) if (v) on++
+  return on / mask.length
+}
+
 describe.skipIf(!enabled)('真机帧回放：部队管理面板采样器', () => {
+  let g: GatherTemplates;
   let t: SchedulerTemplates;
   const frames = enabled ? readdirSync(FRAMES!).filter((f) => f.toLowerCase().endsWith('.png')).sort() : [];
   const sample = async (file: string) => sampleTroopPanel(readOnlyIo(await rawOf(join(FRAMES!, file))), t, {
@@ -39,7 +49,8 @@ describe.skipIf(!enabled)('真机帧回放：部队管理面板采样器', () =>
   });
 
   it('loads the private template set once', async () => {
-    t = buildSchedulerTemplates(await loadGatherTemplates({ templateDir: TEMPLATES!, requireCritical: false }));
+    g = await loadGatherTemplates({ templateDir: TEMPLATES!, requireCritical: false });
+    t = buildSchedulerTemplates(g);
     expect(t.dark.glyphs.length).toBeGreaterThan(0);
     expect(t.light.glyphs.length).toBeGreaterThan(0);
   });
@@ -80,4 +91,94 @@ describe.skipIf(!enabled)('真机帧回放：部队管理面板采样器', () =>
     }
     for (let i = 1; i < reads.length; i++) expect(reads[i - 1]! - reads[i]!).toBe(1000);
   });
+
+  /**
+   * ★ 整个帧目录扫一遍（原版 check:sched 主循环）：认成「面板已打开」的帧一律只读读完（点击 / 按键会抛错），
+   *   读出来的状态必须能排出下一次唤醒；文件名带 panel 的帧必须读得出来。别的帧（城内、世界地图）抛错算正常跳过。
+   */
+  it.skipIf(frames.length === 0)('帧目录里的面板帧全部只读读出，并能排出下一次唤醒', async () => {
+    const config = defaultSchedulerConfig()
+    let panels = 0
+    for (const f of frames) {
+      let s
+      try {
+        s = await sample(f)
+      } catch (error) {
+        if (/panel/i.test(f)) throw new Error(`${f} 应当读得出部队管理面板：${(error as Error).message}`)
+        continue
+      }
+      panels++
+      let st = emptyInstanceState(0)
+      st.auto = true
+      st = applySample(st, s, [], config)
+      expect(planNextWake(st, config, s.sampledAt), f).not.toBeNull()
+    }
+    expect(panels).toBeGreaterThan(0)
+  })
+
+  /**
+   * 透明底模板 + 阵营变体（原版 checkMaskedVariants，2026-09-10）：兽族小号城内时主号的地图按钮只有 0.72，
+   * 补的 tpl_nav_map_toggle_b 圆环里透着会变的地形，是多帧差分去底的透明底模板。
+   */
+  describe('透明底模板 / 阵营变体', () => {
+    const cases: Array<[string, boolean]> = [
+      ['huadong_city.png', true],
+      ['huadong_city_pan2.png', true],
+      ['huadong_after2.png', true],
+      ['zhuhao_city.png', false],
+      ['s24_city.png', false],
+      ['inst1_worldmap.png', false],
+      ['s00_now.png', false],
+    ]
+
+    it('tpl_nav_map_toggle_b 已编译，带掩码且不透明占比在 0.3~0.9', () => {
+      const tpl = g.ui.get('tpl_nav_map_toggle_b')
+      expect(tpl).toBeDefined()
+      expect(tpl!.mask).toBeDefined()
+      expect(tpl!.mask!.length).toBe(tpl!.width * tpl!.height)
+      const c = coverage(tpl!.mask!)
+      expect(c).toBeGreaterThanOrEqual(0.3)
+      expect(c).toBeLessThanOrEqual(0.9)
+    })
+
+    for (const [file, hit] of cases) {
+      it.skipIf(!frames.includes(file))(`${file} → ${hit ? '应命中（≥0.9）' : '应不命中'}`, async () => {
+        const tpl = g.ui.get('tpl_nav_map_toggle_b')
+        expect(tpl).toBeDefined()
+        const frame = await prepareFrame(await rawOf(join(FRAMES!, file)), { refWidth: 2560, refHeight: 1440, shrink: tpl!.shrink })
+        const m = await matchTemplate(frame, tpl!)
+        if (hit) {
+          expect(m.found).toBe(true)
+          expect(m.score).toBeGreaterThanOrEqual(0.9)
+        } else {
+          expect(m.found).toBe(false)
+        }
+      })
+    }
+
+    const a = 'huadong_after2.png'
+    const b = 'huadong_city_pan2.png'
+    it.skipIf(!frames.includes(a) || !frames.includes(b))('α 管线：两帧差分 → 带 α 的 PNG 编译出掩码，同一裁剪不带 α 则没有', async () => {
+      const fa = await readFile(join(FRAMES!, a))
+      const fb = await readFile(join(FRAMES!, b))
+      const crop = { x: 22, y: 1224, w: 196, h: 192 }
+      const diff = await buildTemplateAlpha([new Uint8Array(fa), new Uint8Array(fb)], crop, 24)
+      expect(diff.coverage).toBeGreaterThan(0.3)
+      expect(diff.coverage).toBeLessThan(0.9)
+      const cropPng = await sharp(fa).extract({ left: crop.x, top: crop.y, width: crop.w, height: crop.h }).png().toBuffer()
+      const alpha = await sharp(diff.alphaPng).resize(crop.w, crop.h, { fit: 'fill' }).extractChannel(0).raw().toBuffer()
+      const masked = await sharp(cropPng).removeAlpha().joinChannel(alpha, { raw: { width: crop.w, height: crop.h, channels: 1 } }).png().toBuffer()
+      const set: TemplateSet = { id: 'replay', name: '回放', refWidth: 2560, refHeight: 1440, templates: [], directory: FRAMES! }
+      const def = (id: string): TemplateDefinition => ({
+        id, name: id, file: `${id}.png`, authoredWidth: 2560, authoredHeight: 1440, bounds: { ...crop },
+      })
+      const withAlpha = await prepareTemplate(new Uint8Array(masked), def('tmp_masked'), set, 2)
+      expect(withAlpha.mask).toBeDefined()
+      expect(coverage(withAlpha.mask!)).toBeGreaterThan(0.3)
+      const plain = await prepareTemplate(new Uint8Array(cropPng), def('tmp_plain'), set, 2)
+      expect(plain.mask).toBeUndefined()
+      // 透明底模板的 std 只统计不透明像素（与整块不同）。
+      expect(Math.abs(withAlpha.std - plain.std)).toBeGreaterThan(1)
+    })
+  })
 });

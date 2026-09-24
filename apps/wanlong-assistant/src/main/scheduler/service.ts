@@ -39,6 +39,11 @@ const ABORT_DRAIN_MS = 5_000;
 const RESAMPLE_AFTER_SCRIPT_MS = 15_000;
 /** Extra safety of this port (the original relied on the alert centre alone): pause after this many real failures. */
 const DEFAULT_MAX_CONSECUTIVE_FAILURES = 8;
+/**
+ * Shutdown waits this long for in-flight work to let go of the instances after aborting it (the vision worker's own
+ * abort grace is 5 s); the shell bounds the whole addon dispose at 15 s.
+ */
+const DISPOSE_DRAIN_MS = 8_000;
 
 export interface EtaSchedulerOptions {
   now?: () => number;
@@ -53,6 +58,11 @@ export interface EtaSchedulerOptions {
   log?(level: LogLevel, message: string): void;
   /** The consecutive-failure safety pause fired (before auto is switched off). */
   onSafetyPause?(index: number, failureCount: number, reason: string): void;
+  /**
+   * A human-needed pause (GAME_UPDATE_REQUIRED / AI_RISK_BLOCKED) while no module has set the `onNeedsAttention` hook:
+   * the host's fallback alert path, so such a pause is never silent.
+   */
+  onAttentionPause?(index: number, info: { code: string; message: string }): void;
 }
 
 interface Runtime {
@@ -62,6 +72,11 @@ interface Runtime {
   travelHints: TravelHint[];
   failureCount: number;
   lastHealthProbeAt?: number;
+  /**
+   * No sample wake before this (circuit breaker cooldown). Health probes still run inside it, so kicked / game-exit
+   * detection keeps its `healthProbeIntervalMin` latency.
+   */
+  cooldownUntil?: number;
   autoController?: AbortController;
   autoRequest: number;
   /** Script runs holding the instance (suspendForScript). While > 0 nothing new starts. */
@@ -143,6 +158,8 @@ export class EtaScheduler {
     const loaded = await this.store.loadInstances();
     for (const w of [...warnings, ...loaded.warnings]) this.log('warn', w);
     for (const item of loaded.instances) this.runtimes.set(item.instanceIndex, this.fromPersisted(item));
+    // A viewer only shows the owner's state: no migration, no identity reset, no timers, no writes.
+    if (this.readOnly) return;
     await this.migrateLegacy();
     let armed = 0;
     for (const rt of [...this.runtimes.values()]) {
@@ -157,12 +174,15 @@ export class EtaScheduler {
           continue;
         }
         rt.identity ??= instance.createdAt;
-        if (this.readOnly) continue;
         rt.autoController = new AbortController();
         this.rearm(index, '面板重启后恢复排期');
         armed++;
       } catch (error) {
-        this.log('warn', `实例 #${index} 的调度恢复失败（稍后重试或手动开关一次）：${messageOf(error)}`);
+        // ★ Never auto=true without a timer: retry on the backoff ladder; the wake re-checks the instance identity.
+        this.log('warn', `实例 #${index} 的调度恢复时读不到实例状态，按退避稍后重试：${messageOf(error)}`);
+        rt.autoController = new AbortController();
+        this.rearm(index, `恢复排期时读不到实例状态：${messageOf(error)}`, 1);
+        armed++;
       }
     }
     this.log('info', `ETA 调度器已就绪，恢复了 ${this.runtimes.size} 个实例的记账，其中 ${armed} 个开着自动调度。`);
@@ -206,14 +226,18 @@ export class EtaScheduler {
     }
   }
 
-  /** Stop timers, abort in-flight work, wait for instance locks, persist. */
+  /**
+   * Stop timers, abort in-flight work, wait (bounded) for the instance locks, persist. The lock is shared with manual
+   * gather runs, which their owner (the automation host) aborts before or together with this call.
+   */
   async dispose(): Promise<void> {
     this.stopping = true;
     this.lifetime.abort(new SchedulerError('RUN_ABORTED', '助手正在退出'));
     for (const rt of this.runtimes.values()) rt.autoController?.abort(new SchedulerError('RUN_ABORTED', '助手正在退出'));
     this.timers.cancelAll();
     await this.restored?.catch(() => undefined);
-    await Promise.allSettled([...this.runtimes.keys()].map((index) => this.locks.drain(index)));
+    const drained = Promise.allSettled([...this.runtimes.keys()].map((index) => this.locks.drain(index)));
+    await Promise.race([drained, sleep(DISPOSE_DRAIN_MS)]);
     await Promise.allSettled([...this.runtimes.values()].map((rt) => this.persist(rt)));
     await this.ownerRelease?.();
     this.ownerRelease = null;
@@ -221,12 +245,17 @@ export class EtaScheduler {
 
   // ── queries ──────────────────────────────────────────────────────────────
 
+  /** Instances with any scheduling state (auto on, a sample, marches, an error or work in flight), sorted by index. */
   list(): SchedulerQueueState[] {
-    return [...this.runtimes.values()].map((rt) => this.view(rt)).sort((a, b) => a.instanceIndex - b.instanceIndex);
+    return [...this.runtimes.values()].filter((rt) => !this.blank(rt)).map((rt) => this.view(rt))
+      .sort((a, b) => a.instanceIndex - b.instanceIndex);
   }
 
+  /** A read: never registers the instance (an unknown index reads as an empty, auto-off queue). */
   getState(index: number): SchedulerQueueState {
-    return this.view(this.rt(index));
+    assertIndex(index);
+    const rt = this.runtimes.get(index);
+    return this.view(rt ?? newRuntime(index));
   }
 
   /** Whether auto scheduling is on for the instance (never creates a runtime). */
@@ -250,6 +279,7 @@ export class EtaScheduler {
   // ── operations ───────────────────────────────────────────────────────────
 
   async saveConfig(patch: Partial<SchedulerConfig>): Promise<SchedulerConfig> {
+    this.assertOwner();
     const next = mergeSchedulerConfig(this.config, patch);
     await this.store.saveConfig(next);
     this.config = next;
@@ -269,10 +299,24 @@ export class EtaScheduler {
    * ★ Never call setAuto(true) inside the instance lock (a hook): it awaits a sample and would deadlock.
    */
   async setAuto(index: number, enabled: boolean, reason?: string): Promise<SchedulerQueueState> {
+    assertIndex(index);
+    if (!enabled) {
+      const known = this.runtimes.get(index);
+      // Nothing to turn off: never register the instance or write a file just to say so.
+      if (!known || (!known.state.auto && !this.readOnly && known.autoRequest === 0)) {
+        if (known) known.autoRequest++;
+        return this.getState(index);
+      }
+      if (this.readOnly) {
+        if (!known.state.auto) return this.view(known);
+        throw readOnlyError();
+      }
+    } else if (this.readOnly) {
+      throw readOnlyError();
+    }
     const rt = this.rt(index);
     const request = ++rt.autoRequest;
     if (enabled) {
-      if (this.readOnly) throw new SchedulerError('CONCURRENCY_LIMIT', '另一个万龙助手进程正在管理自动采集调度，请在那个窗口操作');
       if (this.stopping) throw new SchedulerError('RUN_ABORTED', '助手正在退出');
       await this.ports.ensureReady?.(index);
       const instance = await this.ports.instance(index);
@@ -374,6 +418,8 @@ export class EtaScheduler {
 
   /** The panel's "refresh": read the queue now (throttled), never dispatch. */
   async sampleNow(index: number): Promise<SchedulerQueueState> {
+    assertIndex(index);
+    this.assertOwner();
     await this.sample(index, '面板手动刷新', { signal: this.lifetime.signal, force: false, allowColdStart: true });
     return this.view(this.rt(index));
   }
@@ -422,6 +468,8 @@ export class EtaScheduler {
 
   /** Turn auto off and drop every piece of bookkeeping for the instance (the panel's "reset"). */
   async forget(index: number): Promise<void> {
+    assertIndex(index);
+    this.assertOwner();
     const rt = this.runtimes.get(index);
     if (rt) {
       this.applyAuto(rt, false, '已重置该实例的调度记账');
@@ -490,9 +538,15 @@ export class EtaScheduler {
     this.publish(rt);
     try {
       const instance = await this.ports.instance(index).catch((error: unknown) => {
+        // No device at all also counts as "no frame": the freeze watchdog tells "ADB hung" from "not running" by code.
+        if (!signal.aborted && !isAbortCode(codeOf(error))) this.notifyCaptureFailed(index, error);
         throw new SchedulerError('DEVICE_NOT_READY', `读取实例 #${index} 状态失败：${messageOf(error)}`);
       });
-      if (!instance) throw new SchedulerError('DEVICE_NOT_READY', `实例 #${index} 不存在`);
+      if (!instance) {
+        const error = new SchedulerError('DEVICE_NOT_READY', `实例 #${index} 不存在`);
+        this.notifyCaptureFailed(index, error);
+        throw error;
+      }
       if (rt.identity && instance.createdAt !== rt.identity) {
         this.resetBookkeeping(rt);
         if (rt.state.auto) this.applyAuto(rt, false, '原实例已被替换，自动调度已关闭');
@@ -587,8 +641,8 @@ export class EtaScheduler {
 
   // ── planning and wakes ───────────────────────────────────────────────────
 
-  /** Re-plan from the current state. `backoffStep` > 0 walks the backoff ladder; `notBefore` is a floor. */
-  private rearm(index: number, why: string, backoffStep?: number, notBefore?: number | null): void {
+  /** Re-plan from the current state. `backoffStep` > 0 walks the backoff ladder; a cooldown is a floor for samples. */
+  private rearm(index: number, why: string, backoffStep?: number): void {
     const rt = this.runtimes.get(index);
     if (!rt || this.stopping || this.readOnly) return;
     if (!rt.state.auto) {
@@ -619,12 +673,28 @@ export class EtaScheduler {
       dueAt = plan.dueAt;
       reason = plan.reason;
     }
-    if (notBefore != null && Number.isFinite(notBefore) && notBefore > dueAt) {
-      reason = `${reason}（最早 ${formatCstClock(notBefore)} 再试）`;
-      dueAt = notBefore;
+    if (rt.cooldownUntil !== undefined && rt.cooldownUntil <= now) rt.cooldownUntil = undefined;
+    const floorAt = rt.cooldownUntil ?? 0;
+    if (floorAt > dueAt) {
+      reason = `${reason}（最早 ${formatCstClock(floorAt)} 再试）`;
+      dueAt = floorAt;
+      // A cooldown never silences the health probe: it still looks every `healthProbeIntervalMin` (one frame, no panel).
+      const probeAt = this.healthProbeDueAt(rt, now);
+      if (probeAt !== null && probeAt < dueAt) {
+        this.arm(index, { key: index, dueAt: probeAt, reason: HEALTH_PROBE_REASON, backoffStep: step });
+        this.log('debug', `实例 #${index} 冷却到 ${formatCstClock(dueAt)}（北京时间，${reason}），期间先按时做健康探针。`);
+        return;
+      }
     }
     this.arm(index, { key: index, dueAt, reason, backoffStep: step });
     this.log('debug', `实例 #${index} 下次唤醒：${formatCstClock(dueAt)}（北京时间，${reason}，约 ${formatDuration(dueAt - now)} 后）。`);
+  }
+
+  /** The next health probe (same candidate and 30 s floor as `planNextWake`), or null when probes are off. */
+  private healthProbeDueAt(rt: Runtime, now: number): number | null {
+    if (this.config.healthProbeIntervalMin <= 0) return null;
+    const last = rt.lastHealthProbeAt ?? (rt.state.lastSampledAt || now);
+    return Math.max(last + this.config.healthProbeIntervalMin * 60_000, now + Math.max(30_000, this.config.minSampleIntervalMs));
   }
 
   private arm(index: number, task: WakeTask): void {
@@ -724,13 +794,15 @@ export class EtaScheduler {
     rt.failureCount = 0;
     await this.persist(rt);
     const notBefore = outcome?.notBefore ?? null;
+    // Circuit breaker: no sample wake before `notBefore` (health probes still run); any other round ends a cooldown.
+    rt.cooldownUntil = notBefore !== null && Number.isFinite(notBefore) && notBefore > this.now() ? notBefore : undefined;
     // noteDispatch re-sampled and re-planned. Still a free slot means this round placed nothing (no suitable node,
     // circuit breaker…): back off, or the plan would reopen the panel every 30 s.
     if (hasFreeSlot(rt.state) === true) {
-      this.rearm(index, outcome?.reason ?? '派遣流程跑完了但队列仍有空位，稍后再试', prevStep + 1, notBefore);
+      this.rearm(index, outcome?.reason ?? '派遣流程跑完了但队列仍有空位，稍后再试', prevStep + 1);
       return;
     }
-    this.rearm(index, '派遣流程已执行', undefined, notBefore);
+    this.rearm(index, '派遣流程已执行');
   }
 
   // ── failure bookkeeping ──────────────────────────────────────────────────
@@ -758,23 +830,41 @@ export class EtaScheduler {
     return true;
   }
 
-  /** A human must look: pause (without counting a failure) and tell the alerts module. */
+  /**
+   * A human must look: pause (without counting a failure) and tell the alerts module; until a module sets the
+   * `onNeedsAttention` hook, the host's fallback alert path (`onAttentionPause`) raises it, so it is never silent.
+   */
   private pauseForAttention(index: number, error: unknown): void {
     const info = { code: codeOf(error), message: messageOf(error) };
-    this.emit(() => this.hooks.onNeedsAttention?.(index, info));
+    const hook = this.hooks.onNeedsAttention;
+    if (hook) this.emit(() => hook(index, info));
+    else this.emit(() => this.options.onAttentionPause?.(index, info));
     void this.setAuto(index, false, `需要人工处理：${info.message}`).catch(() => undefined);
   }
 
   // ── helpers ──────────────────────────────────────────────────────────────
 
+  /** The instance's runtime, registered on first use. Operations only: reads use `runtimes.get`. */
   private rt(index: number): Runtime {
-    if (!Number.isInteger(index) || index < 0 || index > 63) throw new SchedulerError('INVALID_ARGUMENT', `实例编号非法：${String(index)}`);
+    assertIndex(index);
     let rt = this.runtimes.get(index);
     if (!rt) {
-      rt = { state: emptyInstanceState(index), identity: null, travelHints: [], failureCount: 0, autoRequest: 0, scriptHolds: 0, operatingDepth: 0 };
+      rt = newRuntime(index);
       this.runtimes.set(index, rt);
     }
     return rt;
+  }
+
+  /** Nothing worth listing: auto off, never sampled, no marches, hints, error or work in flight. */
+  private blank(rt: Runtime): boolean {
+    const s = rt.state;
+    return !s.auto && s.lastSampledAt === 0 && s.marches.length === 0 && !s.error && !s.sampling &&
+      rt.travelHints.length === 0 && rt.operatingDepth === 0 && rt.scriptHolds === 0 && rt.failureCount === 0;
+  }
+
+  /** A viewer process never writes the owner's scheduler files. */
+  private assertOwner(): void {
+    if (this.readOnly) throw readOnlyError();
   }
 
   private fromPersisted(item: PersistedQueue): Runtime {
@@ -800,11 +890,13 @@ export class EtaScheduler {
     rt.travelHints = [];
     rt.failureCount = 0;
     rt.lastHealthProbeAt = undefined;
+    rt.cooldownUntil = undefined;
   }
 
   /** Flip the flag, abort on disable and notify only on a real flip (the single source of pause/resume events). */
   private applyAuto(rt: Runtime, enabled: boolean, reason?: string): void {
     const flipped = rt.state.auto !== enabled;
+    if (flipped) rt.cooldownUntil = undefined;
     if (!enabled) {
       rt.autoController?.abort(new SchedulerError('RUN_ABORTED', reason ? `自动调度已停止：${reason}` : '自动调度已停止。'));
       this.timers.cancel(rt.state.instanceIndex);
@@ -847,6 +939,7 @@ export class EtaScheduler {
   }
 
   private async persist(rt: Runtime): Promise<void> {
+    if (this.readOnly) return;
     try {
       await this.store.saveInstance({
         instanceIndex: rt.state.instanceIndex,
@@ -903,4 +996,16 @@ export class EtaScheduler {
     if (level === 'error' || level === 'warn') console.warn(`[wanlong/scheduler] ${message}`);
     else if (level === 'info') console.log(`[wanlong/scheduler] ${message}`);
   }
+}
+
+function assertIndex(index: number): void {
+  if (!Number.isInteger(index) || index < 0 || index > 63) throw new SchedulerError('INVALID_ARGUMENT', `实例编号非法：${String(index)}`);
+}
+
+function newRuntime(index: number): Runtime {
+  return { state: emptyInstanceState(index), identity: null, travelHints: [], failureCount: 0, autoRequest: 0, scriptHolds: 0, operatingDepth: 0 };
+}
+
+function readOnlyError(): SchedulerError {
+  return new SchedulerError('CONCURRENCY_LIMIT', '另一个万龙助手进程正在管理自动采集调度，请在那个窗口操作');
 }

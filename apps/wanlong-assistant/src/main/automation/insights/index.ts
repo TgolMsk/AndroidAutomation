@@ -62,8 +62,10 @@ export class InsightsService {
   /** Called after the game worker produced a result; duplicate run IDs are idempotent. */
   async recordCycle(run: AutomationRun, result: GatherCycleResult, source: 'manual' | 'scheduled'): Promise<void> {
     const endedAt = terminalAt(run);
+    // ★ circuitBroken is a designed stop, not a failure (original alerts iron rule 1): it is counted apart as
+    //   `circuitBreaks` and raises no alert; the scheduler simply looks again in 10 minutes.
     const status: InsightCycleFact['status'] = result.outcome === 'cancelled' ? 'cancelled' :
-      result.outcome === 'error' || result.outcome === 'circuitBroken' ? 'failed' : 'succeeded';
+      result.outcome === 'error' ? 'failed' : 'succeeded';
     const fact: InsightCycleFact = {
       runId: run.runId, gameId: run.gameId, index: run.index, source,
       startedAt: run.startedAt, endedAt, outcome: result.outcome, status,
@@ -75,11 +77,9 @@ export class InsightsService {
     };
     await this.store.addCycle(fact);
     if (status !== 'failed') return;
-    const kind = result.outcome === 'circuitBroken' ? 'circuitBroken' : 'runFailed';
     await this.raise({
-      id: `${run.gameId}:${run.index}:${kind}:${run.runId}`,
-      gameId: run.gameId, index: run.index, kind,
-      severity: kind === 'circuitBroken' ? 'critical' : 'warning',
+      id: `${run.gameId}:${run.index}:runFailed:${run.runId}`,
+      gameId: run.gameId, index: run.index, kind: 'runFailed', severity: 'warning',
       at: endedAt, message: safeMessage(result.message), runId: run.runId,
     });
   }
@@ -119,6 +119,20 @@ export class InsightsService {
       id: `${gameId}:${index}:schedulePaused:gate:${cstDateKey(at)}`,
       gameId, index, kind: 'schedulePaused', severity: 'warning', at,
       message: `自动续跑已暂停（不计为失败）：${safeMessage(reason)}`, runId: null,
+    });
+  }
+
+  /**
+   * The scheduler paused an instance because a human must look (game update prompt, AI judged a confirm risky).
+   * Fallback until the alerts module owns the dedicated「需要人处理」alert; at most one per instance, code and day.
+   */
+  async recordAttentionPause(gameId: string, index: number, info: { code: string; message: string }): Promise<void> {
+    const at = Date.now();
+    const code = /^[A-Z_]{1,40}$/.test(info.code) ? info.code : 'UNKNOWN';
+    await this.raise({
+      id: `${gameId}:${index}:schedulePaused:${code}:${cstDateKey(at)}`,
+      gameId, index, kind: 'schedulePaused', severity: 'critical', at,
+      message: `需要人工处理，自动续跑已暂停：${safeMessage(info.message)}`, runId: null,
     });
   }
 
