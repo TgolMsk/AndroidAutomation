@@ -195,6 +195,20 @@ runtime.network.latency=none  runtime.network.speed=full
 - 原生窗口 + VulkanNativeSwapchain（默认开）：游戏创建 VkDevice（ASTC 走 GPU 解压管线）后 emulator `abort()`（crashpad minidump）。
   关掉后窗口模式两次都能进游戏；其中一次加载时渲染线程在 `on_vkWaitForFences` 空转 100% 卡死（偶发，重启游戏即恢复）。
   → launcher：有窗口时自动 `-feature -VulkanNativeSwapchain`。
+- **每帧泄漏一个 fence fd（2026-09-25 查明，emulator 37.1.11 + android-35）**：客体 libvulkan 暴露 `VK_EXT_swapchain_maintenance1`，
+  ANGLE 因此给每次 present 带一个 present fence，libvulkan 把这一帧的 sync fd 导入它。gfxstream 客体驱动（`vulkan.ranchu.so`）的
+  `vkGetFenceStatus` 直接问宿主，不看导入的 fd，所以 fence 永远是“未完成”，ANGLE 也就从不回收，每帧留下一个 `sync_file` fd。
+  30fps 下约 18 分钟用满 `RLIMIT_NOFILE`（32768），之后有两种结局：
+  - 游戏自己退出：`dumpsys activity exit-info` 里每 18–22 分钟一次的 `EXIT_SELF`；
+  - 画面冻结、没有 ANR：SurfaceFlinger 归还缓冲区的回调收不下 fence fd，Unity 渲染线程永远卡在 `dequeueBuffer`。
+
+  上面那次 `on_vkWaitForFences` 空转，走的也是这些 present fence。
+  → manager：ANGLE 实例每次开机做一次（`waitForBoot` / 健康监控，排在设备标识之前）：设
+  `debug.angle.feature_overrides_disabled=supportsSwapchainMaintenance1`，并写入 `/data/local.prop`（userdebug 镜像由 init 在 zygote
+  之前加载），见 `angle-overrides.ts`。属性只对之后启动的进程生效，开机前已在跑的 SystemUI / Launcher 要等它们下次重启。
+  模拟器自带的 `ANGLE_FEATURE_OVERRIDES_DISABLED`（→ `ro.boot.hardware.angle_feature_overrides_disabled`）这个客体不读；
+  `-prop` 限制属性名最多 32 个字符，这个名字放不下。实测关掉后，游戏渲染 8,400 帧，`sync_file` 一直保持 30 个。
+  排查卡死时先看 `ls -l /proc/<pid>/fd | grep -c sync_file`：如果这个数接近已渲染的帧数，就是这个问题。
 - emulator 崩溃后，下一次**有窗口**启动会弹“发送崩溃报告？”同意对话框并阻塞启动（表现为 240s 启动超时）；
   → launcher：支持时总是 `-crash-report-mode never`（不弹框、不上传）。
 - 主机侧 MoltenVK 不暴露原生 ASTC，gfxstream 用 GPU 管线解压 ASTC（日志 `ASTC emulation:on … ASTC decoder: NewRgb`），有额外开销。

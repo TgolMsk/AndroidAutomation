@@ -13,6 +13,7 @@ import type { DispatchRecord, GatherCycleResult, GatherOutcome } from './types.j
  *   kicked       顶号探针命中时的现场
  *   health-probe 健康探针发现异常时的现场
  *   frozen       卡死看门狗判定「画面纹丝不动」时的最后一帧（重启前留痕）
+ *   game-restart 「异常时自动重启游戏」动手前的那一帧（卡住 / 无响应时的画面）与重启失败时的画面
  * 只有这些标签会触发第二层顶号识别与「现场截图」记账，别的标签（g0-unknown-N 等）只是过程留痕。
  */
 export const FAILURE_SHOT_LABELS: ReadonlySet<string> = new Set([
@@ -20,7 +21,8 @@ export const FAILURE_SHOT_LABELS: ReadonlySet<string> = new Set([
   'cycle-error',
   'kicked',
   'health-probe',
-  'frozen'
+  'frozen',
+  'game-restart'
 ])
 
 /** 截图留存策略（原版 AppSettings.shotPolicy / GatherConfig.safety.shotPolicy 同值）。 */

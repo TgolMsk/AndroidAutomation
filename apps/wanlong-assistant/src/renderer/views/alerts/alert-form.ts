@@ -88,7 +88,8 @@ export function numberProblems(draft: AlertsDraft): string[] {
     cycleFailThreshold: draft.detect.cycleFailThreshold, recoveryFailThreshold: draft.detect.recoveryFailThreshold,
     sampleFailThreshold: draft.detect.sampleFailThreshold, stalledMinutes: draft.detect.stalledMinutes,
     freezeMinutes: draft.detect.freezeMinutes, freezeRestartLimit: draft.detect.freezeRestartLimit,
-    freezeRestartWindowMin: draft.detect.freezeRestartWindowMin, cooldownSeconds: draft.telegram.cooldownSeconds,
+    freezeRestartWindowMin: draft.detect.freezeRestartWindowMin, gameRestartLimit: draft.detect.gameRestartLimit,
+    gameRestartWindowMin: draft.detect.gameRestartWindowMin, cooldownSeconds: draft.telegram.cooldownSeconds,
     retryCount: draft.telegram.retryCount, timeoutMs: draft.telegram.timeoutMs,
   };
   const problems: string[] = [];

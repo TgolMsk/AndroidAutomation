@@ -39,6 +39,8 @@ export const ALERT_TYPES = [
   'schedulePaused',
   /** Frozen emulator restarted automatically (freeze auto-restart on). Warning, no pause. */
   'emulatorFrozen',
+  /** A stuck, hung (ANR) or crashed game restarted automatically instead of pausing (not for kicked). Warning, no pause. */
+  'gameRestarted',
   /** Frozen emulator detected while freeze auto-restart is off: alert only. Warning, no pause. */
   'suspectedFreeze',
   /** No troop dispatched for a long time (resources, not a broken state). Warning, no pause. */
@@ -95,7 +97,8 @@ export const ALERT_SPECS = {
     summary:
       '通用兜底判定：采集的「未知界面恢复阶梯」已经用尽（关弹窗 → BACK 并取消退出框 → 冷启动游戏都没能回到世界地图），' +
       '或者画面上出现了维护 / 强制更新公告、游戏资源更新需要人处理、AI 判断某个确认弹窗的点击有风险。' +
-      '顶号、封号、维护公告、版本更新、网络断开都会走到这里。',
+      '顶号、封号、维护公告、版本更新、网络断开都会走到这里。' +
+      '（恢复阶梯用尽时，开着「异常时自动重启游戏」会先强制重启游戏；重启失败或次数用完才走到这里。）',
     advice:
       '已暂停该实例的自动调度。请打开实时画面看一眼当前是什么界面（是否被顶号、是否弹了维护/更新公告），' +
       '处理完成后回来点「恢复」。',
@@ -119,7 +122,9 @@ export const ALERT_SPECS = {
     severity: 'critical',
     pauses: true,
     notifyByDefault: true,
-    summary: '同一实例连续多轮采集 / 派遣都失败，继续重试只会在坏状态上反复操作游戏。',
+    summary:
+      '同一实例连续多轮采集 / 派遣都失败，继续重试只会在坏状态上反复操作游戏。' +
+      '（开着「异常时自动重启游戏」会先强制重启游戏；重启失败或次数用完才走到这里。）',
     advice: '已暂停该实例的自动调度。请查看运行日志里最近几轮的失败原因，处理后回来点「恢复」。',
   },
   deviceOffline: {
@@ -130,7 +135,8 @@ export const ALERT_SPECS = {
     notifyByDefault: true,
     summary:
       '模拟器实例不在运行、adb 连不上，或游戏进程已经退出、前台长期不是万龙觉醒。这时候任何点击都会落到别的应用上。' +
-      '（画面纹丝不动被判定为「卡死」且开了「卡死自动重启」时，会先自动重启模拟器；重启失败或短时间内反复卡死才会走到这里。）',
+      '（画面纹丝不动被判定为「卡死」且开了「卡死自动重启」时，会先自动重启模拟器；模拟器还在、只是游戏卡住 / 无响应 / 闪退时，' +
+      '开着「异常时自动重启游戏」会先强制重启游戏。重启失败或短时间内反复出问题才会走到这里。）',
     advice: '已暂停该实例的自动调度。请确认模拟器是否被关掉或崩溃，在「模拟器实例」页重新启动实例并把游戏拉起来后点「恢复」。',
   },
   schedulePaused: {
@@ -157,6 +163,20 @@ export const ALERT_SPECS = {
     advice:
       '无需处理，自动调度会自己接着跑。如果同一个实例频繁卡死，检查一下模拟器的 CPU / 内存分配，' +
       '或把「多久不动判卡死」调大一些。',
+  },
+  gameRestarted: {
+    type: 'gameRestarted',
+    title: '游戏异常已自动重启',
+    severity: 'warning',
+    pauses: false,
+    notifyByDefault: true,
+    summary:
+      '模拟器还在，但游戏卡在认不出的界面、弹了系统的「应用无响应」、画面长时间不动或者闪退了 —— 这些都不是顶号。' +
+      '开启「异常时自动重启游戏」后，助手先截一帧确认不是顶号 / 登录界面 / 维护公告，再强制停止游戏、用 monkey 重新拉起并等主界面，' +
+      '然后继续自动调度，不暂停。重启失败、或统计窗口内重启次数用完，才按原来的规则暂停并推送。',
+    advice:
+      '无需处理，自动调度会自己接着跑。同一个实例频繁出现这条，说明游戏在这台模拟器上不稳定：看一下运行日志里的触发原因，' +
+      '或检查模拟器的内存 / 显卡设置。',
   },
   suspectedFreeze: {
     type: 'suspectedFreeze',
@@ -512,6 +532,17 @@ export interface AlertDetectConfig {
   freezeRestartLimit: number;
   /** The window of the previous limit (minutes). */
   freezeRestartWindowMin: number;
+  /**
+   * 「异常时自动重启游戏」 (user request 「当出现非挤号情况自动重启应用」, on by default): the generic failure verdicts (sample /
+   * cycle failures, the exhausted recovery ladder), a game process that exited, a frozen picture and the system's
+   * 「isn't responding」 dialog force-stop and relaunch the game instead of pausing — never over a kicked / login /
+   * maintenance screen (checked first). Only a failed restart, or one beyond the budget below, pauses.
+   */
+  gameRestartEnabled: boolean;
+  /** Game restarts allowed per window; beyond it the verdict pauses as before. */
+  gameRestartLimit: number;
+  /** The window of the previous limit (minutes). */
+  gameRestartWindowMin: number;
 }
 
 /** Telegram settings as the main process holds them. ★ `botToken` is plaintext in memory only (ciphertext on disk). */
@@ -562,6 +593,8 @@ export const ALERT_RANGE = {
   freezeMinutes: [2, 60],
   freezeRestartLimit: [1, 10],
   freezeRestartWindowMin: [10, 1440],
+  gameRestartLimit: [1, 10],
+  gameRestartWindowMin: [10, 1440],
   cooldownSeconds: [0, 86_400],
   retryCount: [0, 5],
   timeoutMs: [2_000, 120_000],
@@ -569,7 +602,8 @@ export const ALERT_RANGE = {
 
 /**
  * ★★★ The only authority for defaults. Main process, renderer and tests import it; no second literal copy.
- * Differences from the original panel (DECISIONS A.3): freeze auto-restart and remote control start off.
+ * Differences from the original panel (DECISIONS A.3): freeze auto-restart and remote control start off. The game
+ * restart starts on: the user asked for it (like 「被顶号时关闭模拟器」).
  */
 export function defaultAlertsConfig(): AlertsConfig {
   return {
@@ -586,6 +620,9 @@ export function defaultAlertsConfig(): AlertsConfig {
       freezeMinutes: 5,
       freezeRestartLimit: 3,
       freezeRestartWindowMin: 60,
+      gameRestartEnabled: true,
+      gameRestartLimit: 3,
+      gameRestartWindowMin: 60,
     },
     telegram: {
       enabled: false,
@@ -649,6 +686,10 @@ export function normalizeAlertsConfig(raw: unknown): AlertsConfig {
   if (Array.isArray(t['subscribedTypes']) && d['freezeRestartEnabled'] === undefined) {
     for (const type of SUBSCRIBABLE_ALERT_TYPES) if (ALERT_SPECS[type].notifyByDefault && !subs.includes(type)) subs.push(type);
   }
+  // Same for a file saved before the game restart existed: only its own alert is new (the rest was the user's choice).
+  if (Array.isArray(t['subscribedTypes']) && d['gameRestartEnabled'] === undefined && !subs.includes('gameRestarted')) {
+    subs.push('gameRestarted');
+  }
   return {
     version: 1,
     detect: {
@@ -663,6 +704,9 @@ export function normalizeAlertsConfig(raw: unknown): AlertsConfig {
       freezeMinutes: intIn(d['freezeMinutes'], base.detect.freezeMinutes, ALERT_RANGE.freezeMinutes),
       freezeRestartLimit: intIn(d['freezeRestartLimit'], base.detect.freezeRestartLimit, ALERT_RANGE.freezeRestartLimit),
       freezeRestartWindowMin: intIn(d['freezeRestartWindowMin'], base.detect.freezeRestartWindowMin, ALERT_RANGE.freezeRestartWindowMin),
+      gameRestartEnabled: boolOr(d['gameRestartEnabled'], base.detect.gameRestartEnabled),
+      gameRestartLimit: intIn(d['gameRestartLimit'], base.detect.gameRestartLimit, ALERT_RANGE.gameRestartLimit),
+      gameRestartWindowMin: intIn(d['gameRestartWindowMin'], base.detect.gameRestartWindowMin, ALERT_RANGE.gameRestartWindowMin),
     },
     telegram: {
       enabled: boolOr(t['enabled'], base.telegram.enabled),
@@ -773,6 +817,9 @@ export const FIELD_LABEL: Record<string, string> = {
   freezeMinutes: '多久不动判卡死（分钟）',
   freezeRestartLimit: '窗口内最多自动重启几次',
   freezeRestartWindowMin: '统计窗口（分钟）',
+  gameRestartEnabled: '异常时自动重启游戏（顶号除外）',
+  gameRestartLimit: '窗口内最多重启游戏几次',
+  gameRestartWindowMin: '重启游戏的统计窗口（分钟）',
   enabled: '推送',
   botToken: 'Bot Token',
   chatId: 'Chat ID',
@@ -1193,6 +1240,6 @@ export function mapLegacyKinds(kinds: readonly string[]): AlertType[] {
     suspectedFreeze: ['suspectedFreeze', 'emulatorFrozen'], schedulePaused: ['schedulePaused'],
   };
   for (const kind of kinds) for (const type of map[kind] ?? []) out.add(type);
-  for (const type of ['deviceOffline', 'emulatorFrozen', 'instanceResumed'] as const) out.add(type);
+  for (const type of ['deviceOffline', 'emulatorFrozen', 'gameRestarted', 'instanceResumed'] as const) out.add(type);
   return normalizeSubscriptions([...out]);
 }

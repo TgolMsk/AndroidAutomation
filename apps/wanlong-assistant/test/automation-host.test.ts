@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -69,7 +69,7 @@ describe('AutomationHost single-cycle gathering', () => {
     broadcast.mockReset();
     getState.mockClear();
     screencapRaw.mockClear();
-    home = await mkdtemp(path.join(tmpdir(), 'avdm-automation-host-'));
+    home = await realpath(await mkdtemp(path.join(tmpdir(), 'avdm-automation-host-')));
     foreground = wanlongPlugin.packageName;
     foregroundReads = [];
     manager = {
@@ -511,6 +511,9 @@ describe('AutomationHost single-cycle gathering', () => {
         expect((await host.runs())[0]).toMatchObject({ status: 'succeeded' });
         expect(host.eta.getState(1).operating).toBe(false);
         expect(host.eta.getState(1).nextWakeAt).not.toBeNull();
+        // Re-arming follows the lock release and persistence; wait for the completed cooldown plan.
+        const wake = host.eta.listWakes()[0]!;
+        expect(wake.reason === '健康探针' || wake.dueAt >= tripped + 10 * 60_000).toBe(true);
       });
       expect(failures).not.toHaveBeenCalled();
       expect(host.eta.getState(1)).toMatchObject({ auto: true, failureCount: 0 });

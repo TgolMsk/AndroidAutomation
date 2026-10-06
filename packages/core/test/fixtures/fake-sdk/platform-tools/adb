@@ -6,7 +6,9 @@
 //   AVDM_DISCOVERY_DIR   where fake emulators publish pid_<pid>.ini
 //   FAKE_ADB_LOG         append one JSON line per invocation ({ serial, args })
 // Discovery-file keys read per device: fake.boot_at (ms epoch when sys.boot_completed becomes 1),
-// fake.adb_offline=1 (every device command fails with "adb: device offline").
+// fake.adb_offline=1 (every device command fails with "adb: device offline"), fake.egl (ro.hardware.egl).
+// `setprop` values last until the emulator restarts (fake.started_at changes); the /data/local.prop writer of
+// angle-overrides.ts is recognised and its lines are "loaded" on every later getprop, as init does at boot.
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -125,18 +127,72 @@ function displaySize(dev) {
   return '1280x720';
 }
 
+function bootPropsFile(dev) {
+  return path.join(dev.raw['avd.dir'], '.fake_props.json');
+}
+
+/** Properties set with `setprop` during this boot of the emulator. */
+function bootProps(dev) {
+  try {
+    const saved = JSON.parse(fs.readFileSync(bootPropsFile(dev), 'utf8'));
+    if (saved.boot === dev.raw['fake.started_at']) return saved.props;
+  } catch {}
+  return {};
+}
+
+function localPropFile(dev) {
+  return path.join(dev.raw['avd.dir'], '.fake_local.prop');
+}
+
+/** The guest's /data/local.prop (lines `name=value`). */
+function localPropLines(dev) {
+  try {
+    return fs.readFileSync(localPropFile(dev), 'utf8').split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 function shell(dev, line) {
   const words = line.trim().split(/\s+/);
   const [c0, c1] = words;
   if (line.trim() === '') die('adb: interactive shell is not supported by the fake adb');
+  // angle-overrides.ts writing /data/local.prop (as root: `id -u` answers 0 below).
+  const localLine = /echo '([^']*)'; \} > \/data\/local\.prop\.avdm-tmp/.exec(line)?.[1];
+  if (localLine) {
+    const key = localLine.slice(0, localLine.indexOf('=') + 1);
+    const kept = localPropLines(dev).filter((l) => !l.startsWith(key));
+    fs.writeFileSync(localPropFile(dev), [...kept, localLine].join('\n') + '\n');
+    out('AVDM_OK\n');
+    return;
+  }
+  if (c0 === 'id' && c1 === '-u') {
+    out('0\n'); // adbd runs as root, like the emulator after `adb root`
+    return;
+  }
+  if (c0 === 'setprop' && c1) {
+    const props = bootProps(dev);
+    props[c1] = words.slice(2).join(' ').replace(/^'(.*)'$/, '$1');
+    fs.writeFileSync(bootPropsFile(dev), JSON.stringify({ boot: dev.raw['fake.started_at'], props }));
+    return;
+  }
   if (c0 === 'getprop') {
     if (!c1) {
       out(`[sys.boot_completed]: [${booted(dev) ? '1' : ''}]\n[ro.product.model]: [fake]\n`);
       return;
     }
+    const loaded = {};
+    for (const l of localPropLines(dev)) {
+      const eq = l.indexOf('=');
+      if (eq > 0 && !l.startsWith('#')) loaded[l.slice(0, eq)] = l.slice(eq + 1);
+    }
+    const set = { ...loaded, ...bootProps(dev) };
     if (c1 === 'sys.boot_completed' || c1 === 'dev.bootcomplete') out(`${booted(dev) ? '1' : ''}\n`);
     else if (c1 === 'init.svc.bootanim') out(`${booted(dev) ? 'stopped' : 'running'}\n`);
     else if (c1 === 'ro.serialno') out(`${dev.raw['fake.android_serialno'] || 'fake'}\n`);
+    else if (c1 === 'ro.hardware.egl' && dev.raw['fake.egl']) out(`${dev.raw['fake.egl']}\n`);
+    else if (Object.hasOwn(set, c1)) out(`${set[c1]}\n`);
+    else if (c1.startsWith('debug.')) out('\n'); // unset, as on a real guest
     else out('fake\n');
     return;
   }

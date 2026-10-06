@@ -11,6 +11,7 @@ shared/alerts.ts            契约：ALERT_TYPES / ALERT_SPECS 单表、事件�
                             defaultAlertsConfig / normalize / merge / validate）、Token 打码与清洗、Telegram 话术、按钮回调格式
 packages/automation/src/wanlong/freeze.ts          FreezeGuard：帧指纹、完整 / 降档两道门槛、重启熔断（纯逻辑，原样移植）
 packages/automation/src/wanlong/freezeRecovery.ts  recoverFrozenInstance：7 步恢复流程（纯逻辑 + io 注入）
+packages/automation/src/wanlong/gameRestart.ts     restartStuckGame：先查顶号 → force-stop → monkey → 等主界面（只重启游戏）
 src/main/alerts/
   detect.ts           FailureTracker：只数数（真失败轮 / 恢复阶梯用尽 / 采样失败 / 长时间派不出队）→ 事件或 null
   kicked.ts           第二层：预留模板（tpl_dlg_kicked / tpl_login_screen / tpl_dlg_maintenance / tpl_dlg_update）单帧匹配；
@@ -21,8 +22,11 @@ src/main/alerts/
   telegram.ts         一条通道：sendMessage / sendPhoto（FormData）、重试分类、429 retry_after、Token 清洗
   local.ts            本机通知（macOS 通知中心；本仓库新增的第二通道）
   store.ts            automation/alerts/{config.json, throttle.json}；Token 只存 safeStorage 密文；旧 notifications.json 一次性迁移
-  freeze-controller.ts 卡死看门狗接线：两个触发点、默认只告警、开启后在 exclusive() 内重启、熔断转掉线暂停
+  freeze-controller.ts 卡死看门狗接线：三个触发点、默认只告警、开启后在 exclusive() 内重启、熔断转掉线暂停
+  screen-watch.ts     画面巡检：自动调度中的实例每分钟自己截一帧喂给看门狗（经 exclusive() 进锁），按完整阈值判定
   freeze-io.ts        FreezeRecoveryIo 的 @avdm/core 实现（stop force → start → getState → device → monkey）
+  game-restart.ts     「异常时自动重启游戏」：GameRestartController（前置条件、exclusive 内重启、预算窗口、结论）与
+                      GameRestartIo 的 @avdm/core 实现（只 force-stop / monkey 游戏自己的包）
   index.ts            AlertsService：组合上面这些，给出调度器钩子 schedulerHooks() 与宿主钩子 hostHooks()
 src/main/ipc/alerts.ts                  alerts 域 IPC
 src/renderer/state/alerts.ts            渲染进程告警 store（配置视图 / 暂停态 / 历史）
@@ -51,9 +55,17 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
    （记录 → `setAuto(false)` → 落盘，自动暂停开关关着也暂停），再后台推送；已暂停或同一实例正在暂停途中就不再告警 —— 一段异常一条告警
    （原版 `!alertCenter.isPaused(i)`）。被暂停的实例 AI 执行器一律不碰（`AiRecoveryService` 的 `paused` 端口）。
    采样认不出界面时顺序同原版：本模块的顶号 / 维护探针（`probeUnrecognizedFrame`）先在同一帧上跑，命中即接管，AI 不再被问。
-8. **卡死 ≠ 掉线**：画面纹丝不动 / 截图一直失败、但实例进程还在 → 判卡死。两个触发点都在调度器的实例锁内：健康探针
-   （完整阈值 `freezeMinutes`）与「连续采样失败、马上要按掉线暂停」（降档门槛）。重启命令一下发就 `noteRestart()`（失败的也算），
-   窗口内超过 `freezeRestartLimit` 次 → 转「模拟器或游戏掉线」暂停。恢复流程接 AbortSignal（自动调度关掉 / 助手退出）。
+8. **卡死 ≠ 掉线**：画面纹丝不动 / 截图一直失败、但实例进程还在 → 判卡死。三个触发点都在调度器的实例锁内：
+   - 健康探针：完整阈值 `freezeMinutes`；
+   - 画面巡检（`screen-watch.ts`）：完整阈值，自动调度中的实例每分钟截一帧，游戏在前台才看；本进程持有调度器时才巡检；
+     脚本、登录占着实例，或实例已暂停、正在恢复时跳过；
+   - 「连续采样失败、马上要按掉线暂停」：降档门槛。
+
+   巡检补的是调度器看不到画面的时段：采样失败后退避唤醒不排健康探针。2026-09-25 那次渲染线程卡死
+   （GuestAngle fence fd 泄漏，无 ANR）就是等到第 3 次采样失败，13 分钟后才判出来，而且是暂停，没有重启游戏。
+
+   重启命令一下发就 `noteRestart()`（失败的也算），窗口内超过 `freezeRestartLimit` 次 → 转「模拟器或游戏掉线」暂停。
+   恢复流程接 AbortSignal（自动调度关掉 / 助手退出）。
 9. **被顶号 → 关闭模拟器**（用户诉求「账号被挤（关闭该模拟器）」；设置 `detect.stopOnKicked`「被顶号时关闭模拟器」，**默认开**）：
    `suspectedKicked` 一旦判定，照常**先暂停、再推送**，然后后台对这台实例做一次**正常关机**（端口 `stopInstance` = core `stop(i)`，
    保存 Quick Boot 快照，再丢掉这次开机的设备通道）；关机不在实例锁的 await 链里（最长约一分钟），实例已暂停，期间没有自动流程碰它。
@@ -64,6 +76,20 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
      交给 `raiseKickedByAi`，与模板判定同一结论（即使「自动暂停」关着也暂停）。「自动处理」关着时 AI 只记建议，不产生这个判定。
    维护 / 强制更新（`needsAttention`）只暂停，不关模拟器；AI 处理不了的其它异常用「模拟器实例」行上的「重启游戏」（`AutomationHost.restartGame`）。
    恢复前要先把实例重新启动并登录（恢复会打开自动调度，没开机会被拒）。
+10. **不是顶号的异常 → 先重启游戏**（用户诉求「当出现非挤号情况自动重启应用」；设置 `detect.gameRestartEnabled`
+   「异常时自动重启游戏（顶号除外）」，**默认开**，端口 `gameRestartIo` 没接时整条不生效）：模拟器还在、只是游戏坏了时，
+   在原本要暂停的地方先强制停止游戏、monkey 重新拉起、等主界面，成了就推一条「游戏异常已自动重启」（warning，不暂停），
+   清零失败计数与卡死证据，自动调度照跑。触发点（都在实例锁内，`exclusive()` 重入）：
+   - 连续采样失败到阈值（先问卡死看门狗，再重启游戏，最后才按掉线暂停）；
+   - 调度轮连续失败 / 恢复阶梯用尽（`fact.kicked` 为空的那两类；第二层命中的维护 / 更新仍直接暂停）；
+   - 健康探针发现游戏进程已退出；画面长时间不动且「卡死自动重启」关着（FreezeController 端口 `restartGame`，先于「疑似模拟器卡死」）；
+   - 系统的「应用无响应」/「已停止运行」弹窗是游戏的（端口 `appDialogOf` = `AdbDevice.appDialog()`，采样失败与健康探针时看）：
+     **立刻**重启，不等阈值 —— 2026-09-24 那次 ANR（GuestAngle 下 gfxstream 驱动死锁）不管它就一直空转了四小时。
+   ★ 绝不在顶号画面上重启：动手前截一帧跑第二层识别（顶号框 / 登录页 / 维护 / 更新），命中就不重启、不计次，按该结论处理
+   （顶号 = 暂停 + 关模拟器）；重启后等满时限仍认不出主界面时，最后一帧再查一次。人工处理类（`GAME_UPDATE_REQUIRED` /
+   `AI_RISK_BLOCKED`）、就绪门槛、调度器 8 次安全阀、手动轮都不重启。
+   ★ 预算：`gameRestartLimit` 次 / `gameRestartWindowMin` 分钟（默认 3 次 / 60 分钟），下发即计次（失败的也算）；超出或重启失败
+   就按原规则暂停，原因后面带上「已自动重启游戏，但没能恢复（卡在：…）」或「… 分钟内已自动重启游戏 N 次」。
 
 ## ★★ 凭据
 
@@ -86,6 +112,7 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
 | Token 存储 / 打码 | 明文 alerts.json / 显示后 4 位 | safeStorage 密文 / 全遮 | 本仓库原有的钥匙串加固，不回退 |
 | 顶号探针 | 失败现场 + 可能再截一帧 | 只用已经截到的那一帧（失败现场、采样认不出的帧、健康探针帧），分数下限 `max(0.92, 模板阈值)`；只有脚本失败后会专门再截一帧 | 零额外截图；沿用本仓库原监控的安全下限；脚本没有自己的探针 |
 | 被顶号之后 | 暂停 + 推送 | 暂停 + 推送 + 关闭该模拟器（`stopOnKicked`，默认开，可关） | 用户诉求：被挤下线的号不要反复重连把另一台设备挤掉 |
+| 非顶号异常 | 暂停 + 推送（重启游戏靠机器人按钮） | 先自动重启游戏（`gameRestartEnabled`，默认开，3 次 / 60 分钟），不行才暂停；系统「应用无响应」立刻重启 | 用户诉求「当出现非挤号情况自动重启应用」 |
 | 通道 | 只有 Telegram | Telegram + 本机通知（两通道各自冷却键 `channel|实例:类型`） | 本仓库原有本机通知；本机成功不能吞掉 Telegram 的重试 |
 | 历史 | 内存 | `automation/wanlong/alerts-history.json`（≤100 条），并写入统计日账 | 重启后仍能看最近告警 |
 | 日账里的运行失败 | 只在达到阈值时告警 | 同原版：失败的运行只记成当天的 `failed` 周期，不再写 `runFailed` 告警行（旧日文件里的仍可读） | 「告警记录」与每日告警数只含真正的告警结论 |
@@ -121,8 +148,9 @@ src/renderer/views/alerts/              PauseBanner / PausedInstancesStrip / 设
 
 ```bash
 pnpm --filter @avdm/wanlong-assistant exec vitest run test/alerts-contract.test.ts test/alerts-telegram.test.ts \
-  test/alerts-e2e.test.ts test/freeze-controller.test.ts test/alerts-view.test.ts
-pnpm --filter ./packages/automation exec vitest run test/wanlong-freeze.test.ts
+  test/alerts-e2e.test.ts test/freeze-controller.test.ts test/alerts-view.test.ts test/game-restart.test.ts \
+  test/alerts-game-restart.test.ts test/screen-watch.test.ts
+pnpm --filter ./packages/automation exec vitest run test/wanlong-freeze.test.ts test/wanlong-game-restart.test.ts
 
 # ★ 真机：会真的强制重启实例并重新拉起游戏（5 秒倒计时，Ctrl+C 取消）。测试绝不跑它。
 pnpm build:wanlong && packages/cli/node_modules/.bin/tsx apps/wanlong-assistant/scripts/freeze-live.ts 0

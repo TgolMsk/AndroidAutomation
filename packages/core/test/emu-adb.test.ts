@@ -1,7 +1,7 @@
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Adb, escapeInputText, parseAdbDevices, parseForegroundPackage, parsePackageList, parseRawScreencap } from '../src/adb.js';
+import { Adb, escapeInputText, parseAdbDevices, parseAppDialog, parseForegroundPackage, parsePackageList, parseRawScreencap } from '../src/adb.js';
 import { createFakeSdk, startFakeEmulator, waitForExit, type FakeSdk, type RunningFakeEmulator } from './helpers/fakeSdk.js';
 
 function rawScreencap(width: number, height: number, headerLength: 12 | 16, stride = width, format = 1): Buffer {
@@ -62,6 +62,18 @@ describe('adb parsers', () => {
       ),
     ).toBe('com.android.settings');
     expect(parseForegroundPackage('  mCurrentFocus=null\n  mFocusedApp=null\n')).toBeUndefined();
+  });
+
+  it('finds the system ANR / crash dialog in focus (the foreground parser sees the app behind it)', () => {
+    // Real `dumpsys window` lines of an ANR on the emulator (android-35).
+    const anr = '  mCurrentFocus=Window{cd715dc u0 Application Not Responding: com.lilithgames.samo.android.cn}\n' +
+      '  mFocusedApp=ActivityRecord{3dc8f02 u0 com.lilithgames.samo.android.cn/com.lilith.sdk.account.ui.AutoLoginActivity t63}\n';
+    expect(parseAppDialog(anr)).toEqual({ kind: 'anr', packageName: 'com.lilithgames.samo.android.cn' });
+    expect(parseForegroundPackage(anr)).toBe('com.lilithgames.samo.android.cn');
+    expect(parseAppDialog('  mCurrentFocus=Window{1f u0 Application Error: com.example.game:remote}\n'))
+      .toEqual({ kind: 'crash', packageName: 'com.example.game' });
+    expect(parseAppDialog('  mCurrentFocus=Window{1a2b u0 com.example.game/com.example.game.Main}\n')).toBeUndefined();
+    expect(parseAppDialog('  mCurrentFocus=null\n')).toBeUndefined();
   });
 
   it('parses package lists (with -f paths too)', () => {

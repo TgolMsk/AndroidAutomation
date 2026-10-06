@@ -10,7 +10,8 @@ EtaScheduler (service.ts)        排期 / 唤醒 / 退避 / 健康探针 / 让�
   │                                     + 占用表 instanceAccess），AsyncLocalStorage 可重入
   ├─ WakeTimers (timers.ts)             每实例一个唤醒；unref；超过 2^31 分段
   └─ SchedulerStore (store.ts)          automation/games/wanlong/scheduler/{config.json, instances/<i>.json}
-AutomationHost (automation/host.ts)     实现 EtaSchedulerPorts；QueueFreeHook = 采集一轮 (gatherForScheduler)
+AutomationHost (automation/host.ts)     实现 EtaSchedulerPorts；QueueFreeHook = 采集技能 (queueFreeTurn → gatherForScheduler，
+                                        技能预判只在影子模式记录，不拦截；见 automation/skills.ts)
   └─ WanlongGatherRunner (automation/gather-runner.ts)
        └─ VisionWorkerPool (vision-pool.ts) ── vision-worker.ts（每实例一个常驻 worker，模板只编译一次）
 ShotStore (shots.ts)                    automation/wanlong/shots/inst<N>-<label>-<时刻>.jpg（0600，14 天 / 300 张）

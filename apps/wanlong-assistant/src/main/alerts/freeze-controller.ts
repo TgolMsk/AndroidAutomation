@@ -3,14 +3,15 @@
  *
  * The verdicts (FreezeGuard) and the recovery flow (recoverFrozenInstance) are pure and live in
  * `@avdm/automation/wanlong`; this controller only connects them:
- *   · every sampler / health-probe frame and capture failure feeds the guard (scheduler hooks)
- *   · two triggers: the health probe (full threshold, default 5 minutes unchanged) and 「consecutive sample failures,
- *     about to pause as offline」 (degraded gate). Both run inside the scheduler's instance lock; the restart goes
- *     through `exclusive()`, which re-enters there
+ *   · every sampler / health-probe / 「画面巡检」 frame and capture failure feeds the guard (scheduler hooks, screen-watch.ts)
+ *   · three triggers: the health probe and 「画面巡检」 (full threshold, default 5 minutes unchanged), and 「consecutive
+ *     sample failures, about to pause as offline」 (degraded gate). All run inside the scheduler's instance lock (the
+ *     watch takes it through `exclusive()`); the restart goes through `exclusive()`, which re-enters there
  *   · success → an 「模拟器卡死已自动重启」 warning (no pause), failure counters cleared, scheduling goes on
  *   · failure / circuit breaker → the offline pause, the reason naming the stage that failed
  * ★ DECISIONS A.3: automatic restart is an explicit opt-in (`freezeRestartEnabled`, default off). Off, a verdict on
- *   the health-probe path only raises 「疑似模拟器卡死」 (once per frozen stretch) and never touches the emulator.
+ *   the health-probe path never touches the emulator: 「异常时自动重启游戏」 (port `restartGame`, on by default) restarts
+ *   only the game first, and otherwise it raises 「疑似模拟器卡死」 (once per frozen stretch).
  * ★ Never `setAuto(true)` in here (it would wait for the lock this runs in). Recovery aborts on shutdown and when
  *   the instance's automatic schedule is switched off (the hook's signal).
  */
@@ -54,6 +55,12 @@ export interface FreezeControllerPorts {
   now?(): number;
   /** Test seam: the recovery flow. */
   recover?: typeof recoverFrozenInstance;
+  /**
+   * 「异常时自动重启游戏」 while the emulator restart is off: a frozen picture on the health-probe path restarts the game
+   * first (the emulator process is alive; a hung game is the common case). `handled` = restarted, or the alerts module
+   * took a kicked / maintenance verdict over: no 「疑似模拟器卡死」. Else `note` (if any) goes into that alert.
+   */
+  restartGame?(index: number, trigger: string, signal: AbortSignal | undefined): Promise<{ handled: boolean; note?: string }>;
 }
 
 export class FreezeController {
@@ -124,8 +131,8 @@ export class FreezeController {
   }
 
   /**
-   * Judge and, when allowed, restart. Must be called inside the scheduler's instance lock (both triggers are).
-   * @param strict true = health-probe path (full threshold); false = samples are already failing (degraded gate).
+   * Judge and, when allowed, restart. Must be called inside the scheduler's instance lock (every trigger is).
+   * @param strict true = health probe / 「画面巡检」 (full threshold); false = samples are already failing (degraded gate).
    */
   async tryRecover(index: number, trigger: string, signal: AbortSignal | undefined, strict: boolean): Promise<FreezeAttempt> {
     const cfg = this.ports.config();
@@ -153,7 +160,7 @@ export class FreezeController {
       return { outcome: 'skipped' };
     }
 
-    if (!cfg.freezeRestartEnabled) return this.detectOnly(index, verdict, trigger, strict);
+    if (!cfg.freezeRestartEnabled) return this.detectOnly(index, verdict, trigger, strict, signal);
 
     const budget = this.guard.restartBudget(index);
     if (!budget.allowed) {
@@ -213,10 +220,21 @@ export class FreezeController {
     }
   }
 
-  /** Auto restart off: say it once per frozen stretch (health-probe path); the degraded path adds a note. */
-  private async detectOnly(index: number, verdict: FreezeVerdict, trigger: string, strict: boolean): Promise<FreezeAttempt> {
-    const note = `${verdict.reason}，疑似模拟器卡死（没有开启「卡死自动重启」，不会自动重启）。`;
+  /**
+   * Auto restart off: on the health-probe path try the game restart first (when wired), else say it once per frozen
+   * stretch; the degraded path (samples failing) adds a note — its caller tries the game restart itself.
+   */
+  private async detectOnly(index: number, verdict: FreezeVerdict, trigger: string, strict: boolean, signal: AbortSignal | undefined): Promise<FreezeAttempt> {
+    let note = `${verdict.reason}，疑似模拟器卡死（没有开启「卡死自动重启」，不会自动重启模拟器）。`;
     if (!strict) return { outcome: 'detected', note };
+    if (this.ports.restartGame) {
+      const game = await this.ports.restartGame(index, `${trigger}：${verdict.reason}`, signal);
+      if (game.handled) {
+        this.reported.delete(index);
+        return { outcome: 'recovered' };
+      }
+      if (game.note) note = `${note}${game.note}`;
+    }
     const stretch = this.now() - verdict.sinceMs;
     const already = this.reported.get(index);
     if (already !== undefined && Math.abs(already - stretch) < 1_000) return { outcome: 'detected', note };

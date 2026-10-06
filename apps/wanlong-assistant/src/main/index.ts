@@ -29,7 +29,7 @@ import { shouldKeepShot } from '@avdm/automation/wanlong';
 import { broadcast, setBroadcastLogSink } from './events';
 import { registerWanlongIpcHandlers } from './ipc-handlers';
 import { runServiceSteps, ServiceHealth } from './lifecycle';
-import { AlertsService, createAvdFreezeRecoveryIo, KICKED_TEMPLATE_IDS, ledgerAlertOf, safeStorageCodec } from './alerts';
+import { AlertsService, createAvdFreezeRecoveryIo, createGameRestartIo, KICKED_TEMPLATE_IDS, ledgerAlertOf, safeStorageCodec } from './alerts';
 import { BotService, linkBotToAlerts } from './bot';
 import { ShotStore } from './scheduler/shots';
 import { PlanService, ScriptRunner } from './plans';
@@ -267,6 +267,25 @@ bootstrapApp({
         await (await services.host.get()).stop(index);
         deviceLanes.drop(index);
       },
+      // 「异常时自动重启游戏」: only the game's own package is force-stopped and launched (monkey), on the instance's lane;
+      // `kicked` is the alerts module's layer-2 probe (checked before the restart and where the game lands).
+      gameRestartIo: (index, signal, kicked) => createGameRestartIo({
+        device: async () => (await deviceHost.get()).device(index), signal, gamePackage: wanlongPackage,
+        recognize: (raw, abort) => automation.recognizeScreen(index, raw, abort),
+        kicked,
+        log: (level, message) => alertLog[level](`[重启游戏][实例 #${index}] ${message}`, undefined, index),
+      }),
+      // The system's 「isn't responding」 / 「keeps stopping」 dialog (`dumpsys window`), on the instance's lane.
+      appDialogOf: async (index) => {
+        const device = await (await deviceHost.get()).device(index);
+        return (await device.appDialog()) ?? null;
+      },
+      // 「画面巡检」: the instances under automatic scheduling while this process owns the scheduler, and one read-only
+      // frame with the game in front (the template-authoring capture, on the instance's lane).
+      watchTargets: () => automation.eta.status().owner
+        ? automation.eta.list().filter((state) => state.auto).map((state) => state.instanceIndex)
+        : [],
+      captureGameFrame: async (index) => (await automation.captureReadOnly('wanlong', index)).frame,
       matchTemplates: (index, raw, ids) => automation.matchTemplates(index, raw, ids),
       hasKickedTemplates: async (index) => Boolean((await automation.templateSet('wanlong', index))?.templates
         .some((template) => KICKED_TEMPLATE_IDS.includes(template.id))),
@@ -293,6 +312,7 @@ bootstrapApp({
     });
     automation.eta.setHooks(alerts.schedulerHooks());
     automation.setHooks(alerts.hostHooks());
+    alerts.startWatch();
     automation.setPorts({
       probeKicked: (index, raw) => alerts.probeKicked(index, raw),
       pauseReason: (index) => alerts.center.pauseInfo(index)?.reason ?? null,

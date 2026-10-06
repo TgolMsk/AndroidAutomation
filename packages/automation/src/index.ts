@@ -21,6 +21,9 @@ export type {
   ProbeReport, RawFrame, ReadOnlyDevicePort, Rect, TemplateDefinition,
   TemplateSet, VisionPort,
 } from './contracts.js';
+// ── skills: the decision layer's high-level operations (contract; pure) ──
+export { auditVerdict, blockedVerdict, readyVerdict } from './skills.js';
+export type { Skill, SkillOutcome, SkillRunResult, SkillSpec, SkillVerdict, VerdictAudit } from './skills.js';
 export type { ProbeOptions } from './probe.js';
 export { probeGame } from './probe.js';
 export { loadTemplateSet, readTemplatePng } from './templates.js';

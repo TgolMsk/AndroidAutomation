@@ -247,7 +247,7 @@ describe('plan-offline-check §三–§十四: the planner end to end', () => {
     w.instanceStatus.delete(0);
     const instance = vi.spyOn(w.port, 'instance').mockRejectedValueOnce(new AvdmError('INSTANCE_NOT_RUNNING', '实例 #0 未运行'));
     await w.service.runNow(GAME, accountId(1), 't1');
-    await eventually(async () => (await w.overview()).runs[0]?.status === 'skipped');
+    await eventually(async () => (await w.row('t1')).phase === 'skipped' && !w.service.isActiveForInstance(0));
     expect((await w.row('t1')).fails).toBe(0);
     instance.mockRestore();
 
@@ -255,7 +255,7 @@ describe('plan-offline-check §三–§十四: the planner end to end', () => {
     await w.service.runNow(GAME, accountId(1), 't1');
     await eventually(() => w.started.length === 1);
     w.finish(w.started[0]!.runId, 'failed', { error: '实例已停止或被替换，脚本已停止', failureCode: 'START_CHECK' });
-    await eventually(async () => (await w.overview()).runs[0]?.status === 'skipped');
+    await eventually(async () => (await w.row('t1')).phase === 'skipped' && !w.service.isActiveForInstance(0));
     row = await w.row('t1');
     expect(row).toMatchObject({ fails: 0, phase: 'skipped', holdUntil: null });
   });

@@ -16,3 +16,5 @@ export * from './scheduler/fatigue.js'
 export * from './scheduler/state.js'
 export * from './scheduler/parse.js'
 export * from './gather/facts.js'
+// ── 技能层：游戏状态快照与各技能的纯判定（主进程的影子预判、以后的决策层、面板共用） ──
+export * from './skills/index.js'

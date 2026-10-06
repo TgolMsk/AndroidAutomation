@@ -203,7 +203,8 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
         <p className="alerts-intro">
           被顶号、弹维护 / 更新公告、模拟器崩溃、网络断开，都会让采集卡在认不出的界面上。助手的兜底判定是「未知界面恢复阶梯连续用尽」或
           「连续多轮采集失败」就<strong>关掉这个实例的自动调度</strong>（不再排唤醒、不再操作游戏）、留一张现场截图并推送；处理完之后到
-          「采集总览」的红色横幅上点「恢复」。模拟器<strong>卡死</strong>（画面长时间纹丝不动或截图一直超时，但进程还在）是另一条路，见下方「卡死自动重启」。
+          「采集总览」的红色横幅上点「恢复」。不是顶号的异常（游戏卡住、弹「应用无响应」、闪退）默认<strong>先自动重启游戏</strong>，
+          重启不管用才暂停，见下方「异常时自动重启游戏」。模拟器<strong>卡死</strong>（画面长时间纹丝不动或截图一直超时，但进程还在）是另一条路，见下方「卡死自动重启」。
         </p>
         {dirty && <p className="alerts-help">有未保存的改动。</p>}
 
@@ -310,15 +311,30 @@ export function AlertsSettingsCard({ visible }: SettingsCardProps) {
           </div>
           <SwitchRow title="尝试精确识别「被顶号」" help="用模板集里的 tpl_dlg_kicked / tpl_login_screen / tpl_dlg_maintenance / tpl_dlg_update 判断；这些模板还没有时打开也只是空跑，不报错、不影响采集，顶号会被上面的通用兜底接住。"
             checked={draft.detect.kickedProbeEnabled} disabled={disabled} onChange={(kickedProbeEnabled) => changeDetect({ kickedProbeEnabled })} />
-          <SwitchRow title="被顶号时关闭模拟器" help="判定为被顶号（命中顶号提示框 / 登录界面模板、脚本失败后的检查，或开着「自动处理」时 AI 认出是顶号画面）后，先暂停并推送，再正常关闭这台模拟器，免得它反复重连把另一台设备上的号挤下线。确认账号安全后到「模拟器实例」重新启动、登录，再点「恢复」。其他异常（弹窗、卡界面等）不会关模拟器，可以在实例列表里用「重启游戏」。"
+          <SwitchRow title="被顶号时关闭模拟器" help="判定为被顶号（命中顶号提示框 / 登录界面模板、脚本失败后的检查，或开着「自动处理」时 AI 认出是顶号画面）后，先暂停并推送，再正常关闭这台模拟器，免得它反复重连把另一台设备上的号挤下线。确认账号安全后到「模拟器实例」重新启动、登录，再点「恢复」。其他异常（弹窗、卡界面等）不会关模拟器：开着下面的「异常时自动重启游戏」会自动重启游戏，也可以在实例列表里手动「重启游戏」。"
             checked={draft.detect.stopOnKicked} disabled={disabled} onChange={(stopOnKicked) => changeDetect({ stopOnKicked })} />
+        </section>
+
+        <section className="alerts-section" aria-label="异常时自动重启游戏">
+          <h3 className="alerts-section-title">异常时自动重启游戏<small>{draft.detect.gameRestartEnabled ? '已开启' : '已关闭'}</small></h3>
+          <SwitchRow
+            title={FIELD_LABEL['gameRestartEnabled']!}
+            help="模拟器还在、只是游戏出了问题（连续采样 / 采集失败、恢复阶梯用尽、系统弹出「应用无响应」、画面长时间不动、游戏进程退出）时，先截一帧确认不是顶号 / 登录界面 / 维护公告，再强制停止游戏、用 monkey 重新拉起并等主界面，然后接着自动调度，不暂停，推一条「游戏异常已自动重启」。被顶号仍按上面的设置暂停并关闭模拟器；维护 / 强制更新公告、需要人处理的资源更新和 AI 风险拦截照旧暂停。重启失败或次数用完才按原来的规则暂停。"
+            checked={draft.detect.gameRestartEnabled} disabled={disabled} onChange={(gameRestartEnabled) => changeDetect({ gameRestartEnabled })}
+          />
+          <div className="alerts-fields">
+            <NumberField label={FIELD_LABEL['gameRestartLimit']!} value={draft.detect.gameRestartLimit} range={ALERT_RANGE.gameRestartLimit} disabled={disabled}
+              help="超过就不再重启，改按原来的规则暂停并推送（防「重启 → 又卡 → 再重启」死循环）。" onChange={(gameRestartLimit) => changeDetect({ gameRestartLimit })} />
+            <NumberField label={FIELD_LABEL['gameRestartWindowMin']!} value={draft.detect.gameRestartWindowMin} range={ALERT_RANGE.gameRestartWindowMin} step={10} disabled={disabled}
+              help="上一项按这个时间窗口滚动计数。" onChange={(gameRestartWindowMin) => changeDetect({ gameRestartWindowMin })} />
+          </div>
         </section>
 
         <section className="alerts-section" aria-label="卡死自动重启">
           <h3 className="alerts-section-title">卡死自动重启<small>{draft.detect.freezeRestartEnabled ? '已开启' : '默认关闭'}</small></h3>
           <SwitchRow
             title="画面长时间不动时自动重启模拟器"
-            help="判据是像素级的：健康探针（默认每 3 分钟）和采样截到的图连续一模一样、或截图一直超时但模拟器进程还在，就判定卡死。开启后自动强制重启该实例（冷启动）→ 重新连接 adb → 用 monkey 拉起游戏 → 等主界面，全程约 3~5 分钟，自动调度接着跑。关闭时只推一条「疑似模拟器卡死」提醒，采样随后连续失败会按「掉线」暂停。"
+            help="判据是像素级的：健康探针（默认每 3 分钟）和采样截到的图连续一模一样、或截图一直超时但模拟器进程还在，就判定卡死。开启后自动强制重启该实例（冷启动）→ 重新连接 adb → 用 monkey 拉起游戏 → 等主界面，全程约 3~5 分钟，自动调度接着跑。关闭时不动模拟器：开着「异常时自动重启游戏」会先只重启游戏，否则只推一条「疑似模拟器卡死」提醒，采样随后连续失败会按「掉线」暂停。"
             checked={draft.detect.freezeRestartEnabled} disabled={disabled} onChange={(freezeRestartEnabled) => changeDetect({ freezeRestartEnabled })}
           />
           <div className="alerts-fields">

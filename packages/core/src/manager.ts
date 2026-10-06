@@ -30,6 +30,7 @@ import { listRunningEmulators } from './emulator/discovery.js';
 import { getSupportedFlags, planLaunch, portsFor, spawnEmulator } from './emulator/launcher.js';
 import { AvdmError, isAvdmError } from './errors.js';
 import { EmulatorGrpc, fitScreenshotBox } from './grpc.js';
+import { ANGLE_DISABLED_FEATURES, ensureAngleOverrides } from './angle-overrides.js';
 import { ensureBuildProfile } from './build-profile.js';
 import { ensureWifiMac, resolveIdentity } from './identity.js';
 import { getHostStats } from './host.js';
@@ -91,7 +92,7 @@ const EARLY_EXIT_WATCH_MS = 1000;
 /** Auto-restart budget: at most AUTO_RESTART_MAX restarts per AUTO_RESTART_WINDOW_MS per instance. */
 const AUTO_RESTART_MAX = 3;
 const AUTO_RESTART_WINDOW_MS = 10 * 60_000;
-/** Health-monitor retries of a failed device-identity check: 1 min, doubling, at most 30 min. */
+/** Health-monitor retries of a failed device-identity (or ANGLE override) check: 1 min, doubling, at most 30 min. */
 const IDENTITY_RETRY_MIN_MS = 60_000;
 const IDENTITY_RETRY_MAX_MS = 30 * 60_000;
 /** dispose() waits this long for the monitor's in-flight tick / auto-restarts (launch lock timeout is 120s). */
@@ -144,6 +145,18 @@ interface AutoRestartLease {
   task: Promise<void>;
   release?: () => void;
   owned: boolean;
+}
+
+/** The ANGLE override check of one boot (see ensureBootAngleOverrides). */
+interface AngleCheck {
+  /** Emulator pid of the boot this check belongs to: a new pid starts over. */
+  pid: number;
+  done: boolean;
+  task?: Promise<void>;
+  /** After a failure: not before this time, then the delay doubles. */
+  retryAt?: number;
+  delayMs?: number;
+  error?: string;
 }
 
 type Writable<T> = { -readonly [K in keyof T]: T[K] };
@@ -208,6 +221,8 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
    * rotation restarted the framework: retrying every tick would restart it (and kill the game) every few seconds.
    */
   private readonly identityRetry = new Map<number, { at: number; delayMs: number }>();
+  /** index → the ANGLE override check of one boot (emulator pid): done, in flight, or backing off after a failure. */
+  private readonly angleChecks = new Map<number, AngleCheck>();
   /** index → cached crash message for a given run (avoids re-reading the log on every poll). */
   private readonly crashNotes = new Map<number, { key: string; message: string }>();
   /** index → cached boot-timeout hint for a given run. */
@@ -765,6 +780,7 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
       const state = await this.getState(index);
       switch (state.status) {
         case 'running':
+          await this.ensureBootAngleOverrides(state);
           await this.ensureManagedIdentity(state);
           return state;
         case 'stopped':
@@ -1363,6 +1379,7 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
     this.staleStops.delete(index);
     this.identityErrors.delete(index);
     this.identityRetry.delete(index);
+    this.angleChecks.delete(index);
     const c = this.clients.get(index);
     if (c) {
       c.client.close();
@@ -1833,6 +1850,8 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
       await this.ensureAutoRestartLeadership();
       for (const st of states) {
         const index = st.record.index;
+        // Before the identity: a build profile restarts zygote, and the restarted apps then start with the override.
+        if (st.status === 'running') await this.ensureBootAngleOverrides(st);
         if (st.status === 'running' && st.record.identity && (this.identityRetry.get(index)?.at ?? 0) <= Date.now()) {
           await this.ensureManagedIdentity(st).then(
             () => { this.identityRetry.delete(index); },
@@ -1957,6 +1976,59 @@ export class AvdManager extends EventEmitter<ManagerEventMap> {
       seen.add(value);
     }
     return identity;
+  }
+
+  /**
+   * Once per boot of an ANGLE instance (`-feature GuestAngle`): turn off the ANGLE features that break on the emulator's
+   * guest Vulkan driver (angle-overrides.ts: one fence fd leaked per frame, the game freezing or exiting after ~18 min).
+   * Only apps started afterwards pick it up, hence right after boot and before the identity. Never throws: a failure is
+   * logged once per message and retried by the monitor with the identity back-off (1 min, doubling, at most 30 min).
+   */
+  private async ensureBootAngleOverrides(state: InstanceState): Promise<void> {
+    const index = state.record.index;
+    const pid = state.pid;
+    if (pid === undefined) return;
+    let check = this.angleChecks.get(index);
+    if (!check || check.pid !== pid) {
+      check = { pid, done: false };
+      this.angleChecks.set(index, check);
+    }
+    if (check.done) return;
+    if (check.task) return check.task;
+    if (check.retryAt !== undefined && Date.now() < check.retryAt) return;
+    const spec = state.record.spec;
+    if (spec.gpuMode === 'software' || (spec.glDriver ?? 'angle') !== 'angle') {
+      check.done = true; // no GuestAngle flag was passed (see glDriverFeatureArgs): nothing to ask the guest
+      return;
+    }
+    const current = check;
+    current.task = (async () => {
+      try {
+        const result = await ensureAngleOverrides((await this.adb()).device(state.ports.serial));
+        current.done = true;
+        current.retryAt = undefined;
+        current.delayMs = undefined;
+        current.error = undefined;
+        if (result.state === 'applied') {
+          this.log(
+            'info',
+            `实例 #${index} 已关闭 ANGLE 的 ${ANGLE_DISABLED_FEATURES.join('、')}（模拟器的 Vulkan 驱动下它每帧泄漏一个 fence fd，` +
+              `游戏约 18 分钟后卡死或自行退出）` +
+              (result.persisted ? '，已写入 /data/local.prop，以后开机自动生效' : '；镜像不允许写 /data/local.prop，只对本次开机有效'),
+            index,
+          );
+        }
+      } catch (err) {
+        const msg = errorMessage(err);
+        if (current.error !== msg) this.log('warn', `实例 #${index} 设置 ANGLE 兼容开关失败（稍后重试）：${msg}`, index);
+        current.error = msg;
+        current.delayMs = Math.min(IDENTITY_RETRY_MAX_MS, (current.delayMs ?? IDENTITY_RETRY_MIN_MS / 2) * 2);
+        current.retryAt = Date.now() + current.delayMs;
+      } finally {
+        current.task = undefined;
+      }
+    })();
+    return current.task;
   }
 
   private async ensureManagedIdentity(state: InstanceState): Promise<void> {

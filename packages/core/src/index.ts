@@ -5,7 +5,7 @@ export * from './paths.js';
 export * from './settings.js';
 export { Registry } from './registry.js';
 export { AvdManager, statusLabel, isPortBusy, expectedResidentMb, RESIDENT_FRACTION, type SdkInstallPlan } from './manager.js';
-export { Adb, AdbDevice, parseRawScreencap, type AdbDeviceEntry, type RawScreencapFrame } from './adb.js';
+export { Adb, AdbDevice, parseAppDialog, parseRawScreencap, type AdbDeviceEntry, type AppDialog, type RawScreencapFrame } from './adb.js';
 export {
   EmulatorGrpc,
   setEmulatorProtoPath,

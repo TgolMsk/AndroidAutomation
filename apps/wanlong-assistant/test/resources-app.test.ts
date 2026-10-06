@@ -8,7 +8,7 @@
  *   · snapshot storage in the day ledger (48 per day, idempotent, pushed).
  */
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,7 +33,7 @@ const PACKAGE = wanlongPlugin.packageName;
 const CREATED_AT = '2026-09-23T00:00:00.000Z';
 const homes: string[] = [];
 async function tempHome(): Promise<string> {
-  const home = await mkdtemp(path.join(tmpdir(), 'avdm-resources-app-'));
+  const home = await realpath(await mkdtemp(path.join(tmpdir(), 'avdm-resources-app-')));
   homes.push(home);
   return home;
 }

@@ -309,6 +309,21 @@ export class WanlongGatherRunner {
    */
   admittedIdentity(index: number): string | null { return this.admitted.get(index) ?? null; }
 
+  /**
+   * The saved gather runtime state of the AVD now at `index` (dispatch bookkeeping, cooldown, dispatch times) for
+   * read-only callers such as the skill layer's check; null when there is no instance. No device, no lock.
+   */
+  async runtimeState(index: number): Promise<GatherRuntimeState | null> {
+    let createdAt: string;
+    try {
+      createdAt = (await this.manager.getState(index)).record.createdAt;
+    } catch (error) {
+      if (codeOf(error) === 'INSTANCE_NOT_FOUND') return null;
+      throw error;
+    }
+    return this.store.load(index, createdAt);
+  }
+
   private async admittedRun<T>(index: number, createdAt: string, work: () => Promise<T>): Promise<T> {
     this.admitted.set(index, createdAt);
     try { return await work(); }

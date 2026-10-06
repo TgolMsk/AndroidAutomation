@@ -201,6 +201,24 @@ export function parseForegroundPackage(dumpsys: string): string | undefined {
   return app?.[1];
 }
 
+/** The system's dialog about an app that is in focus: 「isn't responding」 (ANR) or 「keeps stopping」 (crash). */
+export interface AppDialog {
+  kind: 'anr' | 'crash';
+  /** Package the dialog is about (a `pkg:sub` process name is cut at the colon). */
+  packageName: string;
+}
+
+/**
+ * The ANR / crash dialog in focus from `dumpsys window`, if any. The framework titles these windows
+ * `Application Not Responding: <process>` / `Application Error: <process>` in English whatever the locale, and
+ * `parseForegroundPackage` cannot see them (the title has no `pkg/activity`, so it falls back to the app behind).
+ */
+export function parseAppDialog(dumpsys: string): AppDialog | undefined {
+  const m = /mCurrentFocus=Window\{[^}]*?\s(Application Not Responding|Application Error): ([A-Za-z0-9_.]+)[^}]*\}/.exec(dumpsys);
+  if (!m?.[2]) return undefined;
+  return { kind: m[1] === 'Application Error' ? 'crash' : 'anr', packageName: m[2] };
+}
+
 /** `pm list packages` output → sorted package names. */
 export function parsePackageList(text: string): string[] {
   const pkgs = new Set<string>();
@@ -417,5 +435,10 @@ export class AdbDevice {
   /** Package currently in foreground (parse `dumpsys window` mCurrentFocus / mFocusedApp), if any. */
   async foregroundPackage(): Promise<string | undefined> {
     return parseForegroundPackage(await this.shell('dumpsys window', { timeoutMs: 15_000 }));
+  }
+
+  /** The system's ANR / crash dialog in focus, if any (`dumpsys window`, see `parseAppDialog`). */
+  async appDialog(): Promise<AppDialog | undefined> {
+    return parseAppDialog(await this.shell('dumpsys window', { timeoutMs: 15_000 }));
   }
 }

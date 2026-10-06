@@ -562,6 +562,21 @@ describe('WanlongGatherRunner', () => {
     expect(created).toHaveLength(1);
   });
 
+  it('reads the saved runtime state of the AVD now at an index for the skill check, with no worker and no device', async () => {
+    const created: FakeWorker[] = [];
+    const runner = runnerWith(approvedScript((worker) => worker.finish()), created);
+    const saved = { ...createRuntimeState(), giveUpUntil: 123, travelTimeByCoord: { '1,2': 60 }, resourceByCoord: { '1,2': 'wood' as const } };
+    await new GatherRuntimeStore(home).save(1, CREATED_AT, saved);
+    expect(await runner.runtimeState(1)).toMatchObject({ giveUpUntil: 123, travelTimeByCoord: { '1,2': 60 }, resourceByCoord: { '1,2': 'wood' } });
+    // Another AVD at the same index starts from a clean state; no instance at all gives null.
+    createdAt = 'another-avd';
+    expect(await runner.runtimeState(1)).toEqual(createRuntimeState());
+    manager.getState = async () => { throw Object.assign(new Error('实例不存在'), { code: 'INSTANCE_NOT_FOUND' }); };
+    expect(await runner.runtimeState(1)).toBeNull();
+    expect(created).toHaveLength(0);
+    expect(taps).toEqual([]);
+  });
+
   it('keeps one long-lived worker per instance and forwards template invalidation', async () => {
     const created: FakeWorker[] = [];
     const runner = runnerWith(approvedScript((worker) => worker.finish()), created);

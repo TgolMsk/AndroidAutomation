@@ -10,7 +10,7 @@ import path from 'node:path';
 import { AvdmError, withFileLock, type CloneOptions } from '@avdm/core';
 import type { ManagerHost } from '../src/main/manager-host';
 import { CLONE_BYTES_ESTIMATE, InstanceProvisioner, type ProvisionerPorts } from '../src/main/instances/provisioner';
-import type { InstanceBaseChangedEvent } from '../src/main/instances/types';
+import type { BaseInstanceView, InstanceBaseChangedEvent } from '../src/main/instances/types';
 
 interface FakeInstance { index: number; name: string; createdAt: string; status: string; provisioning?: boolean }
 
@@ -129,8 +129,13 @@ describe('base instance selection', () => {
     await service.setBase('wanlong', 0);
     events.length = 0;
     list[0]!.createdAt = 'c0-replaced';
+    const checks = vi.spyOn(service, 'view');
     const views = await Promise.all([service.view('wanlong'), service.view('wanlong'), service.baseIdentity('wanlong')]);
-    expect(views.slice(0, 2).filter((view) => typeof view === 'object' && view && 'cleared' in view && view.cleared)).toHaveLength(1);
+    // baseIdentity also checks the view and may win the clear, then returns only the identity.
+    const checkedViews = await Promise.all(checks.mock.results.map((call) => call.value as Promise<BaseInstanceView>));
+    checks.mockRestore();
+    expect(checkedViews.filter((view) => view.cleared)).toHaveLength(1);
+    expect(views).toEqual([expect.objectContaining({ base: null }), expect.objectContaining({ base: null }), null]);
     expect(events.filter((event) => event.view.cleared)).toHaveLength(1);
     expect(events[0]?.view.cleared).toMatchObject({ index: 0, setAt: expect.any(Number) });
 

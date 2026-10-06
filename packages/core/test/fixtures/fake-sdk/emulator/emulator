@@ -22,6 +22,8 @@
 //   FAKE_FAIL_START        print a fatal error and exit(1) right away
 //   FAKE_MAX_LIFETIME_MS   safety net: exit after N ms
 //   FAKE_SCREEN_FPS        streamScreenshot keeps sending frames at this rate (default: 3 frames, then idle)
+//   FAKE_ANGLE             =1: publish fake.egl (ro.hardware.egl for the fake adb): 'angle' when launched with
+//                          `-feature GuestAngle`, like the real emulator, else 'emulation'
 //
 // Screenshots are a synthetic "home screen" (per-instance colours, big #<index>, clock, a dot at the last
 // touch) rendered at the requested size, so UIs built on top show something recognisable.
@@ -666,6 +668,10 @@ function writeDiscoveryFile() {
   ];
   if (grpcToken) lines.push(`grpc.token=${grpcToken}`);
   lines.push(`fake.sdk_root=${SDK_ROOT}`, `fake.started_at=${startedAt}`, `fake.boot_at=${bootAt}`);
+  if (env.FAKE_ANGLE === '1') {
+    const guestAngle = argv.some((a, i) => a === 'GuestAngle' && argv[i - 1] === '-feature');
+    lines.push(`fake.egl=${guestAngle ? 'angle' : 'emulation'}`);
+  }
   fs.mkdirSync(discoveryDir, { recursive: true });
   const tmp = path.join(discoveryDir, `.pid_${process.pid}.ini.tmp`);
   fs.writeFileSync(tmp, lines.join('\n') + '\n');

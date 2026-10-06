@@ -62,9 +62,15 @@ describe('config: single defaults authority, normalize / merge / validate', () =
       freezeRestartEnabled: false, freezeMinutes: 5, freezeRestartLimit: 3, freezeRestartWindowMin: 60,
       // User request: a kicked account closes its emulator unless switched off.
       stopOnKicked: true,
+      // User request 「当出现非挤号情况自动重启应用」: on by default, 3 per hour.
+      gameRestartEnabled: true, gameRestartLimit: 3, gameRestartWindowMin: 60,
     });
     expect(normalizeAlertsConfig({ detect: { stopOnKicked: 'no' } }).detect.stopOnKicked).toBe(true);
     expect(normalizeAlertsConfig({ detect: { stopOnKicked: false } }).detect.stopOnKicked).toBe(false);
+    expect(normalizeAlertsConfig({ detect: { gameRestartEnabled: 'no' } }).detect.gameRestartEnabled).toBe(true);
+    expect(normalizeAlertsConfig({ detect: { gameRestartEnabled: false } }).detect.gameRestartEnabled).toBe(false);
+    expect(normalizeAlertsConfig({ detect: { gameRestartLimit: 99, gameRestartWindowMin: 1 } }).detect)
+      .toMatchObject({ gameRestartLimit: ALERT_RANGE.gameRestartLimit[1], gameRestartWindowMin: ALERT_RANGE.gameRestartWindowMin[0] });
     expect(cfg.telegram).toMatchObject({ enabled: false, cooldownSeconds: 600, retryCount: 2, remoteControlEnabled: false, remoteReadOnlyEnabled: false });
     expect(cfg.local.enabled).toBe(false);
     // Every default lies inside its range.
@@ -77,7 +83,7 @@ describe('config: single defaults authority, normalize / merge / validate', () =
 
   it('normalizes per field: one bad field falls back alone, out-of-range values are clamped', () => {
     const cfg = normalizeAlertsConfig({
-      detect: { cycleFailThreshold: 'x', sampleFailThreshold: 999, freezeRestartEnabled: true },
+      detect: { cycleFailThreshold: 'x', sampleFailThreshold: 999, freezeRestartEnabled: true, gameRestartEnabled: true },
       telegram: { chatId: '  -100123  ', retryCount: -3, subscribedTypes: ['deviceOffline', 'test', 'nope', 'deviceOffline'] },
       extra: true,
     });
@@ -93,8 +99,17 @@ describe('config: single defaults authority, normalize / merge / validate', () =
   it('adds newer subscription types to a file saved before freeze alerts existed (original migration rule)', () => {
     const old = normalizeAlertsConfig({ detect: {}, telegram: { subscribedTypes: ['consecutiveFailures'] } });
     expect(old.telegram.subscribedTypes).toEqual(expect.arrayContaining(['consecutiveFailures', 'emulatorFrozen', 'deviceOffline']));
-    const current = normalizeAlertsConfig({ detect: { freezeRestartEnabled: false }, telegram: { subscribedTypes: ['consecutiveFailures'] } });
+    const current = normalizeAlertsConfig({ detect: { freezeRestartEnabled: false, gameRestartEnabled: true }, telegram: { subscribedTypes: ['consecutiveFailures'] } });
     expect(current.telegram.subscribedTypes).toEqual(['consecutiveFailures']);
+  });
+
+  it('adds only 「游戏异常已自动重启」 to a file saved before the game restart existed (the rest stays the user\'s choice)', () => {
+    const beforeGameRestart = normalizeAlertsConfig({ detect: { freezeRestartEnabled: false }, telegram: { subscribedTypes: ['consecutiveFailures'] } });
+    expect(beforeGameRestart.telegram.subscribedTypes).toEqual(['consecutiveFailures', 'gameRestarted']);
+    expect(beforeGameRestart.detect.gameRestartEnabled).toBe(true);
+    // Unticked after the upgrade: stays unticked.
+    const unticked = normalizeAlertsConfig({ detect: { freezeRestartEnabled: false, gameRestartEnabled: true }, telegram: { subscribedTypes: [] } });
+    expect(unticked.telegram.subscribedTypes).toEqual([]);
   });
 
   it('merges the token in three states: absent keeps, a value replaces, empty clears and switches Telegram off', () => {

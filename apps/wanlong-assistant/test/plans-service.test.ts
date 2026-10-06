@@ -85,6 +85,7 @@ describe('PlanService integration with fake device', () => {
     }));
     const queued = await service.runNow(GAME, ACCOUNT, 'task-1');
     await eventually(async () => (await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.status === 'failed');
+    await eventually(async () => !service.isActiveForInstance(1));
     expect(run).toHaveBeenCalledTimes(1);
     expect((await service.overview(GAME)).runs.find((row) => row.runId === queued.runId)?.message).toContain('时间上限');
 

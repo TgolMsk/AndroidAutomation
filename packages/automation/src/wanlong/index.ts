@@ -79,6 +79,9 @@ export type {
   FreezeRecoveryIo, FreezeRecoveryOptions, FreezeRecoveryResult, FreezeRecoveryStage, InstanceProbe,
 } from './freezeRecovery.js';
 export { FREEZE_RECOVERY_DEFAULTS, FREEZE_STAGE_TEXT, recoverFrozenInstance } from './freezeRecovery.js';
+// 非顶号异常（卡界面 / 应用无响应 / 闪退）只重启游戏，不动模拟器
+export type { GameRestartIo, GameRestartOptions, GameRestartResult, GameRestartStage } from './gameRestart.js';
+export { GAME_RESTART_DEFAULTS, GAME_RESTART_STAGE_TEXT, restartStuckGame } from './gameRestart.js';
 
 // ── bot 模块：顶号 / 断线之后的游戏恢复序列（机器人「重启游戏并恢复」） ──
 export type { GameRecoveryIo, RecoverGameOptions, RecoverKickedHit, RefPoint } from './recoverGame.js';

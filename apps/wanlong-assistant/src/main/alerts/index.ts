@@ -7,13 +7,16 @@
  *   AlertCenter     (center.ts)            acts only: pause, pause records, history, UI pushes, hand-off to the hub
  *   NotifyHub       (notifier.ts)          pushes only: gates, cooldown, Telegram + local channels, the config
  *   FreezeController (freeze-controller.ts) frozen-emulator verdicts and the opt-in restart
+ *   GameRestartController (game-restart.ts) 「异常时自动重启游戏」: restart only the game before a non-kicked pause
+ *   ScreenWatch     (screen-watch.ts)      「画面巡检」: a frame a minute for the freeze watchdog, whatever the scheduler does
  */
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { MatchResult, RawFrame } from '@avdm/automation';
-import type { FreezeRecoveryIo, GatherCycleFact, KickedProbeResult } from '@avdm/automation/wanlong';
+import type { FreezeRecoveryIo, GameRestartIo, GatherCycleFact, KickedProbeResult } from '@avdm/automation/wanlong';
 import {
-  attentionStageOf, makeAlertEvent, pausesInstance, type AlertEvent, type AlertRecord, type AlertsConfigView, type InstancePauseState,
+  attentionStageOf, isAlertType, makeAlertEvent, pausesInstance, type AlertEvent, type AlertRecord, type AlertsConfigView,
+  type InstancePauseState, type PausingAlertType,
 } from '../../shared/alerts';
 import type { FreezeInstanceStatus } from '../../shared/ipc/alerts';
 import type { AutomationHostHooks } from '../automation/host';
@@ -22,8 +25,10 @@ import type { SchedulerHooks } from '../scheduler/types';
 import { AlertCenter } from './center';
 import { FailureTracker } from './detect';
 import { FreezeController } from './freeze-controller';
+import { GameRestartController, type GameRestartAttempt } from './game-restart';
 import { KICKED_CANDIDATES, probeKickedFrame } from './kicked';
 import { NotifyHub, type AlertLogLevel, type NotifyHubPorts } from './notifier';
+import { ScreenWatch } from './screen-watch';
 
 /** Codes whose handler already raised a dedicated 「需要人工介入」 (the scheduler paused the instance). */
 const ATTENTION_CODES = new Set(['GAME_UPDATE_REQUIRED', 'AI_RISK_BLOCKED']);
@@ -64,6 +69,21 @@ export interface AlertsServicePorts extends Omit<NotifyHubPorts, 'log' | 'onConf
    * never inside the instance lock's await chain. Missing → kicked instances are only paused.
    */
   stopInstance?(index: number): Promise<void>;
+  /**
+   * 「异常时自动重启游戏」: the device side of one game restart (lane-bound adb, the instance's recogniser); `kicked` is
+   * this module's own layer-2 probe, handed in. Missing → the game is never restarted (verdicts pause as before).
+   */
+  gameRestartIo?(index: number, signal: AbortSignal, kicked: (raw: RawFrame) => Promise<KickedProbeResult | null>): GameRestartIo;
+  /** The system's ANR / crash dialog in focus (`AdbDevice.appDialog`); null when none. Missing → never looked at. */
+  appDialogOf?(index: number): Promise<{ kind: 'anr' | 'crash'; packageName: string } | null>;
+  /**
+   * 「画面巡检」 (screen-watch.ts): the instances under automatic scheduling (none while another process owns the
+   * scheduler). With `captureGameFrame` the freeze watchdog looks once a minute itself; missing → it judges only the
+   * scheduler's frames.
+   */
+  watchTargets?(): number[];
+  /** One read-only frame with the game in the foreground; throws otherwise. */
+  captureGameFrame?(index: number): Promise<RawFrame>;
   gamePackage: string;
 }
 
@@ -72,6 +92,9 @@ export class AlertsService {
   readonly center: AlertCenter;
   readonly failures: FailureTracker;
   readonly freeze: FreezeController;
+  readonly gameRestart: GameRestartController;
+  /** Null when the ports for it are not wired. */
+  readonly watch: ScreenWatch | null;
   private readonly root: string;
   /** Instances whose 「需要人处理」 raise is still pausing (concurrent raises from two chains alert once). */
   private readonly attentionInFlight = new Set<number>();
@@ -122,7 +145,42 @@ export class AlertsService {
       log,
       gamePackage: ports.gamePackage,
       ...(ports.now ? { now: ports.now } : {}),
+      restartGame: (index, trigger, signal) => this.restartForFreeze(index, trigger, signal),
     });
+    this.gameRestart = new GameRestartController({
+      config: () => this.center.detectConfig(),
+      isPaused: (index) => this.center.isPaused(index),
+      instanceAlive: (index) => ports.instanceAlive(index),
+      exclusive: (index, what, fn, signal) => ports.exclusive(index, what, fn, signal),
+      ...(ports.gameRestartIo
+        ? { restartIo: (index: number, signal: AbortSignal) => ports.gameRestartIo!(index, signal, (raw) => this.probeKicked(index, raw)) }
+        : {}),
+      saveShot: (index, label, raw) => this.saveShot(index, label, raw),
+      raise: (event) => this.center.raiseInLock(event),
+      resetEvidence: (index) => {
+        this.failures.reset(index);
+        this.freeze.guard.reset(index);
+      },
+      log,
+      gamePackage: ports.gamePackage,
+      ...(ports.now ? { now: ports.now } : {}),
+    });
+    this.watch = ports.watchTargets && ports.captureGameFrame
+      ? new ScreenWatch({
+        targets: () => ports.watchTargets!(),
+        skip: (index) => this.center.isPaused(index) || this.freeze.isRecovering(index) || this.gameRestart.isRestarting(index),
+        exclusive: (index, what, fn, signal) => ports.exclusive(index, what, fn, signal),
+        capture: (index) => ports.captureGameFrame!(index),
+        observe: (index, raw) => this.freeze.onFrame(index, raw),
+        judge: (index, signal) => this.freeze.tryRecover(index, '画面巡检', signal, true),
+        log,
+      })
+      : null;
+  }
+
+  /** Start 「画面巡检」 (after the scheduler hooks are in place); a no-op without its ports. */
+  startWatch(): void {
+    this.watch?.start();
   }
 
   /** Scheduler hooks (`EtaScheduler.setHooks`). Every one of them runs inside the instance lock. */
@@ -130,16 +188,19 @@ export class AlertsService {
     return {
       // Consecutive sample failures = emulator or game offline. Awaited in the lock: before pausing as offline ask
       // the freeze watchdog — a picture unchanged during the failures (or captures timing out) with the process
-      // alive is a freeze, restarted in place (when enabled); only an unrecovered one pauses.
+      // alive is a freeze, restarted in place (when enabled) — then 「异常时自动重启游戏」; only what neither cured pauses.
       onSampleResult: async (index, ok, message, ctx) => {
         if (ok) { this.failures.noteSampleOk(index); return; }
         // An instance already paused (e.g. by the kicked probe) is neither counted nor pushed again.
         if (this.center.isPaused(index)) return;
+        // The system's 「isn't responding」 dialog of the game: restarted at once, no threshold (it never recovers alone).
+        if (await this.restartOnAppDialog(index, ctx.signal)) return;
         const event = this.failures.noteSampleFailed(index, message ?? '原因未知');
         if (!event) return;
         const attempt = await this.freeze.tryRecover(index, '连续采样失败', ctx.signal, false);
         if (attempt.outcome === 'recovered') return;
-        await this.center.raiseInLock(attempt.outcome === 'skipped' ? event : { ...event, reason: `${event.reason} ${attempt.note}` });
+        const offline = attempt.outcome === 'skipped' ? event : { ...event, reason: `${event.reason} ${attempt.note}` };
+        await this.restartOrRaise(index, '连续采样失败，打不开部队管理面板', ctx.signal, async () => offline);
       },
       // Every frame feeds the watchdog (pixel sampling, tens of microseconds); failed captures too.
       onFrameCaptured: (index, raw) => this.freeze.onFrame(index, raw),
@@ -155,16 +216,18 @@ export class AlertsService {
       onHealthProbe: async (index, raw, ctx) => {
         if (await this.probeFrame(index, raw, '健康探针')) return;
         if (ctx.running === false && !this.center.isPaused(index)) {
-          const shotPath = await this.saveShot(index, 'health-probe', raw);
-          await this.center.raiseInLock(makeAlertEvent({
-            type: 'deviceOffline', instanceIndex: index, shotPath,
+          // The frame shows no kicked dialog (probed above): relaunched when 「异常时自动重启游戏」 is on — the restart
+          // looks at the screen again first and checks where the game lands.
+          await this.restartOrRaise(index, `健康探针发现游戏进程已退出（当前前台：${ctx.foreground ?? '未知'}）`, ctx.signal, async () => makeAlertEvent({
+            type: 'deviceOffline', instanceIndex: index, shotPath: await this.saveShot(index, 'health-probe', raw),
             reason: `健康探针发现游戏进程已退出（当前前台：${ctx.foreground ?? '未知'}）。顶号后点了「确定」游戏会直接退出，这也是它最常见的成因。`,
             detail: { 前台包名: ctx.foreground ?? '未知', 游戏进程: '不在' },
           }));
           return;
         }
+        if (await this.restartOnAppDialog(index, ctx.signal)) return;
         // The game is alive but the picture stands still: the only place a freeze shows while the queue is full for
-        // hours and nothing samples.
+        // hours and nothing samples. With the emulator restart off, the game restart goes first (port restartGame).
         await this.freeze.tryRecover(index, '健康探针', ctx.signal, true);
       },
       // A human must look (game update prompt, AI judged a confirm risky) on any chain, the AI executor's included
@@ -226,9 +289,15 @@ export class AlertsService {
     }
     const event = this.failures.noteCycle(index, fact);
     if (!event) return;
-    if (pausesInstance(event.type)) await this.center.raiseInLock(this.noteClose(event));
     // A warning (dispatchStalled) need not hold the lock for a network request.
-    else this.center.raiseQuietly(event);
+    if (!pausesInstance(event.type)) { this.center.raiseQuietly(event); return; }
+    // The generic verdicts (not a layer-2 screen): a fresh game may cure them — 「异常时自动重启游戏」 goes first.
+    if (!fact.kicked && (event.type === 'needsAttention' || event.type === 'consecutiveFailures')) {
+      const trigger = event.type === 'needsAttention' ? '未知界面恢复阶梯连续用尽，回不到世界地图' : `连续多轮采集失败（${fact.message}）`;
+      await this.restartOrRaise(index, trigger, undefined, async () => event);
+      return;
+    }
+    await this.center.raiseInLock(this.noteClose(event));
     if (event.type === 'suspectedKicked') this.closeAfterKick(index, '采集失败现场');
   }
 
@@ -328,7 +397,9 @@ export class AlertsService {
   }
 
   async dispose(): Promise<void> {
+    this.watch?.dispose();
     this.freeze.dispose();
+    this.gameRestart.dispose();
     await this.center.dispose();
     await this.hub.flush();
   }
@@ -349,6 +420,69 @@ export class AlertsService {
     })));
     if (hit.type === 'suspectedKicked') this.closeAfterKick(index, where);
     return true;
+  }
+
+  /**
+   * 「异常时自动重启游戏」 in front of a pausing verdict a fresh game may cure: restart the game (never over a kicked
+   * screen) and raise the verdict only when that did not help — with the restart's note, or the layer-2 verdict the
+   * restart found instead. `event` is built lazily (its scene shot is only kept when it is raised). In the lock.
+   */
+  private async restartOrRaise(index: number, trigger: string, signal: AbortSignal | undefined, event: () => Promise<AlertEvent>): Promise<void> {
+    const attempt = await this.gameRestart.tryRestart(index, trigger, signal);
+    if (attempt.outcome === 'recovered') return;
+    if (attempt.outcome === 'verdict') { await this.raiseRestartVerdict(index, attempt); return; }
+    const base = await event();
+    const raised = attempt.outcome === 'failed'
+      ? { ...base, reason: `${base.reason} ${attempt.note}`, shotPath: base.shotPath ?? attempt.shotPath }
+      : base;
+    await this.center.raiseInLock(this.noteClose(raised));
+  }
+
+  /**
+   * The system's 「isn't responding」 / 「keeps stopping」 dialog of the game is in focus: the game does not come back by
+   * itself (the ANR of 2026-09-24 spun for four hours behind it), so it is restarted at once instead of waiting for the
+   * failure threshold or the frozen-picture minutes. true = handled (restarted, or a verdict raised). In the lock.
+   */
+  private async restartOnAppDialog(index: number, signal: AbortSignal | undefined): Promise<boolean> {
+    if (!this.ports.appDialogOf || !this.gameRestart.enabled()) return false;
+    let dialog: { kind: 'anr' | 'crash'; packageName: string } | null;
+    try { dialog = await this.ports.appDialogOf(index); }
+    catch (error) {
+      this.ports.log('debug', `[重启游戏][实例 #${index}] 没能查看系统弹窗（按没有处理）：${error instanceof Error ? error.message : String(error)}`, index);
+      return false;
+    }
+    if (!dialog || dialog.packageName !== this.ports.gamePackage) return false;
+    const trigger = dialog.kind === 'anr' ? '系统弹出「应用无响应」（ANR），游戏已经卡死' : '系统提示游戏已停止运行（闪退）';
+    const attempt = await this.gameRestart.tryRestart(index, trigger, signal);
+    if (attempt.outcome === 'verdict') await this.raiseRestartVerdict(index, attempt);
+    return attempt.outcome === 'recovered' || attempt.outcome === 'verdict';
+  }
+
+  /** FreezeController's `restartGame` port: a frozen picture on the health-probe path while the emulator restart is off. */
+  private async restartForFreeze(index: number, trigger: string, signal: AbortSignal | undefined): Promise<{ handled: boolean; note?: string }> {
+    const attempt = await this.gameRestart.tryRestart(index, `画面长时间不动（${trigger}）`, signal);
+    if (attempt.outcome === 'recovered') return { handled: true };
+    if (attempt.outcome === 'verdict') { await this.raiseRestartVerdict(index, attempt); return { handled: true }; }
+    return attempt.outcome === 'failed' ? { handled: false, note: attempt.note } : { handled: false };
+  }
+
+  /**
+   * A layer-2 screen the game restart found — before it (nothing was restarted) or after it (the game came back to
+   * it): the same verdict as the probe's, a kicked one also closing the emulator (「被顶号时关闭模拟器」).
+   */
+  private async raiseRestartVerdict(index: number, attempt: Extract<GameRestartAttempt, { outcome: 'verdict' }>): Promise<void> {
+    const where = attempt.before ? '自动重启游戏前' : '自动重启游戏后';
+    const hit = attempt.verdict;
+    const type: PausingAlertType = isAlertType(hit.type) && pausesInstance(hit.type) ? hit.type : 'needsAttention';
+    await this.center.raiseInLock(this.noteClose(makeAlertEvent({
+      type, instanceIndex: index, reason: `${where}的画面命中：${hit.reason}`, shotPath: attempt.shotPath,
+      detail: {
+        阶段: where,
+        ...(hit.templateId ? { 命中模板: hit.templateId } : {}),
+        ...(typeof hit.score === 'number' ? { 匹配分: Number(hit.score.toFixed(3)) } : {}),
+      },
+    })));
+    if (type === 'suspectedKicked') this.closeAfterKick(index, where);
   }
 
   private closesOnKick(): boolean {
@@ -421,5 +555,7 @@ export { AlertCenter } from './center';
 export { FailureTracker } from './detect';
 export { FreezeController } from './freeze-controller';
 export { createAvdFreezeRecoveryIo } from './freeze-io';
+export { createGameRestartIo, GameRestartController } from './game-restart';
 export { NotifyHub } from './notifier';
 export { safeStorageCodec } from './safe-storage';
+export { ScreenWatch, SCREEN_WATCH_INTERVAL_MS } from './screen-watch';

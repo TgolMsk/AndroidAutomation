@@ -4,14 +4,15 @@ import { Worker } from 'node:worker_threads';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import { AppError, canonicalDirectory, TemplateLibrary, type MatchResult, type RawFrame, type Rect, type SeedResult, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
+import { AppError, canonicalDirectory, TemplateLibrary, type MatchResult, type RawFrame, type Rect, type SeedResult, type SkillVerdict, type TemplateDraft, type TemplateSaveResult, type TemplateSet } from '@avdm/automation';
 import {
   cycleFactOf, normalizeGatherConfig, RESOURCE_SEED_FRAMES, RESOURCE_TEMPLATE_CATALOG, resourceSeedPlan,
   seedResourceTemplates, startupFailureFact, type DispatchRecord, type GatherCycleFact, type GatherCycleResult,
   type KickedProbeResult, type PanelSample, type ResourceSeedFrame, type ResourceSnapshot, type ShotPolicy,
 } from '@avdm/automation/wanlong';
-import { coerceGatherConfig, describeBlockingIssues, validateGatherConfigInput } from '@avdm/automation/wanlong/pure';
+import { buildGameState, coerceGatherConfig, describeBlockingIssues, validateGatherConfigInput } from '@avdm/automation/wanlong/pure';
 import type { ResourceTemplateSeedResult } from '../../shared/ipc/resources';
+import type { SchedulerQueueState } from '../../shared/ipc/scheduler';
 import type { AutomationGameSummary, AutomationProbeReport, AutomationRun, AutomationSchedule, AutomationSettings, TemplateAlphaPreview, TemplateCapture, TemplateCoverage, TemplateImportResult, TemplatesChange, TemplateTestOptions, TemplateTestResult } from '../../shared/ipc';
 import { withLabelledLease } from '../app/instance-access';
 import { broadcast } from '../events';
@@ -29,6 +30,7 @@ import { gamePlugin, gameSummaries, gameTask } from './games';
 import type { ProbeWorkerInput, ProbeWorkerOutput } from './probe-worker';
 import { transferableJob, type TemplateJob, type TemplateJobOutput } from './template-jobs';
 import { buildTemplateCoverage, rawFrameToPng, TemplateChangeFeed, workerError, type TemplatesChangeListener } from './template-tools';
+import { SkillShadow, createGatherSkill, toQueueFreeResult, type GatherHandoff, type WanlongSkill } from './skills';
 import { AutomationSettingsStore, type StoredAutomationSettings } from './store';
 
 const PROBE_TIMEOUT_MS = 120_000;
@@ -64,7 +66,7 @@ function isRun(value: unknown): value is AutomationRun {
 
 type GatherRunnerPort = Pick<WanlongGatherRunner, 'runOnce' | 'stop' | 'dispose' | 'isRunning'> &
   Partial<Pick<WanlongGatherRunner, 'sample' | 'healthFrame' | 'invalidateTemplates' | 'recognize' | 'match' | 'updateCheck' | 'readResources'>> &
-  Partial<Pick<WanlongGatherRunner, 'frameDiff' | 'targetStable' | 'admittedIdentity'>>;
+  Partial<Pick<WanlongGatherRunner, 'frameDiff' | 'targetStable' | 'admittedIdentity' | 'runtimeState'>>;
 
 /** Extra run observers (statistics next to alerts); see `AutomationHost.observe`. */
 export type AutomationRunObserver = Pick<AutomationHostHooks, 'onCycleResult' | 'onDispatched'>;
@@ -188,6 +190,9 @@ export class AutomationHost {
   private readonly home: string;
   private readonly templates: TemplateLibrary;
   private readonly gatherRunner: GatherRunnerPort;
+  /** The first skill (./skills.ts): the scheduled gather cycle, its pure check running in shadow mode. */
+  private readonly gatherSkill: WanlongSkill;
+  private readonly skillShadow = new SkillShadow();
   private readonly scheduler: ScheduleCompat;
   /** The ETA scheduler: queue states, exclusive(), suspendForScript(), hooks. Other modules use it from here. */
   readonly eta: EtaScheduler;
@@ -272,7 +277,8 @@ export class AutomationHost {
           console.error('[avdm] 调度暂停提醒无法保存', error));
       },
     });
-    this.eta.setQueueFreeHook((state, ctx) => this.gatherForScheduler(state.instanceIndex, ctx.signal));
+    this.gatherSkill = createGatherSkill((index, signal) => this.gatherForScheduler(index, signal));
+    this.eta.setQueueFreeHook((state, ctx) => this.queueFreeTurn(state, ctx.signal));
     this.scheduler = new ScheduleCompat(this.eta);
     // ★ Compile once, invalidate on change (DECISIONS A.7): a template save / delete / import drops the compiled sets
     //   in the vision workers at once. The workers' manifest-fingerprint check stays as the fallback for edits made
@@ -1006,12 +1012,46 @@ export class AutomationHost {
   }
 
   /**
-   * The ETA scheduler's QueueFreeHook: one gather cycle, run inside the scheduler's instance lock. Reports the
+   * The ETA scheduler's QueueFreeHook, run as the gather skill (./skills.ts). The skill's pure check judges the sample
+   * the scheduler just took and is only compared with what the cycle really did (shadow mode): it never gates the
+   * cycle, and the scheduler gets exactly the hand-off result it always got.
+   */
+  private async queueFreeTurn(state: SchedulerQueueState, signal: AbortSignal): Promise<QueueFreeResult> {
+    const index = state.instanceIndex;
+    const verdict = await this.gatherVerdict(state);
+    const result = await this.gatherSkill.run({ index, signal });
+    if (verdict) {
+      const line = this.skillShadow.note(index, this.gatherSkill, verdict, result);
+      if (line) this.logLine('info', `[实例 #${index}] ${line}`);
+    }
+    return toQueueFreeResult(result);
+  }
+
+  /**
+   * The gather skill's verdict on the scheduler's fresh sample, the gather config the cycle will use and the saved
+   * runtime state. Never throws: a state that cannot be built gives null, and the cycle reports its own error.
+   */
+  private async gatherVerdict(state: SchedulerQueueState): Promise<SkillVerdict | null> {
+    try {
+      const index = state.instanceIndex;
+      const settings = await this.store.get(GATHER_GAME_ID, index);
+      const config = normalizeGatherConfig((await this.gatherConfig(index, settings)) as Parameters<typeof normalizeGatherConfig>[0]);
+      const runtime = (await this.gatherRunner.runtimeState?.(index)) ?? null;
+      const now = Date.now();
+      const game = buildGameState({ queue: state, config, runtime, pausedReason: state.pause?.reason ?? null, now });
+      return this.gatherSkill.check(game, now);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * One gather cycle for the scheduler, run inside its instance lock (the gather skill's `run`). Reports the
    * cycle's facts (and a start-up failure) before throwing, records every dispatch with the scheduler (travel time,
    * coordinate, resource — then one re-sample), and only a failed cycle throws; queueFull / noResourceWanted / giveUp
    * / staminaLow / circuitBroken return normally (not failures; circuitBroken asks for a 10-minute cooldown).
    */
-  private async gatherForScheduler(index: number, signal: AbortSignal): Promise<QueueFreeResult> {
+  private async gatherForScheduler(index: number, signal: AbortSignal): Promise<GatherHandoff> {
     let started: { run: AutomationRun; active: ActiveAutomationRun };
     try {
       started = await this.startRun(GATHER_GAME_ID, 'gather-once', index, 'scheduled', signal);
@@ -1056,11 +1096,14 @@ export class AutomationHost {
     if (result.outcome === 'circuitBroken') {
       // DECISIONS B: not a failure; look again in 10 minutes (the flow's early return does no device I/O). Health
       // probes keep running meanwhile.
-      return { dispatched: result.dispatched.length, notBefore: Date.now() + CIRCUIT_BREAKER_COOLDOWN_MS, reason: '熔断中，10 分钟后复查' };
+      return {
+        dispatched: result.dispatched.length, notBefore: Date.now() + CIRCUIT_BREAKER_COOLDOWN_MS, reason: '熔断中，10 分钟后复查',
+        outcome: result.outcome, message: result.message,
+      };
     }
     // giveUp and the rest follow the original: the scheduler ignores the flow's own wake and backs off (≤ 5 min);
     // the flow's cooldown check returns early without touching the device.
-    return { dispatched: result.dispatched.length };
+    return { dispatched: result.dispatched.length, outcome: result.outcome, message: result.message };
   }
 
   private async reportFact(index: number, fact: GatherCycleFact, source: 'manual' | 'scheduled'): Promise<void> {
